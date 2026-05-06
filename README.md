@@ -166,11 +166,7 @@ $$
 This gives a conditional marked point process decomposition:
 
 $$
-\log L_{\text{joint}}
-=
-\log L_{\text{spatial}}
-+
-\log L_{\text{marks} \mid \text{locations}}
+\log L_{\text{joint}} = \log L_{\text{spatial}} + \log L_{\text{marks} \mid \text{locations}}
 $$
 
 The mark model does not change the fitted spatial intensity. It models DBH variation among trees after conditioning on the observed locations.
