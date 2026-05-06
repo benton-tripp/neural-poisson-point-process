@@ -24,6 +24,7 @@ pyogrio==0.12.1
 pyparsing==3.3.2
 pyproj==3.7.2
 python-dateutil==2.9.0.post0
+requests==2.33.1
 rpy2-rinterface==3.6.6
 rpy2-robjects==3.6.5
 scipy==1.17.1
