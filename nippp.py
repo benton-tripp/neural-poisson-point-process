@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from scipy.stats import chi2
+import matplotlib.pyplot as plt
 
 # Set seed for reproducibility
 SEED = 19
@@ -275,12 +276,11 @@ print(f"Fitted model is approximately: λ(s) = exp({lin_model.linear.bias.item()
 
 
 # Plots
-import matplotlib.pyplot as plt
 
 # Plot observed point pattern
-plt.figure(figsize=(8, 6))
+fig, ax = plt.subplots(figsize=(8, 6))
 
-plt.scatter(
+ax.scatter(
     coords_np[:, 0],
     coords_np[:, 1],
     s=10,
@@ -289,20 +289,29 @@ plt.scatter(
     label="Longleaf Pines"
 )
 
-plt.title("Longleaf Pine Locations in Observation Window")
-plt.xlabel("x")
-plt.ylabel("y")
-plt.xlim(x_min, x_max)
-plt.ylim(y_min, y_max)
-plt.grid(alpha=0.3)
+ax.set_title("Longleaf Pine Locations in Observation Window")
+ax.set_xlabel("x")
+ax.set_ylabel("y")
+ax.set_xlim(x_min, x_max)
+ax.set_ylim(y_min, y_max)
+ax.grid(alpha=0.3)
 
-plt.legend(
+ax.legend(
     bbox_to_anchor=(0.0, -0.15),
     loc="lower left"
 )
 
-plt.tight_layout()
+fig.tight_layout()
+
+# Save before showing
+fig.savefig(
+    "images/longleaf_point_pattern.png",
+    dpi=300,
+    bbox_inches="tight"
+)
+
 plt.show()
+plt.close(fig)
 
 # Plot fitted intensity surface for Linear IPPP compared to HPPP baseline
 def predict_intensity_surface(model, n_per_dim=200):
@@ -399,3 +408,5 @@ cbar = fig.colorbar(
 cbar.set_label("Estimated intensity λ(s)")
 
 plt.show()
+# Save plot
+fig.savefig("images/longleaf_intensity_comparison.png", dpi=300)

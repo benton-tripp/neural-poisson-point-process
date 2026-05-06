@@ -1,6 +1,8 @@
 create-env.bat
 env/
 src/__pycache__/
+.Rhistory
+.RData
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
