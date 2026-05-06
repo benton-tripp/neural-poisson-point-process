@@ -166,7 +166,7 @@ $$
 AIC = 2k - 2\log L
 $$
 
-where $ k $ is the number of fitted parameters.
+where $k$ is the number of fitted parameters.
 
 ### BIC
 
