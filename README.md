@@ -12,17 +12,21 @@ The goal is to compare a homogeneous spatial point process against a simple inho
 
 ## Point Process Framework
 
-Let $ W $ denote the observation window and let $ s_i = (x_i, y_i) $ denote observed tree locations.
+Let $W$ denote the observation window and let $s_i = (x_i, y_i)$ denote observed tree locations.
 
 An inhomogeneous Poisson point process is defined by an intensity function:
 
-$ \lambda(s) \geq 0 $
+$$
+\lambda(s) \geq 0
+$$
 
-where $ \lambda(s) $ gives the expected density of events near location $ s $.
+where $\lambda(s)$ gives the expected density of events near location $s$.
 
 The IPPP log-likelihood is:
 
-$ \log L(\lambda)=\sum_{i=1}^{n} \log \lambda(s_i)-\int_W \lambda(u)\,du $
+$$
+\log L(\lambda)=\sum_{i=1}^{n} \log \lambda(s_i)-\int_W \lambda(u)\,du
+$$
 
 The first term rewards high intensity at observed tree locations.  
 The second term penalizes total expected intensity over the observation window.
@@ -31,7 +35,7 @@ The second term penalizes total expected intensity over the observation window.
 
 The implementation assumes:
 
-- Nonnegative intensity: $ \lambda(s) \geq 0 $
+- Nonnegative intensity: $\lambda(s) \geq 0$
 - Independent increments across disjoint spatial regions
 - A finite expected number of points over the observation window
 - No temporal component
@@ -45,18 +49,22 @@ Rather than directly optimizing the continuous IPPP likelihood, the code uses a 
 
 The observation window is divided into grid cells. For each cell:
 
-$ Y_j \sim \text{Poisson}(w_j \lambda(u_j)) $
+$$
+Y_j \sim \text{Poisson}(w_j \lambda(u_j))
+$$
 
 where:
 
-- $ Y_j $ is the number of observed points in grid cell $ j $
-- $ u_j $ is the center of grid cell $ j $
-- $ w_j $ is the area of grid cell $ j $
-- $ \lambda(u_j) $ is the fitted intensity at the cell center
+- $Y_j$ is the number of observed points in grid cell $j$
+- $u_j$ is the center of grid cell $j$
+- $w_j$ is the area of grid cell $j$
+- $\lambda(u_j)$ is the fitted intensity at the cell center
 
 The approximate log-likelihood used for fitting is:
 
-$ \sum_j \left[Y_j \log \lambda(u_j) - w_j \lambda(u_j) \right] $
+$$
+\sum_j \left[Y_j \log \lambda(u_j) - w_j \lambda(u_j) \right]
+$$
 
 Constants independent of model parameters are omitted.
 
@@ -66,11 +74,11 @@ This converts the IPPP estimation problem into a weighted Poisson-regression-lik
 
 The observed coordinates are standardized before being passed into the PyTorch models:
 
-$
+$$
 x^* = \frac{x - \bar{x}}{s_x},
 \quad
 y^* = \frac{y - \bar{y}}{s_y}
-$
+$$
 
 The same transformation is applied to the Berman-Turner grid cell centers and to prediction grids used for plotting.
 
@@ -82,15 +90,15 @@ This improves numerical stability and makes the linear coefficients correspond t
 
 The HPPP assumes constant intensity over the whole observation window:
 
-$
+$$
 \lambda(s) = \lambda_0
-$
+$$
 
 The maximum likelihood estimate is available in closed form:
 
-$
+$$
 \hat{\lambda}_0 = \frac{n}{|W|}
-$
+$$
 
 This model serves as the primary baseline.
 
@@ -98,9 +106,9 @@ This model serves as the primary baseline.
 
 The constant neural model is a PyTorch version of the HPPP:
 
-$
+$$
 \lambda(s) = \exp(\theta)
-$
+$$
 
 It has one learnable parameter and is initialized at the HPPP estimate. It is mainly used as a sanity check.
 
@@ -110,19 +118,21 @@ If implemented correctly, its fitted log-likelihood should closely match the clo
 
 The linear IPPP allows first-order spatial variation in intensity:
 
-$ \lambda(s) = \exp(\beta_0 + \beta_1 x^* + \beta_2 y^*) $
+$$
+\lambda(s) = \exp(\beta_0 + \beta_1 x^* + \beta_2 y^*)
+$$
 
 This is a log-linear inhomogeneous Poisson point process.
 
 It is initialized at the HPPP solution by setting:
 
-$
+$$
 \beta_1 = 0,
 \quad
 \beta_2 = 0,
 \quad
 \beta_0 = \log(\hat{\lambda}_0)
-$
+$$
 
 Training then estimates whether a linear spatial trend improves fit over the homogeneous baseline.
 
@@ -132,13 +142,13 @@ The PyTorch models are optimized with Adam using the negative Berman-Turner log-
 
 For numerical stability, the linear predictor is clamped before exponentiation:
 
-$
+$$
 \eta = \beta_0 + \beta_1 x^* + \beta_2 y^*
-$
+$$
 
-$
+$$
 \lambda(s) = \exp(\text{clamp}(\eta))
-$
+$$
 
 This prevents extreme intensity values during optimization.
 
@@ -152,35 +162,29 @@ Higher log-likelihood indicates better fit.
 
 ### AIC
 
-$
+$$
 AIC = 2k - 2\log L
-$
+$$
 
 where $ k $ is the number of fitted parameters.
 
 ### BIC
 
-$
+$$
 BIC = k \log(n) - 2\log L
-$
+$$
 
-where $ n $ is the number of observed points.
+where $n$ is the number of observed points.
 
 ### Likelihood Ratio Test
 
 The linear IPPP is compared against the HPPP using:
 
-$
+$$
 LR = 2(\log L_{\text{linear}} - \log L_{\text{HPPP}})
-$
+$$
 
-Because the linear model adds two parameters, the test uses:
-
-$
-df = 2
-$
-
-The p-value is computed from a chi-square distribution.
+Because the linear model adds two parameters, the test uses $df = 2$. The p-value is computed from a chi-square distribution.
 
 ## Current Interpretation
 
@@ -203,8 +207,6 @@ The current implementation does not yet model:
 
 ## Results
 
-## Results
-
 The homogeneous Poisson point process (HPPP), constant neural IPPP, and linear IPPP were fit and compared using the Berman-Turner approximate log-likelihood.
 
 | Model | k | BT Log-Likelihood | AIC | BIC |
@@ -217,9 +219,9 @@ The constant neural model closely matches the closed-form HPPP likelihood. This 
 
 The linear IPPP improves the Berman-Turner log-likelihood relative to the HPPP:
 
-$
+$$
 \Delta \log L = -3035.2646 - (-3052.4124) = 17.1478
-$
+$$
 
 Both AIC and BIC are lower for the linear IPPP, indicating that the improvement in likelihood is large enough to justify the two additional spatial trend parameters.
 
@@ -227,9 +229,9 @@ Both AIC and BIC are lower for the linear IPPP, indicating that the improvement 
 
 The linear IPPP was compared against the HPPP using a likelihood ratio test:
 
-$
+$$
 LR = 2(\log L_{\text{linear}} - \log L_{\text{HPPP}})
-$
+$$
 
 | Comparison | df | LR Statistic | p-value |
 |---|---:|---:|---:|
@@ -249,9 +251,9 @@ The fitted linear IPPP coefficients were:
 
 Using standardized coordinates, the fitted intensity model is approximately:
 
-$
+$$
 \lambda(s) = \exp(-4.1976 - 0.0205x^* + 0.2100y^*)
-$
+$$
 
 The x-direction effect is small and slightly negative. The y-direction effect is larger and positive, indicating that fitted intensity increases primarily along the positive standardized y-axis.
 
