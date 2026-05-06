@@ -140,7 +140,7 @@ Training then estimates whether a linear spatial trend improves fit over the hom
 
 The PyTorch models are optimized with Adam using the negative Berman-Turner log-likelihood.
 
-For numerical stability, the linear predictor is clamped before exponentiation:
+For numerical stability, the linear predictor is clamped inside the model's forward pass before exponentiation. This clamp is active during both training and prediction.
 
 $$
 \eta = \beta_0 + \beta_1 x^* + \beta_2 y^*
@@ -156,35 +156,10 @@ This prevents extreme intensity values during optimization.
 
 The fitted models are compared using:
 
-### Log-likelihood
-
-Higher log-likelihood indicates better fit.
-
-### AIC
-
-$$
-AIC = 2k - 2\log L
-$$
-
-where $k$ is the number of fitted parameters.
-
-### BIC
-
-$$
-BIC = k \log(n) - 2\log L
-$$
-
-where $n$ is the number of observed points.
-
-### Likelihood Ratio Test
-
-The linear IPPP is compared against the HPPP using:
-
-$$
-LR = 2(\log L_{\text{linear}} - \log L_{\text{HPPP}})
-$$
-
-Because the linear model adds two parameters, the test uses $df = 2$. The p-value is computed from a chi-square distribution.
+1. **Log-likelihood**: Higher log-likelihood indicates better fit.
+2. **AIC**: $AIC = 2k - 2\log L$, where $k$ is the number of fitted parameters.
+3. **BIC**: $BIC = k \log(n) - 2\log L$, where $n$ is the number of observed points.
+4. **Likelihood Ratio Test**: The linear IPPP is compared against the HPPP using: $LR = 2(\log L_{\text{linear}} - \log L_{\text{HPPP}})$. Because the linear model adds two parameters, the test uses $df = 2$. The p-value is computed from a chi-square distribution.
 
 ## Current Interpretation
 
