@@ -85,9 +85,25 @@ def make_berman_turner_grid(n_per_dim=100):
 quad_coords, quad_counts, quad_weights = make_berman_turner_grid(n_per_dim=100)
 
 # ---------------------------------------------------
+# Mark preprocessing
+# ---------------------------------------------------
+# Use log(DBH) as the mark response for numerical stability.
+marks_np = df["marks"].values.astype(np.float32)
+log_marks_np = np.log(marks_np)
+
+log_marks_mean = log_marks_np.mean()
+log_marks_std = log_marks_np.std()
+
+log_marks_norm = (log_marks_np - log_marks_mean) / log_marks_std
+log_marks = torch.tensor(log_marks_norm[:, None], dtype=torch.float32)
+
+coords_obs = torch.tensor((coords_np - mean) / std, dtype=torch.float32)
+
+# ---------------------------------------------------
 # Models
 # ---------------------------------------------------
 
+# Constant IPPP model
 class ConstantIPPP(nn.Module):
     """
     Constant-intensity IPPP.
@@ -109,7 +125,7 @@ class ConstantIPPP(nn.Module):
         lambda0 = torch.exp(self.log_lambda)
         return lambda0.expand(x.shape[0], 1)
 
-
+# Linear IPPP model
 class LinearIPPP(nn.Module):
     """
     Log-linear inhomogeneous Poisson point process.
@@ -133,6 +149,27 @@ class LinearIPPP(nn.Module):
         eta = self.linear(x)
         eta = torch.clamp(eta, min=-20, max=20)
         return torch.exp(eta)
+    
+# Conditional mark model
+class LinearGaussianMarkModel(nn.Module):
+    """
+    Linear Gaussian mark model for log(DBH).
+
+    The conditional mean is:
+
+        mu(s) = alpha0 + alpha1 x* + alpha2 y*
+
+    and the conditional variance is estimated through log_sigma.
+    """
+    def __init__(self, input_dim):
+        super().__init__()
+        self.linear = nn.Linear(input_dim, 1)
+        self.log_sigma = nn.Parameter(torch.tensor(0.0))
+
+    def forward(self, x):
+        mu = self.linear(x)
+        sigma = torch.exp(self.log_sigma)
+        return mu, sigma
 
 # ---------------------------------------------------
 # Berman-Turner likelihood
@@ -159,15 +196,79 @@ def bt_nll(model):
         - quad_weights * lambda_vals
     ).sum()
 
+# Mark log-likelihood for the conditional Gaussian mark model
+def mark_loglik(model, x, y):
+    mu, sigma = model(x)
+
+    return (
+        -torch.log(sigma + 1e-8)
+        -0.5 * ((y - mu) / (sigma + 1e-8)) ** 2
+        -0.5 * np.log(2 * np.pi)
+    ).sum().item()
+
+# Mark negative log-likelihood for optimization, for the conditional Gaussian mark model
+def mark_nll(model, x, y):
+    mu, sigma = model(x)
+
+    return -(
+        -torch.log(sigma + 1e-8)
+        -0.5 * ((y - mu) / (sigma + 1e-8)) ** 2
+        -0.5 * np.log(2 * np.pi)
+    ).sum()
+
+# General Berman-Turner likelihood for arbitrary grid
+def bt_loglik_grid(model, q_coords, q_counts, q_weights):
+    lambda_vals = model(q_coords)
+
+    return (
+        q_counts * torch.log(lambda_vals + 1e-8)
+        - q_weights * lambda_vals
+    ).sum().item()
+
+
+def bt_nll_grid(model, q_coords, q_counts, q_weights):
+    lambda_vals = model(q_coords)
+
+    return -(
+        q_counts * torch.log(lambda_vals + 1e-8)
+        - q_weights * lambda_vals
+    ).sum()
+
 # ---------------------------------------------------
-# Fit helper
+# Fit helpers
 # ---------------------------------------------------
+
+# Fit the spatial IPPP model using the Berman-Turner negative log-likelihood.
 def fit(model, epochs=2000, lr=1e-3):
     opt = optim.Adam(model.parameters(), lr=lr)
 
     for _ in range(epochs):
         opt.zero_grad()
         loss = bt_nll(model)
+        loss.backward()
+        opt.step()
+
+    return model
+
+# Fit the conditional mark model using the mark negative log-likelihood.
+def fit_mark_model(model, x, y, epochs=2000, lr=1e-3):
+    opt = optim.Adam(model.parameters(), lr=lr)
+
+    for _ in range(epochs):
+        opt.zero_grad()
+        loss = mark_nll(model, x, y)
+        loss.backward()
+        opt.step()
+
+    return model
+
+# For fitting on an arbitrary grid (e.g. for spatial residual diagnostics)
+def fit_grid(model, q_coords, q_counts, q_weights, epochs=2000, lr=1e-3):
+    opt = optim.Adam(model.parameters(), lr=lr)
+
+    for _ in range(epochs):
+        opt.zero_grad()
+        loss = bt_nll_grid(model, q_coords, q_counts, q_weights)
         loss.backward()
         opt.step()
 
@@ -213,6 +314,22 @@ lin_model = fit(
     lr=1e-3
 )
 loglik_lin = bt_loglik(lin_model)
+
+# Model 4: Conditional mark model
+# This models the DBH mark conditional on observed tree location:
+#
+#   log(mark_i) | s_i ~ Normal(mu(s_i), sigma^2)
+#
+# This is not changing the spatial IPPP intensity λ(s).
+# It adds a conditional mark distribution p(m | s).
+mark_model = fit_mark_model(
+    LinearGaussianMarkModel(input_dim=2),
+    coords_obs,
+    log_marks,
+    epochs=3000,
+    lr=1e-3
+)
+mark_ll = mark_loglik(mark_model, coords_obs, log_marks)
 
 # ---------------------------------------------------
 # Model comparison
@@ -273,7 +390,104 @@ print(f"Linear bias: {lin_model.linear.bias.item()}")
 # Show fitted model
 print(f"Fitted model is approximately: λ(s) = exp({lin_model.linear.bias.item():.4f} + {lin_model.linear.weight.detach().numpy()[0,0]:.4f}*x + {lin_model.linear.weight.detach().numpy()[0,1]:.4f}*y)")
 
+print("\nConditional Mark Model:")
+print(f"Mark log-likelihood: {mark_ll:.4f}")
+print(f"Mark coefficients: {mark_model.linear.weight.detach().numpy()}")
+print(f"Mark intercept: {mark_model.linear.bias.item():.4f}")
+print(f"Mark sigma: {torch.exp(mark_model.log_sigma).item():.4f}")
 
+joint_loglik_linear_marked = loglik_lin + mark_ll
+print(f"Joint spatial + mark log-likelihood: {joint_loglik_linear_marked:.4f}")
+
+# ---------------------------------------------------
+# Spatial residual diagnostics
+# ---------------------------------------------------
+def berman_turner_residuals(model):
+    with torch.no_grad():
+        lambda_vals = model(quad_coords)
+        expected_counts = quad_weights * lambda_vals
+
+        raw_resid = quad_counts - expected_counts
+        pearson_resid = raw_resid / torch.sqrt(expected_counts + 1e-8)
+
+    return (
+        raw_resid.numpy().ravel(),
+        pearson_resid.numpy().ravel(),
+        expected_counts.numpy().ravel(),
+        quad_counts.numpy().ravel()
+    )
+
+
+raw_resid, pearson_resid, expected_counts, observed_counts = berman_turner_residuals(lin_model)
+
+print("\nSpatial Residual Diagnostics:")
+print(f"Mean raw residual: {raw_resid.mean():.6f}")
+print(f"Mean Pearson residual: {pearson_resid.mean():.6f}")
+print(f"Pearson residual SD: {pearson_resid.std():.6f}")
+print(f"Observed total count: {observed_counts.sum():.0f}")
+print(f"Expected total count: {expected_counts.sum():.4f}")
+
+# ---------------------------------------------------
+# Sensitivity to Berman-Turner grid resolution
+# ---------------------------------------------------
+def run_grid_sensitivity(grid_sizes=(50, 75, 100, 150, 200)):
+    rows = []
+
+    for g in grid_sizes:
+        q_coords, q_counts, q_weights = make_berman_turner_grid(n_per_dim=g)
+
+        # HPPP is closed-form and does not depend on grid resolution
+        ll_hppp = loglik_hppp
+
+        # Constant NN
+        const_g = fit_grid(
+            ConstantIPPP(lambda_hat),
+            q_coords,
+            q_counts,
+            q_weights,
+            epochs=1000,
+            lr=1e-3
+        )
+        ll_const = bt_loglik_grid(const_g, q_coords, q_counts, q_weights)
+
+        # Linear IPPP
+        lin_g = fit_grid(
+            LinearIPPP(input_dim=2, lambda_init=lambda_hat),
+            q_coords,
+            q_counts,
+            q_weights,
+            epochs=3000,
+            lr=1e-3
+        )
+        ll_lin = bt_loglik_grid(lin_g, q_coords, q_counts, q_weights)
+
+        lr = lr_stat(ll_lin, ll_hppp)
+        p_value = chi2.sf(lr, df=2)
+
+        rows.append({
+            "grid_n_per_dim": g,
+            "n_cells": g * g,
+            "HPPP_BT_LogLik": ll_hppp,
+            "Constant_BT_LogLik": ll_const,
+            "Linear_BT_LogLik": ll_lin,
+            "Linear_AIC": aic(ll_lin, 3),
+            "Linear_BIC": bic(ll_lin, 3, n),
+            "LR_Linear_vs_HPPP": lr,
+            "LR_p_value": p_value,
+            "beta_x": lin_g.linear.weight.detach().numpy()[0, 0],
+            "beta_y": lin_g.linear.weight.detach().numpy()[0, 1],
+            "beta_0": lin_g.linear.bias.item()
+        })
+
+    return pd.DataFrame(rows)
+
+
+grid_sensitivity_df = run_grid_sensitivity(
+    grid_sizes=(50, 75, 100, 150, 200)
+)
+
+print("\nBerman-Turner Grid Sensitivity:")
+print(grid_sensitivity_df)
 
 # Plots
 
@@ -310,7 +524,8 @@ fig.savefig(
     bbox_inches="tight"
 )
 
-plt.show()
+# plt.show()
+# Save plot
 plt.close(fig)
 
 # Plot fitted intensity surface for Linear IPPP compared to HPPP baseline
@@ -407,6 +622,95 @@ cbar = fig.colorbar(
 
 cbar.set_label("Estimated intensity λ(s)")
 
-plt.show()
-# Save plot
-fig.savefig("images/longleaf_intensity_comparison.png", dpi=300)
+fig.savefig(
+    "images/longleaf_intensity_comparison.png",
+    dpi=300,
+    bbox_inches="tight"
+)
+# plt.show()
+plt.close(fig)
+
+# Plot Pearson residual surface
+n_per_dim = 100
+resid_grid = pearson_resid.reshape(n_per_dim, n_per_dim)
+
+x_edges = np.linspace(x_min, x_max, n_per_dim + 1)
+y_edges = np.linspace(y_min, y_max, n_per_dim + 1)
+
+x_centers = 0.5 * (x_edges[:-1] + x_edges[1:])
+y_centers = 0.5 * (y_edges[:-1] + y_edges[1:])
+
+gx_resid, gy_resid = np.meshgrid(x_centers, y_centers, indexing="ij")
+
+vmax = np.nanmax(np.abs(resid_grid))
+vmin = -vmax
+
+fig, ax = plt.subplots(figsize=(8, 6), constrained_layout=True)
+
+im = ax.contourf(
+    gx_resid,
+    gy_resid,
+    resid_grid,
+    levels=np.linspace(vmin, vmax, 31),
+    vmin=vmin,
+    vmax=vmax
+)
+
+ax.scatter(
+    coords_np[:, 0],
+    coords_np[:, 1],
+    s=6,
+    color="black",
+    alpha=0.25
+)
+
+ax.set_title("Pearson Residual Surface: Linear IPPP")
+ax.set_xlabel("x")
+ax.set_ylabel("y")
+ax.set_xlim(x_min, x_max)
+ax.set_ylim(y_min, y_max)
+ax.grid(alpha=0.2)
+
+cbar = fig.colorbar(im, ax=ax)
+cbar.set_label("Pearson residual")
+
+fig.savefig(
+    "images/linear_ippp_pearson_residuals.png",
+    dpi=300,
+    bbox_inches="tight"
+)
+
+# plt.show()
+plt.close(fig)
+
+# Plot grid sensitivity
+fig, ax = plt.subplots(figsize=(8, 6))
+
+ax.plot(
+    grid_sensitivity_df["grid_n_per_dim"],
+    grid_sensitivity_df["Linear_BT_LogLik"],
+    marker="o",
+    label="Linear IPPP"
+)
+
+ax.axhline(
+    loglik_hppp,
+    linestyle="--",
+    label="HPPP"
+)
+
+ax.set_title("Sensitivity to Berman-Turner Grid Resolution")
+ax.set_xlabel("Grid cells per dimension")
+ax.set_ylabel("BT log-likelihood")
+ax.grid(alpha=0.3)
+ax.legend()
+
+fig.tight_layout()
+fig.savefig(
+    "images/grid_sensitivity_loglik.png",
+    dpi=300,
+    bbox_inches="tight"
+)
+
+# plt.show()
+plt.close(fig)

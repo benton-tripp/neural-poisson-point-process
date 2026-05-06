@@ -6,9 +6,12 @@ Neural Inhomogeneous Poisson Point Process implementation in PyTorch.
 
 This code models the spatial distribution of Longleaf pine trees using Poisson point process models.
 
-The dataset contains tree locations and diameter-at-breast-height marks for Longleaf pine trees in a rectangular observation window in southern Georgia. In the current implementation, only the spatial coordinates are modeled. The DBH marks are retained in the dataset but are not yet used.
+The dataset contains tree locations and diameter-at-breast-height marks for Longleaf pine trees in a rectangular observation window in southern Georgia. The current implementation models both:
 
-The goal is to compare a homogeneous spatial point process against a simple inhomogeneous model that allows tree intensity to vary over space.
+1. The spatial point pattern of tree locations
+2. The DBH marks conditionally on observed tree locations
+
+The main goal is to compare a homogeneous spatial point process against an inhomogeneous model that allows tree intensity to vary over space. The code also includes a conditional mark model, spatial residual diagnostics, and sensitivity analysis for the Berman-Turner quadrature grid.
 
 ## Point Process Framework
 
@@ -33,15 +36,15 @@ The second term penalizes total expected intensity over the observation window.
 
 ## Assumptions
 
-The implementation assumes:
+The spatial point process implementation assumes:
 
 - Nonnegative intensity: $\lambda(s) \geq 0$
 - Independent increments across disjoint spatial regions
 - A finite expected number of points over the observation window
 - No temporal component
-- No interaction between points beyond first-order intensity variation
+- No explicit interaction between points beyond first-order intensity variation
 
-The current model is therefore a first-order intensity model, not a clustering, inhibition, or interaction model.
+The current spatial model is therefore a first-order intensity model, not a clustering, inhibition, or interaction model.
 
 ## Berman-Turner Quadrature Approximation
 
@@ -100,7 +103,7 @@ $$
 \hat{\lambda}_0 = \frac{n}{|W|}
 $$
 
-This model serves as the primary baseline.
+This model serves as the primary spatial baseline.
 
 ### 2. Constant Neural IPPP
 
@@ -136,11 +139,47 @@ $$
 
 Training then estimates whether a linear spatial trend improves fit over the homogeneous baseline.
 
+### 4. Conditional Mark Model
+
+The conditional mark model describes DBH as a function of location, conditional on the observed tree locations.
+
+The response is standardized log-DBH:
+
+$$
+z_i = \frac{\log(m_i) - \overline{\log(m)}}{s_{\log(m)}}
+$$
+
+where $m_i$ is the DBH mark for tree $i$.
+
+The model assumes:
+
+$$
+z_i \mid s_i \sim \text{Normal}(\mu(s_i), \sigma^2)
+$$
+
+with linear conditional mean:
+
+$$
+\mu(s_i) = \alpha_0 + \alpha_1 x_i^* + \alpha_2 y_i^*
+$$
+
+This gives a conditional marked point process decomposition:
+
+$$
+\log L_{\text{joint}}
+=
+\log L_{\text{spatial}}
++
+\log L_{\text{marks} \mid \text{locations}}
+$$
+
+The mark model does not change the fitted spatial intensity. It models DBH variation among trees after conditioning on the observed locations.
+
 ## Optimization
 
-The PyTorch models are optimized with Adam using the negative Berman-Turner log-likelihood.
+The PyTorch models are optimized with Adam using the negative Berman-Turner log-likelihood for the spatial models and Gaussian negative log-likelihood for the conditional mark model.
 
-For numerical stability, the linear predictor is clamped inside the model's forward pass before exponentiation. This clamp is active during both training and prediction.
+For numerical stability, the linear predictor in the Linear IPPP is clamped inside the model's forward pass before exponentiation. This clamp is active during both training and prediction.
 
 $$
 \eta = \beta_0 + \beta_1 x^* + \beta_2 y^*
@@ -154,35 +193,18 @@ This prevents extreme intensity values during optimization.
 
 ## Model Comparison
 
-The fitted models are compared using:
+The fitted spatial models are compared using:
 
-1. **Log-likelihood**: Higher log-likelihood indicates better fit.
-2. **AIC**: $AIC = 2k - 2\log L$, where $k$ is the number of fitted parameters.
-3. **BIC**: $BIC = k \log(n) - 2\log L$, where $n$ is the number of observed points.
-4. **Likelihood Ratio Test**: The linear IPPP is compared against the HPPP using: $LR = 2(\log L_{\text{linear}} - \log L_{\text{HPPP}})$. Because the linear model adds two parameters, the test uses $df = 2$. The p-value is computed from a chi-square distribution.
+1. Log-likelihood: higher log-likelihood indicates better fit.
+2. AIC: $AIC = 2k - 2\log L$, where $k$ is the number of fitted parameters.
+3. BIC: $BIC = k \log(n) - 2\log L$, where $n$ is the number of observed points.
+4. Likelihood ratio test: the linear IPPP is compared against the HPPP using $LR = 2(\log L_{\text{linear}} - \log L_{\text{HPPP}})$.
 
-## Current Interpretation
-
-The constant neural model recovers the closed-form HPPP likelihood, validating the Berman-Turner implementation.
-
-The linear IPPP improves the log-likelihood and reduces both AIC and BIC, suggesting evidence of first-order spatial inhomogeneity.
-
-The fitted coefficients indicate that intensity varies primarily along the standardized y-axis, with a much weaker x-axis effect.
-
-## Current Limitations
-
-The current implementation does not yet model:
-
-- DBH marks
-- Nonlinear intensity surfaces
-- Spatial interaction between trees
-- Clustering or inhibition
-- Covariates such as soil, elevation, or environmental raster data
-- Residual diagnostics such as quadrat residuals or inhomogeneous K-functions
+Because the linear model adds two parameters relative to the HPPP, the likelihood ratio test uses $df = 2$.
 
 ## Results
 
-The homogeneous Poisson point process (HPPP), constant neural IPPP, and linear IPPP were fit and compared using the Berman-Turner approximate log-likelihood.
+The homogeneous Poisson point process, constant neural IPPP, and linear IPPP were fit and compared using the Berman-Turner approximate log-likelihood.
 
 | Model | k | BT Log-Likelihood | AIC | BIC |
 |---|---:|---:|---:|---:|
@@ -232,7 +254,72 @@ $$
 
 The x-direction effect is small and slightly negative. The y-direction effect is larger and positive, indicating that fitted intensity increases primarily along the positive standardized y-axis.
 
-### Visual Diagnostics
+## Conditional Mark Results
+
+The conditional mark model was fit to standardized log-DBH values at the observed tree locations.
+
+| Quantity | Value |
+|---|---:|
+| Mark log-likelihood | -774.5249 |
+| Mark intercept | 0.0000 |
+| x coefficient | -0.3670 |
+| y coefficient | -0.1552 |
+| Mark sigma | 0.9115 |
+| Joint spatial + mark log-likelihood | -3809.7896 |
+
+The fitted conditional mean model for standardized log-DBH is approximately:
+
+$$
+\mu(s) = 0.0000 - 0.3670x^* - 0.1552y^*
+$$
+
+The mark model suggests that, conditional on tree location, standardized log-DBH decreases with both standardized x and standardized y. The x-direction effect is larger in magnitude than the y-direction effect.
+
+This result should be interpreted separately from the spatial intensity model. The spatial model describes where trees occur, while the conditional mark model describes how DBH varies among observed trees.
+
+## Spatial Residual Diagnostics
+
+Pearson residuals were computed on the Berman-Turner grid using:
+
+$$
+r_j = \frac{Y_j - \hat{\mu}_j}{\sqrt{\hat{\mu}_j}}
+$$
+
+where:
+
+$$
+\hat{\mu}_j = w_j \hat{\lambda}(u_j)
+$$
+
+Summary diagnostics for the Linear IPPP were:
+
+| Diagnostic | Value |
+|---|---:|
+| Mean raw residual | 0.000000 |
+| Mean Pearson residual | -0.000422 |
+| Pearson residual SD | 1.080050 |
+| Observed total count | 584 |
+| Expected total count | 583.9962 |
+
+The fitted model preserves the total expected count well. The Pearson residual standard deviation is close to 1, which is broadly consistent with a reasonable Poisson residual scale.
+
+The residual surface should be inspected visually for remaining spatial structure. Spatially patterned residuals would suggest missing nonlinear trend, interaction, clustering, inhibition, or unmodeled spatial covariates.
+
+## Berman-Turner Grid Sensitivity
+
+The Linear IPPP was refit using multiple Berman-Turner grid resolutions.
+
+| Grid cells per dimension | Number of cells | Linear BT Log-Likelihood | Linear AIC | Linear BIC | LR Statistic | p-value | beta_x | beta_y | beta_0 |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 50 | 2500 | -3035.1667 | 6076.3335 | 6089.4432 | 34.4912 | 3.238387e-08 | -0.0211 | 0.2106 | -4.1977 |
+| 75 | 5625 | -3035.4424 | 6076.8848 | 6089.9945 | 33.9399 | 4.266143e-08 | -0.0210 | 0.2088 | -4.1976 |
+| 100 | 10000 | -3035.2646 | 6076.5293 | 6089.6390 | 34.2954 | 3.571464e-08 | -0.0205 | 0.2100 | -4.1976 |
+| 150 | 22500 | -3035.3428 | 6076.6855 | 6089.7953 | 34.1392 | 3.861674e-08 | -0.0210 | 0.2094 | -4.1976 |
+| 200 | 40000 | -3035.2695 | 6076.5391 | 6089.6488 | 34.2856 | 3.588946e-08 | -0.0205 | 0.2099 | -4.1976 |
+
+The fitted likelihoods, likelihood ratio statistics, and coefficients are stable across grid resolutions. This suggests that the main spatial inference is not sensitive to the chosen Berman-Turner grid resolution.
+
+## Visual Diagnostics
 
 The observed point pattern is shown below.
 
@@ -242,13 +329,54 @@ The fitted intensity comparison shows the HPPP constant intensity surface agains
 
 ![A side-by-side comparison of HPPP constant intensity surface and Linear IPPP fitted intensity surface](images/longleaf_intensity_comparison.png)
 
+The Pearson residual surface is shown below.
+
+![A Pearson residual surface for the Linear IPPP](images/linear_ippp_pearson_residuals.png)
+
+The Berman-Turner grid sensitivity plot is shown below.
+
+![A grid sensitivity plot for the Linear IPPP Berman-Turner log-likelihood](images/grid_sensitivity_loglik.png)
+
+## Current Interpretation
+
+The constant neural model recovers the closed-form HPPP likelihood, validating the Berman-Turner implementation.
+
+The linear IPPP improves the log-likelihood and reduces both AIC and BIC, suggesting evidence of first-order spatial inhomogeneity.
+
+The fitted intensity varies primarily along the standardized y-axis, with a much weaker x-axis effect.
+
+The conditional mark model suggests that standardized log-DBH decreases with both standardized x and standardized y among observed trees.
+
+The Berman-Turner grid sensitivity analysis indicates that the primary spatial inference is stable across tested grid resolutions.
+
+## Current Limitations
+
+The current implementation does not yet model:
+
+- Nonlinear intensity surfaces
+- Spatial interaction between trees
+- Clustering or inhibition
+- Environmental covariates such as soil, elevation, moisture, or raster predictors
+- Joint dependence between spatial intensity and marks beyond the conditional decomposition
+- Spatial block cross-validation or held-out predictive evaluation
+- Inhomogeneous K-functions or simulation-envelope diagnostics
+
+## Train/Test and Validation
+
+The current statistical comparisons use the full dataset. This is appropriate for likelihood-based inference, AIC, BIC, likelihood ratio testing, residual diagnostics, and grid sensitivity analysis.
+
+Train/test splits become more important when fitting more flexible predictive models, such as nonlinear neural IPPPs or higher-capacity mark models.
+
+For spatial point pattern data, ordinary random train/test splits can be misleading because nearby locations may contain similar spatial information. A better next step is spatial block cross-validation, where the observation window is divided into spatial folds and models are evaluated on held-out regions.
+
 ## Planned Extensions
 
 Potential next steps include:
 
 - Adding a nonlinear neural network intensity model
 - Comparing linear and nonlinear IPPPs with AIC, BIC, and held-out likelihood
-- Modeling marks jointly or conditionally on location
-- Adding spatial residual diagnostics
-- Testing sensitivity to Berman-Turner grid resolution
+- Adding spatial block cross-validation
+- Extending the mark model to nonlinear conditional means or heteroskedastic variance
+- Adding simulation-based diagnostics
+- Adding inhomogeneous K-function diagnostics
 - Incorporating spatial covariates
