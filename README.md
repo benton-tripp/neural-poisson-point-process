@@ -22,9 +22,10 @@ Commands below assume they are run from the project root.
 Rscript scripts/data/load-spatstat-data.R
 python scripts/data/gbif-anolis-carolinensis-wake-county.py
 python scripts/data/ebird-historic-species.py --region US-NC --start 2020-01-01 --end 2023-12-31 --species-code woothr --output data/wood_thrush_nc_2020_2023.csv
-python scripts/data/opentopography-dem-bbox.py --south 33.85116926668266 --north 36.5881334409244 --west -84.32178200052 --east -75.45981513195132 --output data/nc_usgs30m.tif
-python scripts/data/usfs-tcc-canopy-bbox.py --south 33.85116926668266 --north 36.5881334409244 --west -84.32178200052 --east -75.45981513195132 --start-year 2020 --end-year 2023 --output data/nc_tcc_2020_2023.tif
-python scripts/data/usgs-hydrography.py --south 33.85116926668266 --north 36.5881334409244 --west -84.32178200052 --east -75.45981513195132 --resolution 100 --output data/nc_hydro_distance_100m.tif
+python scripts/data/usgs-nc-state-boundary.py
+python scripts/data/opentopography-dem-bbox.py --south 33.85116926668266 --north 36.5881334409244 --west -84.32178200052 --east -75.45981513195132 --output data/nc_usgs30m.tif --boundary data/boundaries/nc_state_boundary.gpkg
+python scripts/data/usfs-tcc-canopy-bbox.py --south 33.85116926668266 --north 36.5881334409244 --west -84.32178200052 --east -75.45981513195132 --start-year 2020 --end-year 2023 --output data/nc_tcc_2020_2023.tif --boundary data/boundaries/nc_state_boundary.gpkg
+python scripts/data/usgs-hydrography.py --south 33.85116926668266 --north 36.5881334409244 --west -84.32178200052 --east -75.45981513195132 --resolution 100 --output data/nc_hydro_distance_100m.tif --boundary data/boundaries/nc_state_boundary.gpkg
 python exp/nippp.py
 ```
 

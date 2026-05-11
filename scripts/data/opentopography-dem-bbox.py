@@ -10,6 +10,7 @@ Examples:
     python scripts/data/opentopography-dem-bbox.py --south 40.234 --north 40.288 --west -105.673 --east -105.583
     python scripts/data/opentopography-dem-bbox.py --south 35.51948 --north 36.07629 --west -78.99507 --east -78.25368 --output data/wake_county_usgs30m.tif
     python scripts/data/opentopography-dem-bbox.py --south 33.85116926668266 --north 36.5881334409244 --west -84.32178200052 --east -75.45981513195132 --output data/nc_usgs30m.tif
+    python scripts/data/opentopography-dem-bbox.py --south 33.85116926668266 --north 36.5881334409244 --west -84.32178200052 --east -75.45981513195132 --output data/nc_usgs30m.tif --boundary data/boundaries/nc_state_boundary.gpkg
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from typing import Any
 import requests
 from dotenv import load_dotenv
 from pyproj import Geod
+from raster_masking import mask_raster_with_boundary
 
 
 OPEN_TOPOGRAPHY_DEM_URL = "https://portal.opentopography.org/API/usgsdem"
@@ -89,6 +91,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         help="Output file path. Defaults to a generated file under data/.",
+    )
+    parser.add_argument(
+        "--boundary",
+        help="Optional vector boundary used to mask the final GeoTIFF output.",
     )
     parser.add_argument(
         "--timeout",
@@ -365,7 +371,11 @@ def download_dem(args: argparse.Namespace) -> Path:
             return output_path
 
         print(f"Downloading 1 tile covering approximately {area_km2:,.0f} km2")
-        return download_single_dem(query, output_path, args.timeout)
+        download_single_dem(query, output_path, args.timeout)
+        if args.boundary:
+            print(f"Masking {output_path} to {args.boundary}")
+            mask_raster_with_boundary(output_path, args.boundary)
+        return output_path
 
     if args.output_format != "GTiff":
         raise ValueError("Automatic mosaicking is only supported with --output-format GTiff.")
@@ -412,6 +422,10 @@ def download_dem(args: argparse.Namespace) -> Path:
 
     if not args.keep_tiles:
         cleanup_tiles(tile_paths, tile_dir)
+
+    if args.boundary:
+        print(f"Masking {output_path} to {args.boundary}")
+        mask_raster_with_boundary(output_path, args.boundary)
 
     return output_path
 

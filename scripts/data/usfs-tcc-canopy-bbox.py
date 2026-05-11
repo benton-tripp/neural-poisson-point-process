@@ -9,6 +9,7 @@ Examples, run from the project root:
 
     python scripts/data/usfs-tcc-canopy-bbox.py --south 35.51948 --north 36.07629 --west -78.99507 --east -78.25368 --years 2023 --output data/wake_tcc_2023.tif
     python scripts/data/usfs-tcc-canopy-bbox.py --south 33.85116926668266 --north 36.5881334409244 --west -84.32178200052 --east -75.45981513195132 --start-year 2020 --end-year 2023 --output data/nc_tcc_2020_2023.tif
+    python scripts/data/usfs-tcc-canopy-bbox.py --south 33.85116926668266 --north 36.5881334409244 --west -84.32178200052 --east -75.45981513195132 --years 2023 --output data/nc_tcc_2023.tif --boundary data/boundaries/nc_state_boundary.gpkg
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from typing import Any
 
 import requests
 from pyproj import Transformer
+from raster_masking import mask_raster_with_boundary
 
 
 TCC_IMAGE_SERVER_URL = (
@@ -92,6 +94,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         help="Output GeoTIFF path. Defaults to a generated file under data/.",
+    )
+    parser.add_argument(
+        "--boundary",
+        help="Optional vector boundary used to mask the final GeoTIFF output.",
     )
     parser.add_argument(
         "--tile-dir",
@@ -538,6 +544,9 @@ def download_canopy(args: argparse.Namespace) -> Path:
             retries=args.retries,
             keep_tiles=args.keep_tiles,
         )
+        if args.boundary:
+            print(f"Masking {output_path} to {args.boundary}")
+            mask_raster_with_boundary(output_path, args.boundary)
         return output_path
 
     year_paths = []
@@ -558,6 +567,10 @@ def download_canopy(args: argparse.Namespace) -> Path:
 
     print(f"Stacking {len(year_paths)} years into {output_path}")
     stack_year_files(year_paths, years, output_path)
+
+    if args.boundary:
+        print(f"Masking {output_path} to {args.boundary}")
+        mask_raster_with_boundary(output_path, args.boundary)
 
     if not args.keep_year_files:
         cleanup_year_files(year_paths, year_dir)

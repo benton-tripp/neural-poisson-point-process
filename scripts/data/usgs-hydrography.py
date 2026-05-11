@@ -13,6 +13,7 @@ Examples, run from the project root:
     python scripts/data/usgs-hydrography.py --south 35.51948 --north 36.07629 --west -78.99507 --east -78.25368 --resolution 500 --output data/wake_hydro_distance_500m.tif
 
     python scripts/data/usgs-hydrography.py --south 33.85116926668266 --north 36.5881334409244 --west -84.32178200052 --east -75.45981513195132 --resolution 100 --output data/nc_hydro_distance_100m.tif
+    python scripts/data/usgs-hydrography.py --south 33.85116926668266 --north 36.5881334409244 --west -84.32178200052 --east -75.45981513195132 --output data/nc_hydro_distance_1km.tif --boundary data/boundaries/nc_state_boundary.gpkg
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from rasterio.features import rasterize
 from rasterio.transform import from_origin
 from scipy.ndimage import distance_transform_edt
 from shapely.geometry import box
+from raster_masking import mask_raster_with_boundary
 
 
 DEFAULT_URL = (
@@ -75,6 +77,10 @@ def parse_args() -> argparse.Namespace:
         "--output",
         default=str(DEFAULT_OUTPUT),
         help=f"Output GeoTIFF path. Defaults to {DEFAULT_OUTPUT}.",
+    )
+    parser.add_argument(
+        "--boundary",
+        help="Optional vector boundary used to mask the final GeoTIFF output.",
     )
     parser.add_argument(
         "--download-dir",
@@ -374,6 +380,9 @@ def build_hydro_distance_raster(args: argparse.Namespace) -> Path:
     output_path = Path(args.output)
     if output_path.exists() and not args.overwrite:
         print(f"Using existing output: {output_path}")
+        if args.boundary:
+            print(f"Masking existing {output_path} to {args.boundary}")
+            mask_raster_with_boundary(output_path, args.boundary)
         return output_path
 
     archive_path = download_archive(
@@ -429,6 +438,9 @@ def build_hydro_distance_raster(args: argparse.Namespace) -> Path:
     )
 
     write_distance_stack(output_path, water_distance, coast_distance, grid, args.crs)
+    if args.boundary:
+        print(f"Masking {output_path} to {args.boundary}")
+        mask_raster_with_boundary(output_path, args.boundary)
     return output_path
 
 
