@@ -9,7 +9,7 @@ analysis, and generated outputs:
 
 - `scripts/data/`: data acquisition scripts for eBird, GBIF, OpenTopography,
   and the R `spatstat.data` export.
-- `experiments/`: exploratory analysis scripts, including the initial neural
+- `exp/`: exploratory analysis scripts, including the initial neural
   IPPP analysis.
 - `data/`: downloaded or exported tabular/raster data.
 - `images/`: generated figures used by the analysis and this README.
@@ -25,7 +25,7 @@ python scripts/data/ebird-historic-species.py --region US-NC --start 2020-01-01 
 python scripts/data/opentopography-dem-bbox.py --south 33.85116926668266 --north 36.5881334409244 --west -84.32178200052 --east -75.45981513195132 --output data/nc_usgs30m.tif
 python scripts/data/usfs-tcc-canopy-bbox.py --south 33.85116926668266 --north 36.5881334409244 --west -84.32178200052 --east -75.45981513195132 --start-year 2020 --end-year 2023 --output data/nc_tcc_2020_2023.tif
 python scripts/data/usgs-hydrography.py --south 33.85116926668266 --north 36.5881334409244 --west -84.32178200052 --east -75.45981513195132 --resolution 100 --output data/nc_hydro_distance_100m.tif
-python experiments/nippp.py
+python exp/nippp.py
 ```
 
 ## Background

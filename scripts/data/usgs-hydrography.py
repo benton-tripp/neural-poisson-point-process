@@ -12,7 +12,7 @@ Examples, run from the project root:
 
     python scripts/data/usgs-hydrography.py --south 35.51948 --north 36.07629 --west -78.99507 --east -78.25368 --resolution 500 --output data/wake_hydro_distance_500m.tif
 
-    python scripts/data/usgs-hydrography.py --south 33.85116926668266 --north 36.5881334409244 --west -84.32178200052 --east -75.45981513195132 --resolution 100--output data/nc_hydro_distance_100m.tif
+    python scripts/data/usgs-hydrography.py --south 33.85116926668266 --north 36.5881334409244 --west -84.32178200052 --east -75.45981513195132 --resolution 100 --output data/nc_hydro_distance_100m.tif
 """
 
 from __future__ import annotations
