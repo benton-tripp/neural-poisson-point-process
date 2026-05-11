@@ -7,6 +7,7 @@ for canopy, elevation, distance to waterbody, and distance to coastline.
 Run from the project root:
 
     python exp/plot_raster_previews.py
+    python exp/plot_raster_previews.py --rasters hydro coastline
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ DEFAULT_CANOPY = "data/nc_tcc_2020_2023.tif"
 DEFAULT_ELEVATION = "data/nc_usgs30m.tif"
 DEFAULT_HYDRO = "data/nc_hydro_distance_100m.tif"
 DEFAULT_OUTPUT_DIR = "images/raster_previews"
+RASTER_CHOICES = ("canopy", "elevation", "hydro", "coastline")
 
 
 def parse_args() -> argparse.Namespace:
@@ -51,6 +53,13 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=1,
         help="Band to preview from the canopy stack. Defaults to 1.",
+    )
+    parser.add_argument(
+        "--rasters",
+        nargs="+",
+        choices=RASTER_CHOICES,
+        default=list(RASTER_CHOICES),
+        help="Raster previews to create. Defaults to all.",
     )
     return parser.parse_args()
 
@@ -126,49 +135,54 @@ def plot_raster(
 def main() -> None:
     args = parse_args()
     output_dir = Path(args.output_dir)
+    selected = set(args.rasters)
 
-    canopy, canopy_description = read_preview(Path(args.canopy), args.canopy_band, args.max_dim)
-    canopy = mask_canopy_codes(canopy)
-    canopy_title = "Tree Canopy Cover"
-    if canopy_description:
-        canopy_title = f"{canopy_title} ({canopy_description})"
-    plot_raster(
-        canopy,
-        canopy_title,
-        output_dir / "canopy_preview.png",
-        cmap="Greens",
-        label="Percent canopy cover",
-        percentile_clip=(0, 100),
-    )
+    if "canopy" in selected:
+        canopy, canopy_description = read_preview(Path(args.canopy), args.canopy_band, args.max_dim)
+        canopy = mask_canopy_codes(canopy)
+        canopy_title = "Tree Canopy Cover"
+        if canopy_description:
+            canopy_title = f"{canopy_title} ({canopy_description})"
+        plot_raster(
+            canopy,
+            canopy_title,
+            output_dir / "canopy_preview.png",
+            cmap="Greens",
+            label="Percent canopy cover",
+            percentile_clip=(0, 100),
+        )
 
-    elevation, _ = read_preview(Path(args.elevation), 1, args.max_dim)
-    plot_raster(
-        elevation,
-        "Elevation",
-        output_dir / "elevation_preview.png",
-        cmap="terrain",
-        label="Elevation",
-    )
+    if "elevation" in selected:
+        elevation, _ = read_preview(Path(args.elevation), 1, args.max_dim)
+        plot_raster(
+            elevation,
+            "Elevation",
+            output_dir / "elevation_preview.png",
+            cmap="terrain",
+            label="Elevation",
+        )
 
-    water_distance, _ = read_preview(Path(args.hydro), 1, args.max_dim)
-    plot_raster(
-        water_distance / 1000,
-        "Distance to Nearest Waterbody",
-        output_dir / "waterbody_distance_preview.png",
-        cmap="Blues_r",
-        label="Distance (km)",
-    )
+    if "hydro" in selected:
+        water_distance, _ = read_preview(Path(args.hydro), 1, args.max_dim)
+        plot_raster(
+            water_distance / 1000,
+            "Distance to Nearest Waterbody",
+            output_dir / "waterbody_distance_preview.png",
+            cmap="Blues_r",
+            label="Distance (km)",
+        )
 
-    coastline_distance, _ = read_preview(Path(args.hydro), 2, args.max_dim)
-    plot_raster(
-        coastline_distance / 1000,
-        "Distance to Nearest Coastline",
-        output_dir / "coastline_distance_preview.png",
-        cmap="magma",
-        label="Distance (km)",
-    )
+    if "coastline" in selected:
+        coastline_distance, _ = read_preview(Path(args.hydro), 2, args.max_dim)
+        plot_raster(
+            coastline_distance / 1000,
+            "Distance to Nearest Coastline",
+            output_dir / "coastline_distance_preview.png",
+            cmap="magma",
+            label="Distance (km)",
+        )
 
-    print(f"Saved raster previews to {output_dir}")
+    print(f"Saved selected raster previews to {output_dir}")
 
 
 if __name__ == "__main__":
