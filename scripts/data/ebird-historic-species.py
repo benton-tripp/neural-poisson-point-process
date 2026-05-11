@@ -13,7 +13,8 @@ Examples:
 
     python scripts/data/ebird-historic-species.py --region US-NC-183 --start 2025-05-01 --end 2025-05-31 --species-code norcar
     python scripts/data/ebird-historic-species.py --region US-NC --start 2025-01-01 --end 2025-01-07 --species "Northern Cardinal"
-    python scripts/data/ebird-historic-species.py --region US-NC --start 2025-01-01 --end 2025-12-31 --species-code woothr --output data/wood_thrush_nc_2025.csv
+    python scripts/data/ebird-historic-species.py --region US-NC --start 2020-01-01 --end 2020-12-31 --species-code woothr --output data/wood_thrush_nc_2020.csv
+    python scripts/data/ebird-historic-species.py --region US-NC --start 2021-01-01 --end 2021-12-31 --species-code woothr --output data/wood_thrush_nc_2021.csv
 """
 
 from __future__ import annotations
