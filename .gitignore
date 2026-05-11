@@ -3,6 +3,9 @@ env/
 src/__pycache__/
 .Rhistory
 .RData
+.env
+data/*
+!data/longleaf.csv
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

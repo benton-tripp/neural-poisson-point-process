@@ -2,6 +2,30 @@
 
 Neural Inhomogeneous Poisson Point Process implementation in PyTorch.
 
+## Project Layout
+
+The repository is organized around reproducible data acquisition, exploratory
+analysis, and generated outputs:
+
+- `scripts/data/`: data acquisition scripts for eBird, GBIF, OpenTopography,
+  and the R `spatstat.data` export.
+- `experiments/`: exploratory analysis scripts, including the initial neural
+  IPPP analysis.
+- `data/`: downloaded or exported tabular/raster data.
+- `images/`: generated figures used by the analysis and this README.
+
+Commands below assume they are run from the project root.
+
+## Common Commands
+
+```powershell
+Rscript scripts/data/load-spatstat-data.R
+python scripts/data/gbif-anolis-carolinensis-wake-county.py
+python scripts/data/ebird-historic-species.py --region US-NC --start 2025-04-01 --end 2025-12-31 --species-code woothr --output data/wood_thrush_nc_2025.csv
+python scripts/data/opentopography-dem-bbox.py --south 33.85116926668266 --north 36.5881334409244 --west -84.32178200052 --east -75.45981513195132 --output data/nc_usgs30m.tif
+python experiments/nippp.py
+```
+
 ## Background
 
 This code models the spatial distribution of Longleaf pine trees using Poisson point process models.
