@@ -22,8 +22,8 @@ from rasterio.enums import Resampling
 
 
 DEFAULT_CANOPY = "data/nc_tcc_2020_2023.tif"
-DEFAULT_ELEVATION = "data/nc_usgs30m.tif"
-DEFAULT_HYDRO = "data/nc_hydro_distance_100m.tif"
+DEFAULT_ELEVATION = "data/nc_usgs30m_match_tcc.tif"
+DEFAULT_HYDRO = "data/nc_hydro_distance_match_tcc.tif"
 DEFAULT_OUTPUT_DIR = "images/raster_previews"
 RASTER_CHOICES = ("canopy", "elevation", "hydro", "coastline")
 
@@ -72,7 +72,15 @@ def preview_shape(width: int, height: int, max_dim: int) -> tuple[int, int]:
     return max(1, int(round(height * scale))), max(1, int(round(width * scale)))
 
 
-def read_preview(path: Path, band: int, max_dim: int) -> tuple[np.ndarray, str | None]:
+def preview_extent(bounds) -> tuple[float, float, float, float]:
+    return (bounds.left, bounds.right, bounds.bottom, bounds.top)
+
+
+def read_preview(
+    path: Path,
+    band: int,
+    max_dim: int,
+) -> tuple[np.ndarray, str | None, tuple[float, float, float, float]]:
     with rasterio.open(path) as src:
         out_shape = preview_shape(src.width, src.height, max_dim)
         data = src.read(
@@ -83,6 +91,7 @@ def read_preview(path: Path, band: int, max_dim: int) -> tuple[np.ndarray, str |
         )
         description = src.descriptions[band - 1] if src.descriptions else None
         nodata = src.nodata
+        extent = preview_extent(src.bounds)
 
     if np.ma.is_masked(data):
         array = data.astype("float32").filled(np.nan)
@@ -92,7 +101,7 @@ def read_preview(path: Path, band: int, max_dim: int) -> tuple[np.ndarray, str |
     if nodata is not None:
         array[array == nodata] = np.nan
 
-    return array, description
+    return array, description, extent
 
 
 def mask_canopy_codes(array: np.ndarray) -> np.ndarray:
@@ -107,6 +116,7 @@ def plot_raster(
     output_path: Path,
     cmap: str,
     label: str,
+    extent: tuple[float, float, float, float] | None = None,
     percentile_clip: tuple[float, float] | None = (2, 98),
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -122,7 +132,8 @@ def plot_raster(
             vmin = vmax = None
 
     fig, ax = plt.subplots(figsize=(9, 7))
-    image = ax.imshow(array, cmap=cmap, vmin=vmin, vmax=vmax)
+    image = ax.imshow(array, cmap=cmap, vmin=vmin, vmax=vmax, extent=extent)
+    ax.set_aspect("equal")
     ax.set_title(title)
     ax.set_axis_off()
     cbar = fig.colorbar(image, ax=ax, fraction=0.035, pad=0.02)
@@ -138,7 +149,9 @@ def main() -> None:
     selected = set(args.rasters)
 
     if "canopy" in selected:
-        canopy, canopy_description = read_preview(Path(args.canopy), args.canopy_band, args.max_dim)
+        canopy, canopy_description, canopy_extent = read_preview(
+            Path(args.canopy), args.canopy_band, args.max_dim
+        )
         canopy = mask_canopy_codes(canopy)
         canopy_title = "Tree Canopy Cover"
         if canopy_description:
@@ -149,37 +162,41 @@ def main() -> None:
             output_dir / "canopy_preview.png",
             cmap="Greens",
             label="Percent canopy cover",
+            extent=canopy_extent,
             percentile_clip=(0, 100),
         )
 
     if "elevation" in selected:
-        elevation, _ = read_preview(Path(args.elevation), 1, args.max_dim)
+        elevation, _, elevation_extent = read_preview(Path(args.elevation), 1, args.max_dim)
         plot_raster(
             elevation,
             "Elevation",
             output_dir / "elevation_preview.png",
             cmap="terrain",
             label="Elevation",
+            extent=elevation_extent,
         )
 
     if "hydro" in selected:
-        water_distance, _ = read_preview(Path(args.hydro), 1, args.max_dim)
+        water_distance, _, water_extent = read_preview(Path(args.hydro), 1, args.max_dim)
         plot_raster(
             water_distance / 1000,
             "Distance to Nearest Waterbody",
             output_dir / "waterbody_distance_preview.png",
             cmap="Blues_r",
             label="Distance (km)",
+            extent=water_extent,
         )
 
     if "coastline" in selected:
-        coastline_distance, _ = read_preview(Path(args.hydro), 2, args.max_dim)
+        coastline_distance, _, coastline_extent = read_preview(Path(args.hydro), 2, args.max_dim)
         plot_raster(
             coastline_distance / 1000,
             "Distance to Nearest Coastline",
             output_dir / "coastline_distance_preview.png",
             cmap="magma",
             label="Distance (km)",
+            extent=coastline_extent,
         )
 
     print(f"Saved selected raster previews to {output_dir}")

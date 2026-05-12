@@ -14,6 +14,7 @@ Examples, run from the project root:
 
     python scripts/data/usgs-hydrography.py --south 33.85116926668266 --north 36.5881334409244 --west -84.32178200052 --east -75.45981513195132 --resolution 100 --output data/nc_hydro_distance_100m.tif
     python scripts/data/usgs-hydrography.py --south 33.85116926668266 --north 36.5881334409244 --west -84.32178200052 --east -75.45981513195132 --output data/nc_hydro_distance_1km.tif --boundary data/boundaries/nc_state_boundary.gpkg
+    python scripts/data/usgs-hydrography.py --south 33.85116926668266 --north 36.5881334409244 --west -84.32178200052 --east -75.45981513195132 --template data/nc_tcc_2020_2023.tif --output data/nc_hydro_distance_match_tcc.tif --boundary data/boundaries/nc_state_boundary.gpkg
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from urllib.parse import urlparse
 
 import geopandas as gpd
 import numpy as np
+import rasterio
 import requests
 from pyproj import Transformer
 from rasterio.features import rasterize
@@ -101,7 +103,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--crs",
         default=DEFAULT_CRS,
-        help="Output projected CRS. Defaults to EPSG:5070.",
+        help="Output projected CRS. Ignored when --template is provided. Defaults to EPSG:5070.",
+    )
+    parser.add_argument(
+        "--template",
+        help="Optional raster whose CRS, transform, width, and height define the output grid.",
     )
     parser.add_argument(
         "--waterbody-filter-field",
@@ -251,6 +257,27 @@ def make_grid(bounds: tuple[float, float, float, float], resolution: float) -> P
     return ProjectedGrid(bounds=bounds, width=width, height=height, transform=transform)
 
 
+def grid_from_template(template_path: str | Path) -> tuple[ProjectedGrid, str, float]:
+    with rasterio.open(template_path) as src:
+        if src.crs is None:
+            raise ValueError(f"Template raster has no CRS: {template_path}")
+
+        x_resolution = abs(src.transform.a)
+        y_resolution = abs(src.transform.e)
+        if not np.isclose(x_resolution, y_resolution):
+            raise ValueError(
+                "Template raster must have square pixels for distance-transform output."
+            )
+
+        grid = ProjectedGrid(
+            bounds=(src.bounds.left, src.bounds.bottom, src.bounds.right, src.bounds.top),
+            width=src.width,
+            height=src.height,
+            transform=src.transform,
+        )
+        return grid, src.crs.to_string(), float(x_resolution)
+
+
 def make_buffered_grid(
     output_grid: ProjectedGrid,
     resolution: float,
@@ -393,14 +420,21 @@ def build_hydro_distance_raster(args: argparse.Namespace) -> Path:
     )
     extracted_dir = extract_archive(archive_path, Path(args.extract_dir), args.overwrite)
 
-    output_bounds = project_bbox(bbox, args.crs)
-    grid = make_grid(output_bounds, args.resolution)
+    if args.template:
+        grid, output_crs, output_resolution = grid_from_template(args.template)
+        print(f"Using template grid from {args.template}")
+    else:
+        output_crs = args.crs
+        output_resolution = args.resolution
+        output_bounds = project_bbox(bbox, output_crs)
+        grid = make_grid(output_bounds, output_resolution)
+
     processing_grid, crop_offset = make_buffered_grid(
         grid,
-        resolution=args.resolution,
+        resolution=output_resolution,
         search_buffer=args.search_buffer,
     )
-    print(f"Output grid: {grid.width:,} x {grid.height:,} at {args.resolution:g} m")
+    print(f"Output grid: {grid.width:,} x {grid.height:,} at {output_resolution:g} m")
     print(
         f"Processing grid: {processing_grid.width:,} x {processing_grid.height:,} "
         f"with {args.search_buffer:g} m search buffer"
@@ -414,8 +448,8 @@ def build_hydro_distance_raster(args: argparse.Namespace) -> Path:
         field=args.waterbody_filter_field,
         excluded_values=args.exclude_waterbody_values,
     )
-    waterbody = prepare_features(waterbody, args.crs, processing_grid.bounds)
-    coastline = prepare_features(coastline, args.crs, processing_grid.bounds)
+    waterbody = prepare_features(waterbody, output_crs, processing_grid.bounds)
+    coastline = prepare_features(coastline, output_crs, processing_grid.bounds)
 
     print(f"Waterbody features intersecting bbox: {len(waterbody):,}")
     print(f"Coastline features intersecting bbox: {len(coastline):,}")
@@ -423,7 +457,7 @@ def build_hydro_distance_raster(args: argparse.Namespace) -> Path:
     water_distance = distance_raster(
         waterbody,
         processing_grid,
-        args.resolution,
+        output_resolution,
         output_height=grid.height,
         output_width=grid.width,
         crop_offset_pixels=crop_offset,
@@ -431,13 +465,13 @@ def build_hydro_distance_raster(args: argparse.Namespace) -> Path:
     coast_distance = distance_raster(
         coastline,
         processing_grid,
-        args.resolution,
+        output_resolution,
         output_height=grid.height,
         output_width=grid.width,
         crop_offset_pixels=crop_offset,
     )
 
-    write_distance_stack(output_path, water_distance, coast_distance, grid, args.crs)
+    write_distance_stack(output_path, water_distance, coast_distance, grid, output_crs)
     if args.boundary:
         print(f"Masking {output_path} to {args.boundary}")
         mask_raster_with_boundary(output_path, args.boundary)

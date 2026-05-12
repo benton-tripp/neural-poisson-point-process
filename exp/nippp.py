@@ -1,4 +1,6 @@
 # Import packages
+from pathlib import Path
+
 import pandas as pd
 import numpy as np
 import torch
@@ -9,8 +11,17 @@ import matplotlib.pyplot as plt
 
 # Set seed for reproducibility
 SEED = 19
+MIN_LAMBDA = 1e-30
+MIN_EXPECTED_COUNT = 1e-12
+CV_BLOCKS_PER_DIM = 5
+CV_FOLDS = 5
+SIMULATION_COUNT = 500
+K_RADII = 50
+IMAGE_DIR = Path("images/longleaf")
+
 np.random.seed(SEED)
 torch.manual_seed(SEED)
+IMAGE_DIR.mkdir(parents=True, exist_ok=True)
 
 # Data: Longleaf pine (from spatstat R package)
 # 584 locations and diameters at breast height (DBH) of Longleaf pine trees
@@ -184,7 +195,7 @@ class LinearGaussianMarkModel(nn.Module):
 def bt_loglik(model):
     lambda_vals = model(quad_coords)
     return (
-        quad_counts * torch.log(lambda_vals + 1e-8)
+        quad_counts * torch.log(lambda_vals.clamp_min(MIN_LAMBDA))
         - quad_weights * lambda_vals
     ).sum().item()
 
@@ -192,7 +203,7 @@ def bt_loglik(model):
 def bt_nll(model):
     lambda_vals = model(quad_coords)
     return -(
-        quad_counts * torch.log(lambda_vals + 1e-8)
+        quad_counts * torch.log(lambda_vals.clamp_min(MIN_LAMBDA))
         - quad_weights * lambda_vals
     ).sum()
 
@@ -221,7 +232,7 @@ def bt_loglik_grid(model, q_coords, q_counts, q_weights):
     lambda_vals = model(q_coords)
 
     return (
-        q_counts * torch.log(lambda_vals + 1e-8)
+        q_counts * torch.log(lambda_vals.clamp_min(MIN_LAMBDA))
         - q_weights * lambda_vals
     ).sum().item()
 
@@ -230,7 +241,7 @@ def bt_nll_grid(model, q_coords, q_counts, q_weights):
     lambda_vals = model(q_coords)
 
     return -(
-        q_counts * torch.log(lambda_vals + 1e-8)
+        q_counts * torch.log(lambda_vals.clamp_min(MIN_LAMBDA))
         - q_weights * lambda_vals
     ).sum()
 
@@ -408,7 +419,9 @@ def berman_turner_residuals(model):
         expected_counts = quad_weights * lambda_vals
 
         raw_resid = quad_counts - expected_counts
-        pearson_resid = raw_resid / torch.sqrt(expected_counts + 1e-8)
+        pearson_resid = raw_resid / torch.sqrt(
+            expected_counts.clamp_min(MIN_EXPECTED_COUNT)
+        )
 
     return (
         raw_resid.numpy().ravel(),
@@ -482,12 +495,212 @@ def run_grid_sensitivity(grid_sizes=(50, 75, 100, 150, 200)):
     return pd.DataFrame(rows)
 
 
+def make_berman_turner_grid_with_raw(n_per_dim=100):
+    x_edges = np.linspace(x_min, x_max, n_per_dim + 1)
+    y_edges = np.linspace(y_min, y_max, n_per_dim + 1)
+
+    counts, _, _ = np.histogram2d(
+        coords_np[:, 0],
+        coords_np[:, 1],
+        bins=[x_edges, y_edges]
+    )
+
+    x_centers = 0.5 * (x_edges[:-1] + x_edges[1:])
+    y_centers = 0.5 * (y_edges[:-1] + y_edges[1:])
+    gx, gy = np.meshgrid(x_centers, y_centers, indexing="ij")
+    grid_raw = np.column_stack([gx.ravel(), gy.ravel()])
+    grid_norm = (grid_raw - mean) / std
+
+    y_counts = counts.ravel().astype(np.float32)
+    cell_area = area / (n_per_dim * n_per_dim)
+    weights = np.full_like(y_counts, cell_area, dtype=np.float32)
+
+    return grid_raw, grid_norm, y_counts, weights
+
+
+def assign_spatial_folds(points_np, blocks_per_dim=CV_BLOCKS_PER_DIM, folds=CV_FOLDS):
+    x_scaled = (points_np[:, 0] - x_min) / max(x_max - x_min, 1e-12)
+    y_scaled = (points_np[:, 1] - y_min) / max(y_max - y_min, 1e-12)
+    x_block = np.clip((x_scaled * blocks_per_dim).astype(int), 0, blocks_per_dim - 1)
+    y_block = np.clip((y_scaled * blocks_per_dim).astype(int), 0, blocks_per_dim - 1)
+    block_id = x_block * blocks_per_dim + y_block
+    return block_id % folds
+
+
+def point_loglik(model, coords_norm):
+    with torch.no_grad():
+        lambda_vals = model(coords_norm)
+        return torch.log(lambda_vals.clamp_min(MIN_LAMBDA)).sum().item()
+
+
+def integral_loglik_term(model, q_coords, q_weights):
+    with torch.no_grad():
+        lambda_vals = model(q_coords)
+        return (q_weights * lambda_vals).sum().item()
+
+
+def run_spatial_block_cv(
+    blocks_per_dim=CV_BLOCKS_PER_DIM,
+    folds=CV_FOLDS,
+    epochs_constant=1000,
+    epochs_linear=3000,
+    lr=1e-3
+):
+    grid_raw, grid_norm, y_counts, weights = make_berman_turner_grid_with_raw(n_per_dim=100)
+    point_folds = assign_spatial_folds(coords_np, blocks_per_dim, folds)
+    quad_folds = assign_spatial_folds(grid_raw, blocks_per_dim, folds)
+
+    q_coords_all = torch.tensor(grid_norm, dtype=torch.float32)
+    q_counts_all = torch.tensor(y_counts[:, None], dtype=torch.float32)
+    q_weights_all = torch.tensor(weights[:, None], dtype=torch.float32)
+
+    rows = []
+    for fold in range(folds):
+        train_quad = quad_folds != fold
+        test_quad = quad_folds == fold
+        test_points = point_folds == fold
+
+        train_count = float(y_counts[train_quad].sum())
+        train_area = float(weights[train_quad].sum())
+        test_count = int(test_points.sum())
+        test_area = float(weights[test_quad].sum())
+        if train_count <= 0 or train_area <= 0 or test_area <= 0:
+            continue
+
+        lambda_train = train_count / train_area
+        q_train_coords = q_coords_all[train_quad]
+        q_train_counts = q_counts_all[train_quad]
+        q_train_weights = q_weights_all[train_quad]
+        q_test_coords = q_coords_all[test_quad]
+        q_test_weights = q_weights_all[test_quad]
+        obs_test_coords = coords_obs[test_points]
+
+        hppp_ll = test_count * np.log(lambda_train) - lambda_train * test_area
+
+        const_cv = fit_grid(
+            ConstantIPPP(lambda_train),
+            q_train_coords,
+            q_train_counts,
+            q_train_weights,
+            epochs=epochs_constant,
+            lr=lr
+        )
+        const_ll = (
+            point_loglik(const_cv, obs_test_coords)
+            - integral_loglik_term(const_cv, q_test_coords, q_test_weights)
+        )
+
+        lin_cv = fit_grid(
+            LinearIPPP(input_dim=2, lambda_init=lambda_train),
+            q_train_coords,
+            q_train_counts,
+            q_train_weights,
+            epochs=epochs_linear,
+            lr=lr
+        )
+        lin_ll = (
+            point_loglik(lin_cv, obs_test_coords)
+            - integral_loglik_term(lin_cv, q_test_coords, q_test_weights)
+        )
+
+        rows.append({
+            "fold": fold,
+            "test_observations": test_count,
+            "test_area": test_area,
+            "train_observations": train_count,
+            "train_area": train_area,
+            "HPPP_heldout_loglik": hppp_ll,
+            "Constant_heldout_loglik": const_ll,
+            "Linear_heldout_loglik": lin_ll
+        })
+
+    return pd.DataFrame(rows)
+
+
+def run_simulation_diagnostics(model, n_simulations=SIMULATION_COUNT):
+    _, _, y_counts, weights = make_berman_turner_grid_with_raw(n_per_dim=100)
+    with torch.no_grad():
+        lambda_vals = model(quad_coords).numpy().ravel()
+
+    expected = weights * lambda_vals
+    simulated_counts = np.random.poisson(expected[None, :], size=(n_simulations, len(expected)))
+    simulated_totals = simulated_counts.sum(axis=1)
+    observed_total = int(y_counts.sum())
+
+    return pd.DataFrame({
+        "simulation": np.arange(1, n_simulations + 1),
+        "total_count": simulated_totals,
+        "observed_total": observed_total,
+        "expected_total": expected.sum()
+    })
+
+
+def inhomogeneous_k_diagnostic(model, n_radii=K_RADII):
+    with torch.no_grad():
+        lambda_obs = model(coords_obs).numpy().ravel()
+
+    dx = coords_np[:, 0][:, None] - coords_np[:, 0][None, :]
+    dy = coords_np[:, 1][:, None] - coords_np[:, 1][None, :]
+    distances = np.sqrt(dx * dx + dy * dy)
+    not_self = ~np.eye(len(coords_np), dtype=bool)
+
+    weights = np.zeros_like(distances, dtype=np.float64)
+    lambda_product = lambda_obs[:, None] * lambda_obs[None, :]
+    weights[not_self] = 1.0 / np.maximum(lambda_product[not_self], MIN_LAMBDA)
+
+    max_radius = 0.25 * min(x_max - x_min, y_max - y_min)
+    radii = np.linspace(max_radius / n_radii, max_radius, n_radii)
+    k_values = []
+    for radius in radii:
+        included = (distances <= radius) & not_self
+        k_values.append(weights[included].sum() / area)
+
+    return pd.DataFrame({
+        "radius": radii,
+        "K_inhom": k_values,
+        "Poisson_theoretical": np.pi * radii * radii
+    })
+
+
 grid_sensitivity_df = run_grid_sensitivity(
     grid_sizes=(50, 75, 100, 150, 200)
 )
 
 print("\nBerman-Turner Grid Sensitivity:")
 print(grid_sensitivity_df)
+
+spatial_cv_df = run_spatial_block_cv()
+print("\nSpatial Block Cross-Validation:")
+print(spatial_cv_df)
+print("\nSpatial Block CV totals:")
+print(
+    spatial_cv_df[
+        [
+            "HPPP_heldout_loglik",
+            "Constant_heldout_loglik",
+            "Linear_heldout_loglik",
+        ]
+    ].sum()
+)
+
+simulation_df = run_simulation_diagnostics(lin_model)
+observed_total = float(simulation_df["observed_total"].iloc[0])
+simulated_totals = simulation_df["total_count"].to_numpy()
+lower_tail = np.mean(simulated_totals <= observed_total)
+upper_tail = np.mean(simulated_totals >= observed_total)
+print("\nSimulation Diagnostics:")
+print(f"Observed total count: {observed_total:.0f}")
+print(f"Simulated total mean: {simulated_totals.mean():.2f}")
+print(f"Simulated total 2.5%-97.5%: {np.quantile(simulated_totals, [0.025, 0.975])}")
+print(f"Two-sided simulation p-value: {2 * min(lower_tail, upper_tail):.4f}")
+
+inhomogeneous_k_df = inhomogeneous_k_diagnostic(lin_model)
+print("\nInhomogeneous K Diagnostic:")
+print(inhomogeneous_k_df.head())
+
+spatial_cv_df.to_csv(IMAGE_DIR / "longleaf_spatial_block_cv.csv", index=False)
+simulation_df.to_csv(IMAGE_DIR / "longleaf_simulation_diagnostics.csv", index=False)
+inhomogeneous_k_df.to_csv(IMAGE_DIR / "longleaf_inhomogeneous_k.csv", index=False)
 
 # Plots
 
@@ -519,7 +732,7 @@ fig.tight_layout()
 
 # Save before showing
 fig.savefig(
-    "images/longleaf_point_pattern.png",
+    IMAGE_DIR / "longleaf_point_pattern.png",
     dpi=300,
     bbox_inches="tight"
 )
@@ -623,7 +836,7 @@ cbar = fig.colorbar(
 cbar.set_label("Estimated intensity λ(s)")
 
 fig.savefig(
-    "images/longleaf_intensity_comparison.png",
+    IMAGE_DIR / "longleaf_intensity_comparison.png",
     dpi=300,
     bbox_inches="tight"
 )
@@ -675,7 +888,7 @@ cbar = fig.colorbar(im, ax=ax)
 cbar.set_label("Pearson residual")
 
 fig.savefig(
-    "images/linear_ippp_pearson_residuals.png",
+    IMAGE_DIR / "linear_ippp_pearson_residuals.png",
     dpi=300,
     bbox_inches="tight"
 )
@@ -707,10 +920,117 @@ ax.legend()
 
 fig.tight_layout()
 fig.savefig(
-    "images/grid_sensitivity_loglik.png",
+    IMAGE_DIR / "grid_sensitivity_loglik.png",
     dpi=300,
     bbox_inches="tight"
 )
 
 # plt.show()
+plt.close(fig)
+
+# Plot spatial block cross-validation
+fig, ax = plt.subplots(figsize=(8, 6))
+
+ax.plot(
+    spatial_cv_df["fold"],
+    spatial_cv_df["HPPP_heldout_loglik"],
+    marker="o",
+    label="HPPP"
+)
+
+ax.plot(
+    spatial_cv_df["fold"],
+    spatial_cv_df["Constant_heldout_loglik"],
+    marker="o",
+    label="Constant NN"
+)
+
+ax.plot(
+    spatial_cv_df["fold"],
+    spatial_cv_df["Linear_heldout_loglik"],
+    marker="o",
+    label="Linear IPPP"
+)
+
+ax.set_title("Spatial Block Cross-Validation")
+ax.set_xlabel("Held-out fold")
+ax.set_ylabel("Held-out IPPP log-likelihood")
+ax.grid(alpha=0.3)
+ax.legend()
+
+fig.tight_layout()
+fig.savefig(
+    IMAGE_DIR / "longleaf_spatial_block_cv.png",
+    dpi=300,
+    bbox_inches="tight"
+)
+plt.close(fig)
+
+# Plot simulation diagnostic
+fig, ax = plt.subplots(figsize=(8, 6))
+
+ax.hist(
+    simulation_df["total_count"],
+    bins=30,
+    color="steelblue",
+    alpha=0.75
+)
+
+ax.axvline(
+    simulation_df["observed_total"].iloc[0],
+    color="black",
+    linewidth=2,
+    label="Observed"
+)
+
+ax.axvline(
+    simulation_df["expected_total"].iloc[0],
+    color="darkorange",
+    linestyle="--",
+    linewidth=2,
+    label="Expected"
+)
+
+ax.set_title("Simulation Diagnostic: Total Count")
+ax.set_xlabel("Simulated total points")
+ax.set_ylabel("Simulation frequency")
+ax.grid(alpha=0.3)
+ax.legend()
+
+fig.tight_layout()
+fig.savefig(
+    IMAGE_DIR / "longleaf_simulated_total_count.png",
+    dpi=300,
+    bbox_inches="tight"
+)
+plt.close(fig)
+
+# Plot approximate inhomogeneous K-function
+fig, ax = plt.subplots(figsize=(8, 6))
+
+ax.plot(
+    inhomogeneous_k_df["radius"],
+    inhomogeneous_k_df["K_inhom"],
+    label="Estimated Kinhom"
+)
+
+ax.plot(
+    inhomogeneous_k_df["radius"],
+    inhomogeneous_k_df["Poisson_theoretical"],
+    linestyle="--",
+    label="Poisson"
+)
+
+ax.set_title("Approximate Inhomogeneous K-Function")
+ax.set_xlabel("Radius")
+ax.set_ylabel("K(r)")
+ax.grid(alpha=0.3)
+ax.legend()
+
+fig.tight_layout()
+fig.savefig(
+    IMAGE_DIR / "longleaf_inhomogeneous_k.png",
+    dpi=300,
+    bbox_inches="tight"
+)
 plt.close(fig)

@@ -13,31 +13,65 @@ analysis, and generated outputs:
   IPPP analysis.
 - `data/`: downloaded or exported tabular/raster data.
 - `images/`: generated figures used by the analysis and this README.
+- `documents/`: dataset-specific result summaries and interpretation notes.
 
 Commands below assume they are run from the project root.
 
 ## Data Preparation Commands
 
+Point Process Datasets:
+
 ```
 Rscript scripts/data/load-spatstat-data.R
 python scripts/data/gbif-anolis-carolinensis-wake-county.py
-python scripts/data/ebird-historic-species.py --region US-NC --start 2020-01-01 --end 2023-12-31 --species-code woothr --output data/wood_thrush_nc_2020_2023.csv
+python scripts/data/ebird-historic-species.py --region US-NC --start 2020-01-01 --end 2020-12-31 --species-code woothr --output data/wood_thrush_nc_2020.csv
+python scripts/data/ebird-historic-species.py --region US-NC --start 2021-01-01 --end 2021-12-31 --species-code woothr --output data/wood_thrush_nc_2021.csv
+python scripts/data/ebird-historic-species.py --region US-NC --start 2022-01-01 --end 2022-12-31 --species-code woothr --output data/wood_thrush_nc_2022.csv
+python scripts/data/ebird-historic-species.py --region US-NC --start 2023-01-01 --end 2023-12-31 --species-code woothr --output data/wood_thrush_nc_2023.csv
+python scripts/data/combine-ebird-geojson.py --inputs data/wood_thrush_nc_2020.csv data/wood_thrush_nc_2021.csv data/wood_thrush_nc_2022.csv data/wood_thrush_nc_2023.csv --boundary data/boundaries/nc_state_boundary.gpkg --crs EPSG:3857 --output data/wood_thrush_nc_2020_2023.geojson
+python exp/wood_thrush_nippp.py --input data/wood_thrush_nc_2020_2023.geojson --boundary data/boundaries/nc_state_boundary.gpkg --analysis-crs EPSG:5070 --plot-crs EPSG:4326 --epochs-constant 3000 --epochs-linear 10000
+```
+
+North Carolina Rasters:
+
+```
 python scripts/data/usgs-nc-state-boundary.py
 python scripts/data/opentopography-dem-bbox.py --south 33.85116926668266 --north 36.5881334409244 --west -84.32178200052 --east -75.45981513195132 --output data/nc_usgs30m.tif --boundary data/boundaries/nc_state_boundary.gpkg
 python scripts/data/usfs-tcc-canopy-bbox.py --south 33.85116926668266 --north 36.5881334409244 --west -84.32178200052 --east -75.45981513195132 --start-year 2020 --end-year 2023 --output data/nc_tcc_2020_2023.tif --boundary data/boundaries/nc_state_boundary.gpkg
-python scripts/data/usgs-hydrography.py --south 33.85116926668266 --north 36.5881334409244 --west -84.32178200052 --east -75.45981513195132 --resolution 100 --output data/nc_hydro_distance_100m.tif --boundary data/boundaries/nc_state_boundary.gpkg
+python scripts/data/reproject-raster-to-template.py --input data/nc_usgs30m.tif --template data/nc_tcc_2020_2023.tif --output data/nc_usgs30m_match_tcc.tif
+python scripts/data/usgs-hydrography.py --south 33.85116926668266 --north 36.5881334409244 --west -84.32178200052 --east -75.45981513195132 --template data/nc_tcc_2020_2023.tif --output data/nc_hydro_distance_match_tcc.tif --boundary data/boundaries/nc_state_boundary.gpkg --search-buffer 10000
+python scripts/data/stack-rasters.py --inputs data/nc_tcc_2020_2023.tif data/nc_usgs30m_match_tcc.tif data/nc_hydro_distance_match_tcc.tif --crs EPSG:3857 --boundary data/boundaries/nc_state_boundary.gpkg --resampling bilinear --output data/nc_covariate_stack.tif
+python exp/plot_raster_previews.py 
 ```
+
+## Experiments
+
+Long-Leaf Pine Dataset Experiment:
+
+```
+python exp/nippp.py
+```
+
+Wood Thrush, North Carolina Experiment:
+
+```
+python exp/wood_thrush_nippp.py --input data/wood_thrush_nc_2020_2023.geojson --boundary data/boundaries/nc_state_boundary.gpkg --analysis-crs EPSG:5070 --plot-crs EPSG:4326 --cv-blocks-per-dim 5 --cv-folds 5 --simulation-count 500 --k-radii 50
+```
+
+
 
 ## Background
 
-This code models the spatial distribution of Longleaf pine trees using Poisson point process models.
+This repository develops neural and classical inhomogeneous Poisson point
+process models for spatial event data. The initial examples include the
+Longleaf pine point pattern from `spatstat.data` and Wood Thrush eBird
+observations, but the modeling utilities are intended to generalize to other
+presence-only spatial point datasets.
 
-The dataset contains tree locations and diameter-at-breast-height marks for Longleaf pine trees in a rectangular observation window in southern Georgia. The current implementation models both:
-
-1. The spatial point pattern of tree locations
-2. The DBH marks conditionally on observed tree locations
-
-The main goal is to compare a homogeneous spatial point process against an inhomogeneous model that allows tree intensity to vary over space. The code also includes a conditional mark model, spatial residual diagnostics, and sensitivity analysis for the Berman-Turner quadrature grid.
+The current experiments compare homogeneous spatial intensity against
+inhomogeneous models that allow intensity to vary over space. Some datasets also
+include marks, such as DBH for Longleaf pine, which can be modeled
+conditionally on observed locations.
 
 ## Point Process Framework
 
@@ -224,172 +258,46 @@ The fitted spatial models are compared using:
 
 Because the linear model adds two parameters relative to the HPPP, the likelihood ratio test uses $df = 2$.
 
-## Results
+## Diagnostics
 
-The homogeneous Poisson point process, constant neural IPPP, and linear IPPP were fit and compared using the Berman-Turner approximate log-likelihood.
+The experiment scripts include several diagnostics for checking model behavior:
 
-| Model | k | BT Log-Likelihood | AIC | BIC |
-|---|---:|---:|---:|---:|
-| HPPP | 1 | -3052.4124 | 6106.8247 | 6111.1946 |
-| Constant NN | 1 | -3052.4126 | 6106.8252 | 6111.1951 |
-| Linear IPPP | 3 | -3035.2646 | 6076.5293 | 6089.6390 |
+- HPPP and constant neural IPPP comparison as an optimization sanity check.
+- AIC, BIC, and likelihood ratio comparisons between spatial models.
+- Pearson residual surfaces on the Berman-Turner quadrature grid.
+- Berman-Turner grid sensitivity analysis across multiple grid resolutions.
+- Spatial block cross-validation for held-out spatial predictive performance.
+- Simulation-based total-count diagnostics from the fitted IPPP.
+- Approximate inhomogeneous K-function diagnostics for residual clustering.
 
-The constant neural model closely matches the closed-form HPPP likelihood. This provides a sanity check that the Berman-Turner likelihood and PyTorch optimization are behaving as expected.
+## Results Documents
 
-The linear IPPP improves the Berman-Turner log-likelihood relative to the HPPP:
+Dataset-specific results are kept outside the README so this file stays focused
+on project structure and workflow.
 
-$$
-\Delta \log L = -3035.2646 - (-3052.4124) = 17.1478
-$$
-
-Both AIC and BIC are lower for the linear IPPP, indicating that the improvement in likelihood is large enough to justify the two additional spatial trend parameters.
-
-### Likelihood Ratio Test
-
-The linear IPPP was compared against the HPPP using a likelihood ratio test:
-
-$$
-LR = 2(\log L_{\text{linear}} - \log L_{\text{HPPP}})
-$$
-
-| Comparison | df | LR Statistic | p-value |
-|---|---:|---:|---:|
-| Linear IPPP vs HPPP | 2 | 34.2954 | 3.57146e-08 |
-
-The likelihood ratio test strongly rejects the homogeneous intensity model. This suggests evidence of first-order spatial inhomogeneity in the Longleaf pine point pattern.
-
-### Fitted Linear IPPP
-
-The fitted linear IPPP coefficients were:
-
-| Parameter | Estimate |
-|---|---:|
-| Intercept | -4.1976 |
-| x coefficient | -0.0205 |
-| y coefficient | 0.2100 |
-
-Using standardized coordinates, the fitted intensity model is approximately:
-
-$$
-\lambda(s) = \exp(-4.1976 - 0.0205x^* + 0.2100y^*)
-$$
-
-The x-direction effect is small and slightly negative. The y-direction effect is larger and positive, indicating that fitted intensity increases primarily along the positive standardized y-axis.
-
-## Conditional Mark Results
-
-The conditional mark model was fit to standardized log-DBH values at the observed tree locations.
-
-| Quantity | Value |
-|---|---:|
-| Mark log-likelihood | -774.5249 |
-| Mark intercept | 0.0000 |
-| x coefficient | -0.3670 |
-| y coefficient | -0.1552 |
-| Mark sigma | 0.9115 |
-| Joint spatial + mark log-likelihood | -3809.7896 |
-
-The fitted conditional mean model for standardized log-DBH is approximately:
-
-$$
-\mu(s) = 0.0000 - 0.3670x^* - 0.1552y^*
-$$
-
-The mark model suggests that, conditional on tree location, standardized log-DBH decreases with both standardized x and standardized y. The x-direction effect is larger in magnitude than the y-direction effect.
-
-This result should be interpreted separately from the spatial intensity model. The spatial model describes where trees occur, while the conditional mark model describes how DBH varies among observed trees.
-
-## Spatial Residual Diagnostics
-
-Pearson residuals were computed on the Berman-Turner grid using:
-
-$$
-r_j = \frac{Y_j - \hat{\mu}_j}{\sqrt{\hat{\mu}_j}}
-$$
-
-where:
-
-$$
-\hat{\mu}_j = w_j \hat{\lambda}(u_j)
-$$
-
-Summary diagnostics for the Linear IPPP were:
-
-| Diagnostic | Value |
-|---|---:|
-| Mean raw residual | 0.000000 |
-| Mean Pearson residual | -0.000422 |
-| Pearson residual SD | 1.080050 |
-| Observed total count | 584 |
-| Expected total count | 583.9962 |
-
-The fitted model preserves the total expected count well. The Pearson residual standard deviation is close to 1, which is broadly consistent with a reasonable Poisson residual scale.
-
-The residual surface should be inspected visually for remaining spatial structure. Spatially patterned residuals would suggest missing nonlinear trend, interaction, clustering, inhibition, or unmodeled spatial covariates.
-
-## Berman-Turner Grid Sensitivity
-
-The Linear IPPP was refit using multiple Berman-Turner grid resolutions.
-
-| Grid cells per dimension | Number of cells | Linear BT Log-Likelihood | Linear AIC | Linear BIC | LR Statistic | p-value | beta_x | beta_y | beta_0 |
-|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 50 | 2500 | -3035.1667 | 6076.3335 | 6089.4432 | 34.4912 | 3.238387e-08 | -0.0211 | 0.2106 | -4.1977 |
-| 75 | 5625 | -3035.4424 | 6076.8848 | 6089.9945 | 33.9399 | 4.266143e-08 | -0.0210 | 0.2088 | -4.1976 |
-| 100 | 10000 | -3035.2646 | 6076.5293 | 6089.6390 | 34.2954 | 3.571464e-08 | -0.0205 | 0.2100 | -4.1976 |
-| 150 | 22500 | -3035.3428 | 6076.6855 | 6089.7953 | 34.1392 | 3.861674e-08 | -0.0210 | 0.2094 | -4.1976 |
-| 200 | 40000 | -3035.2695 | 6076.5391 | 6089.6488 | 34.2856 | 3.588946e-08 | -0.0205 | 0.2099 | -4.1976 |
-
-The fitted likelihoods, likelihood ratio statistics, and coefficients are stable across grid resolutions. This suggests that the main spatial inference is not sensitive to the chosen Berman-Turner grid resolution.
-
-## Visual Diagnostics
-
-The observed point pattern is shown below.
-
-![A scatterplot of observed tree locations](images/longleaf_point_pattern.png)
-
-The fitted intensity comparison shows the HPPP constant intensity surface against the linear IPPP fitted intensity surface. Both panels use a shared color scale.
-
-![A side-by-side comparison of HPPP constant intensity surface and Linear IPPP fitted intensity surface](images/longleaf_intensity_comparison.png)
-
-The Pearson residual surface is shown below.
-
-![A Pearson residual surface for the Linear IPPP](images/linear_ippp_pearson_residuals.png)
-
-The Berman-Turner grid sensitivity plot is shown below.
-
-![A grid sensitivity plot for the Linear IPPP Berman-Turner log-likelihood](images/grid_sensitivity_loglik.png)
-
-## Current Interpretation
-
-The constant neural model recovers the closed-form HPPP likelihood, validating the Berman-Turner implementation.
-
-The linear IPPP improves the log-likelihood and reduces both AIC and BIC, suggesting evidence of first-order spatial inhomogeneity.
-
-The fitted intensity varies primarily along the standardized y-axis, with a much weaker x-axis effect.
-
-The conditional mark model suggests that standardized log-DBH decreases with both standardized x and standardized y among observed trees.
-
-The Berman-Turner grid sensitivity analysis indicates that the primary spatial inference is stable across tested grid resolutions.
+- [Longleaf IPPP results](documents/longleaf-results.md)
+- [Wood Thrush North Carolina IPPP results](documents/wood-thrush-nc-results.md)
 
 ## Current Limitations
 
 The current implementation does not yet model:
 
 - Nonlinear intensity surfaces
-- Spatial interaction between trees
-- Clustering or inhibition
-- Environmental covariates such as soil, elevation, moisture, or raster predictors
+- Spatial interaction or clustering directly
+- Environmental covariates in the fitted intensity
+- Temporal variation in species occurrence or reporting intensity
 - Joint dependence between spatial intensity and marks beyond the conditional decomposition
-- Spatial block cross-validation or held-out predictive evaluation
-- Inhomogeneous K-functions or simulation-envelope diagnostics
 
 ## Train/Test and Validation
 
-The current statistical comparisons use the full dataset. This is appropriate for likelihood-based inference, AIC, BIC, likelihood ratio testing, residual diagnostics, and grid sensitivity analysis.
+The full-window likelihood, AIC, BIC, and likelihood ratio tests are useful for
+likelihood-based inference, while spatial block cross-validation is useful for
+checking whether spatial trends generalize to held-out regions.
 
-Train/test splits become more important when fitting more flexible predictive models, such as nonlinear neural IPPPs or higher-capacity mark models.
-
-For spatial point pattern data, ordinary random train/test splits can be misleading because nearby locations may contain similar spatial information. A better next step is spatial block cross-validation, where the observation window is divided into spatial folds and models are evaluated on held-out regions.
+For spatial point pattern data, ordinary random train/test splits can be
+misleading because nearby locations may contain similar spatial information. The
+implemented spatial block cross-validation divides the observation window into
+spatial folds and evaluates held-out IPPP log-likelihood.
 
 ## Planned Extensions
 
@@ -397,8 +305,6 @@ Potential next steps include:
 
 - Adding a nonlinear neural network intensity model
 - Comparing linear and nonlinear IPPPs with AIC, BIC, and held-out likelihood
-- Adding spatial block cross-validation
 - Extending the mark model to nonlinear conditional means or heteroskedastic variance
-- Adding simulation-based diagnostics
-- Adding inhomogeneous K-function diagnostics
 - Incorporating spatial covariates
+- Adding temporal terms and diagnostics for migratory species
