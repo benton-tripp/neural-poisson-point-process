@@ -52,12 +52,31 @@ Long-Leaf Pine Dataset Experiment:
 python exp/nippp.py
 ```
 
-Wood Thrush, North Carolina Experiment:
+Wood Thrush, North Carolina Experiment (static data, no covariates):
 
 ```
-python exp/wood_thrush_nippp.py --input data/wood_thrush_nc_2020_2023.geojson --boundary data/boundaries/nc_state_boundary.gpkg --analysis-crs EPSG:5070 --plot-crs EPSG:4326 --cv-blocks-per-dim 5 --cv-folds 5 --simulation-count 500 --k-radii 50
+python exp/wood_thrush_nippp.py --input data/wood_thrush_nc_2020_2023.geojson --boundary data/boundaries/nc_state_boundary.gpkg --analysis-crs EPSG:5070 --plot-crs EPSG:4326 --image-dir images/wood_thrush_nippp_spatial --no-temporal --cv-blocks-per-dim 5 --cv-folds 5 --simulation-count 500 --k-radii 50 --epochs-nonlinear 10000 --hidden-dim 16 --hidden-layers 1 --dropout 0.10 --nonlinear-lr 5e-4 --nonlinear-weight-decay 1e-3
 ```
 
+Wood Thrush, North Carolina Experiment (temporal data, no covariates):
+
+```
+python exp/wood_thrush_nippp.py --input data/wood_thrush_nc_2020_2023.geojson --boundary data/boundaries/nc_state_boundary.gpkg --analysis-crs EPSG:5070 --plot-crs EPSG:4326 --image-dir images/wood_thrush_nippp_temporal --cv-blocks-per-dim 5 --cv-folds 5 --simulation-count 500 --k-radii 50 --epochs-nonlinear 10000 --hidden-dim 16 --hidden-layers 1 --dropout 0.10 --nonlinear-lr 5e-4 --nonlinear-weight-decay 1e-3 --temporal-bins 12 --plot-day-of-year 150
+python exp/wood_thrush_temporal_gifs.py --input data/wood_thrush_nc_2020_2023.geojson --boundary data/boundaries/nc_state_boundary.gpkg --analysis-crs EPSG:5070 --plot-crs EPSG:4326 --output-dir images/wood_thrush_nippp_temporal/gifs --models linear nonlinear --grid-size 100 --plot-grid-size 120 --epochs-linear 10000 --epochs-nonlinear 10000 --hidden-dim 16 --hidden-layers 1 --dropout 0.10 --nonlinear-lr 5e-4 --nonlinear-weight-decay 1e-3 --temporal-bins 12
+
+```
+
+Wood Thrush, North Carolina Experiment (static data, with covariates):
+
+```
+
+```
+
+Wood Thrush, North Carolina Experiment (temporal data, with covariates):
+
+```
+
+```
 
 
 ## Background

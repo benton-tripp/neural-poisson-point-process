@@ -1034,3 +1034,11 @@ fig.savefig(
     bbox_inches="tight"
 )
 plt.close(fig)
+
+
+# TODO:
+# - Adding a nonlinear neural network intensity model
+# - Comparing linear and nonlinear IPPPs with AIC, BIC, and held-out likelihood
+# - Extending the mark model to nonlinear conditional means or heteroskedastic variance
+# - Incorporating spatial covariates
+# - Adding temporal terms and diagnostics
