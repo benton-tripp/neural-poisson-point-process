@@ -1,19 +1,43 @@
 # Wood Thrush North Carolina IPPP Results
 
-This document records the current results for the Wood Thrush North Carolina
-experiment in `exp/wood_thrush_nippp.py`.
+This document records the current Wood Thrush North Carolina experiments in
+[exp/wood_thrush_nippp.py](../exp/wood_thrush_nippp.py). The data are eBird
+Wood Thrush observations from 2020 through 2023, clipped to the North Carolina
+state boundary in `data/boundaries/nc_state_boundary.gpkg`.
 
-The experiment uses eBird Wood Thrush observations from 2020 through 2023,
-combined into `data/wood_thrush_nc_2020_2023.geojson`. The study window is the
-North Carolina state boundary from `data/boundaries/nc_state_boundary.gpkg`.
-The model is fit in `EPSG:5070`, an equal-area CRS, and figures are rendered in
-longitude/latitude (`EPSG:4326`).
+Models are fit in `EPSG:5070`, an equal-area CRS. Figures are rendered in
+longitude/latitude (`EPSG:4326`). These are models for reported observation
+intensity, not abundance, because observer effort and detection probability are
+not yet modeled.
 
-The current model does not yet include temporal terms, effort correction, or
-environmental covariates. The fitted IPPP should therefore be interpreted as a
-model for reported Wood Thrush observation intensity, not directly as abundance.
+Likelihoods should be compared within a run. The temporal run uses a
+space-time exposure, while the static spatial and covariate runs use spatial
+exposure only, so their raw likelihood scales are different.
 
-## Model Comparison
+## Runs
+
+Coordinate-only spatial model:
+
+```powershell
+python exp/wood_thrush_nippp.py --input data/wood_thrush_nc_2020_2023.geojson --boundary data/boundaries/nc_state_boundary.gpkg --analysis-crs EPSG:5070 --plot-crs EPSG:4326 --cv-blocks-per-dim 5 --cv-folds 5 --simulation-count 500 --k-radii 50 --epochs-nonlinear 10000 --hidden-dim 16 --hidden-layers 1 --dropout 0.10 --nonlinear-lr 5e-4 --nonlinear-weight-decay 1e-3
+```
+
+Temporal, no covariates:
+
+```powershell
+python exp/wood_thrush_nippp.py --input data/wood_thrush_nc_2020_2023.geojson --boundary data/boundaries/nc_state_boundary.gpkg --analysis-crs EPSG:5070 --plot-crs EPSG:4326 --image-dir images/wood_thrush_nippp_temporal --cv-blocks-per-dim 5 --cv-folds 5 --simulation-count 500 --k-radii 50 --epochs-nonlinear 10000 --hidden-dim 16 --hidden-layers 1 --dropout 0.10 --nonlinear-lr 5e-4 --nonlinear-weight-decay 1e-3 --temporal-bins 12 --plot-day-of-year 150
+```
+
+Static spatial covariates, no temporal terms:
+
+```powershell
+python exp/wood_thrush_nippp.py --input data/wood_thrush_nc_2020_2023_covariates.geojson --boundary data/boundaries/nc_state_boundary.gpkg --analysis-crs EPSG:5070 --plot-crs EPSG:4326 --image-dir images/wood_thrush_nippp_covariates --no-temporal --covariate-raster data/nc_covariate_stack.tif --covariates canopy_median nc_usgs30m_match_tcc distance_to_waterbody_m distance_to_coastline_m --cv-blocks-per-dim 5 --cv-folds 5 --simulation-count 500 --k-radii 50 --epochs-nonlinear 10000 --hidden-dim 16 --hidden-layers 1 --dropout 0.10 --nonlinear-lr 5e-4 --nonlinear-weight-decay 1e-3
+```
+
+## Coordinate-Only Spatial
+
+This run uses spatial coordinates only. It has no temporal terms and no
+environmental covariates.
 
 | Model | k | BT Log-Likelihood | AIC | BIC |
 |---|---:|---:|---:|---:|
@@ -22,109 +46,10 @@ model for reported Wood Thrush observation intensity, not directly as abundance.
 | Linear IPPP | 3 | -16163.4629 | 32332.9258 | 32347.0719 |
 | Nonlinear IPPP | 65 | -15801.5928 | 31733.1855 | 32039.6855 |
 
-The constant neural model closely matches the closed-form HPPP likelihood,
-which validates the Berman-Turner implementation and optimization setup.
-
-The linear IPPP improves the in-sample Berman-Turner log-likelihood relative to
-the HPPP:
-
-$$
-\Delta \log L = -16163.4629 - (-16454.7522) = 291.2893
-$$
-
-The regularized nonlinear IPPP improves the in-sample likelihood further, and
-has the best AIC among the fitted models. However, the spatial block
-cross-validation results below do not support it as the preferred model yet.
-
-## Likelihood Ratio Test
-
-| Comparison | df | LR Statistic | p-value |
-|---|---:|---:|---:|
-| Linear IPPP vs HPPP | 2 | 582.5785 | 3.12379e-127 |
-| Nonlinear IPPP vs Linear IPPP | 62 | 723.7402 | 1.63002e-113 |
-
-The likelihood ratio test rejects the homogeneous intensity model, suggesting a
-strong first-order spatial trend in reported Wood Thrush observations.
-
-The nonlinear-vs-linear comparison is included as an approximate nested-model
-reference. Because the nonlinear model is much more flexible, the held-out
-spatial block likelihood is the more important comparison.
-
-## Fitted Linear IPPP
-
-| Parameter | Estimate |
-|---|---:|
-| Intercept | -18.5498 |
-| x coefficient | -0.7463 |
-| y coefficient | 0.2244 |
-
-Using standardized coordinates in the analysis CRS, the fitted intensity is
-approximately:
-
-$$
-\lambda(s) = \exp(-18.5498 - 0.7463x^* + 0.2244y^*)
-$$
-
-The fitted linear trend increases toward lower standardized x values and higher
-standardized y values. In geographic terms this corresponds to a broad
-west/north spatial gradient in reported observation intensity.
-
-## Spatial Residual Diagnostics
-
-Linear IPPP:
-
-| Diagnostic | Value |
-|---|---:|
-| Mean raw residual | -0.007748 |
-| Mean Pearson residual | -0.040925 |
-| Pearson residual SD | 1.923150 |
-| Observed total count | 825 |
-| Expected total count | 866.2914 |
-
-The fitted linear IPPP slightly overpredicts the total expected count relative
-to the observed total. The Pearson residual standard deviation is well above 1,
-which suggests remaining spatial structure or overdispersion not captured by
-the linear first-order trend.
-
-Nonlinear IPPP:
-
-| Diagnostic | Value |
-|---|---:|
-| Mean raw residual | 0.007474 |
-| Mean Pearson residual | -0.048316 |
-| Pearson residual SD | 1.564113 |
-| Observed total count | 825 |
-| Expected total count | 785.1687 |
-
-The nonlinear model reduces the Pearson residual standard deviation, but it
-underpredicts the total expected count. This is another sign that the nonlinear
-model is improving in-sample fit while not fully solving generalization or
-calibration.
-
-## Berman-Turner Grid Sensitivity
-
-| Grid cells per dimension | Number of cells | Linear BT Log-Likelihood | LR p-value | beta_x | beta_y | beta_0 |
-|---:|---:|---:|---:|---:|---:|---:|
-| 50 | 2500 | -16163.2559 | 3.771694e-127 | -0.7497 | 0.2274 | -18.5513 |
-| 75 | 5625 | -16163.0869 | 5.863702e-128 | -0.7453 | 0.2248 | -18.5478 |
-| 100 | 10000 | -16163.4629 | 3.123792e-127 | -0.7463 | 0.2244 | -18.5498 |
-| 150 | 22500 | -16163.4688 | 2.860959e-127 | -0.7446 | 0.2237 | -18.5490 |
-| 200 | 40000 | -16163.4678 | 2.937398e-127 | -0.7446 | 0.2238 | -18.5489 |
-
-The fitted coefficients and likelihood-ratio results are stable across the
-tested Berman-Turner grid resolutions.
-
-## Spatial Block Cross-Validation
-
-| Fold | Test observations | Test area | HPPP heldout log-likelihood | Constant heldout log-likelihood | Linear heldout log-likelihood | Nonlinear heldout log-likelihood |
-|---:|---:|---:|---:|---:|---:|---:|
-| 0 | 29 | 8.530108e+09 | -600.5034 | -600.5044 | -573.2793 | -566.3883 |
-| 1 | 272 | 3.665885e+10 | -5376.2198 | -5376.2212 | -5251.8013 | -5246.3709 |
-| 2 | 211 | 4.275903e+10 | -4254.1442 | -4254.1453 | -4182.6328 | -4269.7094 |
-| 3 | 304 | 3.831618e+10 | -5998.8494 | -5998.8434 | -5992.6381 | -6090.8107 |
-| 4 | 9 | 1.312526e+10 | -254.5389 | -254.5346 | -232.7955 | -213.5783 |
-
-Held-out totals:
+The constant neural model closely matches the HPPP baseline, which is a useful
+sanity check for the Berman-Turner setup. The nonlinear model has the best
+in-sample likelihood and AIC, but spatial block cross-validation favors the
+linear model.
 
 | Model | Held-out log-likelihood |
 |---|---:|
@@ -133,131 +58,215 @@ Held-out totals:
 | Linear IPPP | -16233.1470 |
 | Nonlinear IPPP | -16386.8575 |
 
-The linear IPPP has the best total held-out spatial block log-likelihood. The
-nonlinear model improves in-sample likelihood but is worse than the linear model
-under this block partition, so the linear IPPP remains the preferred current
-model by spatial generalization.
+Simulation diagnostics put the observed count inside both simulation envelopes:
 
-## Simulation Diagnostics
+| Model | Observed count | Simulated mean | 2.5% | 97.5% | p-value |
+|---|---:|---:|---:|---:|---:|
+| Linear IPPP | 825 | 867.58 | 813.475 | 921.525 | 0.1560 |
+| Nonlinear IPPP | 825 | 784.34 | 727.950 | 837.000 | 0.1520 |
 
-Linear IPPP:
+The coordinate-only inhomogeneous K diagnostics remain far above the Poisson
+reference curve at short distances, so coordinate-only first-order structure
+does not remove the residual clustering.
 
-| Quantity | Value |
+## Temporal, No Covariates
+
+This run adds cyclic day-of-year terms from `queryDate`. The space-time
+exposure covers 1461 days.
+
+| Model | k | BT Log-Likelihood | AIC | BIC |
+|---|---:|---:|---:|---:|
+| HPPP | 1 | -22466.4252 | 44934.8504 | 44939.5658 |
+| Constant NN | 1 | -22466.4238 | 44934.8477 | 44939.5630 |
+| Linear IPPP | 5 | -21897.1016 | 43804.2031 | 43827.7800 |
+| Nonlinear IPPP | 97 | -21638.2148 | 43470.4297 | 43927.8219 |
+
+| Comparison | df | LR Statistic | p-value |
+|---|---:|---:|---:|
+| Linear IPPP vs HPPP | 4 | 1138.6473 | 3.17696e-245 |
+| Nonlinear IPPP vs Linear IPPP | 92 | 517.7734 | 1.45064e-60 |
+
+The fitted linear temporal model is:
+
+```text
+lambda(s,t) = exp(-26.2553 - 0.8310*x + 0.2783*y - 0.2509*sin_doy - 1.2839*cos_doy)
+```
+
+The seasonal terms are large relative to the spatial slope terms, which is
+expected for a migratory species. Within the temporal run, the nonlinear model
+has the best in-sample likelihood and AIC. The spatial block CV totals,
+however, favor the linear temporal model.
+
+| Model | Held-out log-likelihood |
 |---|---:|
-| Observed total count | 825 |
-| Simulated total mean | 867.58 |
-| Simulated total 2.5% quantile | 813.475 |
-| Simulated total 97.5% quantile | 921.525 |
-| Two-sided simulation p-value | 0.1560 |
+| HPPP | -22495.9288 |
+| Constant NN | -22495.9177 |
+| Linear IPPP | -21968.9248 |
+| Nonlinear IPPP | -22183.1557 |
 
-The observed total count is inside the simulation envelope generated from the
-fitted linear IPPP, although the fitted model's expected count is somewhat
-higher than the observed count.
+Residual and simulation diagnostics:
 
-Nonlinear IPPP:
+| Model | Mean raw residual | Mean Pearson residual | Pearson SD | Expected count |
+|---|---:|---:|---:|---:|
+| Linear IPPP | -0.000000 | -0.005514 | 1.127382 | 825.0011 |
+| Nonlinear IPPP | 0.000833 | -0.004867 | 0.987162 | 771.7240 |
 
-| Quantity | Value |
+| Model | Observed count | Simulated mean | 2.5% | 97.5% | p-value |
+|---|---:|---:|---:|---:|---:|
+| Linear IPPP | 825 | 824.33 | 767.475 | 884.525 | 1.0000 |
+| Nonlinear IPPP | 825 | 770.50 | 716.000 | 827.000 | 0.0680 |
+
+Approximate inhomogeneous K diagnostics:
+
+| Model | Radius | Kinhom | Poisson theoretical |
+|---|---:|---:|---:|
+| Linear IPPP | 1742.0960 | 5.745307e+08 | 9.534415e+06 |
+| Linear IPPP | 3484.1920 | 7.170795e+08 | 3.813766e+07 |
+| Linear IPPP | 5226.2880 | 8.460975e+08 | 8.580973e+07 |
+| Linear IPPP | 6968.3840 | 1.114605e+09 | 1.525506e+08 |
+| Linear IPPP | 8710.4800 | 1.478930e+09 | 2.383604e+08 |
+| Nonlinear IPPP | 1742.0960 | 7.027386e+08 | 9.534415e+06 |
+| Nonlinear IPPP | 3484.1920 | 7.884626e+08 | 3.813766e+07 |
+| Nonlinear IPPP | 5226.2880 | 8.679328e+08 | 8.580973e+07 |
+| Nonlinear IPPP | 6968.3840 | 1.005714e+09 | 1.525506e+08 |
+| Nonlinear IPPP | 8710.4800 | 1.182632e+09 | 2.383604e+08 |
+
+Temporal animations:
+
+![Linear temporal Wood Thrush intensity animation](../images/wood_thrush_nippp_temporal/gifs/wood_thrush_linear_temporal_intensity.gif)
+
+![Nonlinear temporal Wood Thrush intensity animation](../images/wood_thrush_nippp_temporal/gifs/wood_thrush_nonlinear_temporal_intensity.gif)
+
+The GIFs show the fitted cyclic day-of-year pattern with no observation points
+or boundary overlay. They are useful for checking the seasonal migration
+pattern visually, while the CV and simulation summaries above remain the main
+model diagnostics.
+
+## Static Covariates, No Temporal Terms
+
+This run adds static spatial covariates from `data/nc_covariate_stack.tif`:
+
+| Covariate | Description |
+|---|---|
+| `canopy_median` | Median canopy cover across the available canopy years |
+| `nc_usgs30m_match_tcc` | Elevation matched to the canopy grid |
+| `distance_to_waterbody_m` | Distance to nearest waterbody, meters |
+| `distance_to_coastline_m` | Distance to nearest coastline, meters |
+
+| Model | k | BT Log-Likelihood | AIC | BIC |
+|---|---:|---:|---:|---:|
+| HPPP | 1 | -16454.7522 | 32911.5043 | 32916.2197 |
+| Constant NN | 1 | -16454.7520 | 32911.5039 | 32916.2193 |
+| Linear IPPP | 7 | -16145.6084 | 32305.2168 | 32338.2245 |
+| Nonlinear IPPP | 129 | -15518.5381 | 31295.0762 | 31903.3606 |
+
+| Comparison | df | LR Statistic | p-value |
+|---|---:|---:|---:|
+| Linear IPPP vs HPPP | 6 | 618.2875 | 2.64652e-130 |
+| Nonlinear IPPP vs Linear IPPP | 122 | 1254.1406 | 4.25816e-187 |
+
+The fitted linear covariate model is:
+
+```text
+lambda(s) = exp(
+  -18.5727
+  - 1.0984*x
+  + 0.3147*y
+  - 0.0014*canopy_median
+  + 0.2027*nc_usgs30m_match_tcc
+  - 0.0012*distance_to_waterbody_m
+  - 0.3920*distance_to_coastline_m
+)
+```
+
+The coefficient signs should be interpreted cautiously. The model is still
+presence-only, and the quadrature/background distribution defines what
+environmental contrast is being learned. Covariates at observation points alone
+are not enough; the IPPP likelihood also needs covariates over the study window
+to define available habitat.
+
+Spatial block CV totals:
+
+| Model | Held-out log-likelihood |
 |---|---:|
-| Observed total count | 825 |
-| Simulated total mean | 784.34 |
-| Simulated total 2.5% quantile | 727.950 |
-| Simulated total 97.5% quantile | 837.000 |
-| Two-sided simulation p-value | 0.1520 |
+| HPPP | -16484.2557 |
+| Constant NN | -16484.2489 |
+| Linear IPPP | -16303.8328 |
+| Nonlinear IPPP | -16412.7032 |
 
-The observed total count is also inside the nonlinear simulation envelope,
-although the nonlinear model's expected count is somewhat lower than the
-observed count.
+The static covariates improve in-sample fit, especially for the nonlinear
+model, but they do not improve held-out spatial block likelihood relative to
+the coordinate-only linear model. The covariate nonlinear model is especially
+poorly calibrated in total-count simulation.
 
-## Inhomogeneous K Diagnostic
+Residual and simulation diagnostics:
 
-Linear IPPP:
+| Model | Mean raw residual | Mean Pearson residual | Pearson SD | Expected count |
+|---|---:|---:|---:|---:|
+| Linear IPPP | 0.000000 | -0.011604 | 1.993742 | 824.9998 |
+| Nonlinear IPPP | 0.021439 | 0.002100 | 1.417835 | 710.7501 |
 
-| Radius | Kinhom | Poisson theoretical |
-|---:|---:|---:|
-| 1742.0960 | 4.671149e+08 | 9.534415e+06 |
-| 3484.1920 | 5.955569e+08 | 3.813766e+07 |
-| 5226.2880 | 7.136685e+08 | 8.580973e+07 |
-| 6968.3840 | 9.458596e+08 | 1.525506e+08 |
-| 8710.4800 | 1.271512e+09 | 2.383604e+08 |
+| Model | Observed count | Simulated mean | 2.5% | 97.5% | p-value |
+|---|---:|---:|---:|---:|---:|
+| Linear IPPP | 825 | 825.27 | 768.950 | 885.050 | 0.9920 |
+| Nonlinear IPPP | 825 | 709.44 | 655.950 | 760.525 | 0.0000 |
 
-The approximate inhomogeneous K-function is well above the Poisson reference
-curve at small radii, suggesting residual clustering after the linear
-first-order intensity trend.
+Approximate inhomogeneous K diagnostics:
 
-Nonlinear IPPP:
-
-| Radius | Kinhom | Poisson theoretical |
-|---:|---:|---:|
-| 1742.0960 | 3.724361e+08 | 9.534415e+06 |
-| 3484.1920 | 4.259908e+08 | 3.813766e+07 |
-| 5226.2880 | 4.726995e+08 | 8.580973e+07 |
-| 6968.3840 | 5.348711e+08 | 1.525506e+08 |
-| 8710.4800 | 6.092544e+08 | 2.383604e+08 |
-
-The nonlinear model reduces the estimated K-function relative to the linear
-model, but the estimate remains well above the Poisson reference curve at short
-radii. This is consistent with the need for covariates, temporal terms, effort
-correction, or a richer clustered point-process model.
+| Model | Radius | Kinhom | Poisson theoretical |
+|---|---:|---:|---:|
+| Linear IPPP | 1742.0960 | 5.824366e+08 | 9.534415e+06 |
+| Linear IPPP | 3484.1920 | 7.333926e+08 | 3.813766e+07 |
+| Linear IPPP | 5226.2880 | 8.726226e+08 | 8.580973e+07 |
+| Linear IPPP | 6968.3840 | 1.164418e+09 | 1.525506e+08 |
+| Linear IPPP | 8710.4800 | 1.556633e+09 | 2.383604e+08 |
+| Nonlinear IPPP | 1742.0960 | 7.479942e+08 | 9.534415e+06 |
+| Nonlinear IPPP | 3484.1920 | 8.343663e+08 | 3.813766e+07 |
+| Nonlinear IPPP | 5226.2880 | 8.925454e+08 | 8.580973e+07 |
+| Nonlinear IPPP | 6968.3840 | 9.701416e+08 | 1.525506e+08 |
+| Nonlinear IPPP | 8710.4800 | 1.104006e+09 | 2.383604e+08 |
 
 ## Figures
 
-Observed point pattern:
+Coordinate-only spatial figures:
 
-![A map of Wood Thrush observations in North Carolina](../images/wood_thrush_nippp/wood_thrush_point_pattern.png)
+![Wood Thrush observations in North Carolina](../images/wood_thrush_nippp/wood_thrush_point_pattern.png)
 
-Fitted intensity comparison:
+![Coordinate-only intensity comparison](../images/wood_thrush_nippp/wood_thrush_intensity_comparison.png)
 
-![A side-by-side comparison of HPPP constant intensity, Linear IPPP fitted intensity, and Nonlinear IPPP fitted intensity for Wood Thrush observations](../images/wood_thrush_nippp/wood_thrush_intensity_comparison.png)
+![Coordinate-only spatial block cross-validation](../images/wood_thrush_nippp/wood_thrush_spatial_block_cv.png)
 
-Linear Pearson residual surface:
+Temporal figures:
 
-![A Pearson residual surface for the Wood Thrush Linear IPPP](../images/wood_thrush_nippp/wood_thrush_linear_ippp_pearson_residuals.png)
+![Temporal intensity comparison](../images/wood_thrush_nippp_temporal/wood_thrush_intensity_comparison.png)
 
-Nonlinear Pearson residual surface:
+![Temporal seasonal intensity curve](../images/wood_thrush_nippp_temporal/wood_thrush_temporal_intensity_curve.png)
 
-![A Pearson residual surface for the Wood Thrush Nonlinear IPPP](../images/wood_thrush_nippp/wood_thrush_nonlinear_ippp_pearson_residuals.png)
+![Temporal spatial block cross-validation](../images/wood_thrush_nippp_temporal/wood_thrush_spatial_block_cv.png)
 
-Berman-Turner grid sensitivity:
+Static covariate figures:
 
-![A grid sensitivity plot for the Wood Thrush Linear IPPP](../images/wood_thrush_nippp/wood_thrush_grid_sensitivity_loglik.png)
+![Static covariate intensity comparison](../images/wood_thrush_nippp_covariates/wood_thrush_intensity_comparison.png)
 
-Spatial block cross-validation:
+![Static covariate spatial block cross-validation](../images/wood_thrush_nippp_covariates/wood_thrush_spatial_block_cv.png)
 
-![A spatial block cross-validation plot for the Wood Thrush experiment](../images/wood_thrush_nippp/wood_thrush_spatial_block_cv.png)
+![Static covariate nonlinear simulation diagnostic](../images/wood_thrush_nippp_covariates/wood_thrush_nonlinear_simulated_total_count.png)
 
-Linear simulation diagnostic:
+## Current Interpretation
 
-![A histogram of simulated total Wood Thrush counts with observed and expected counts](../images/wood_thrush_nippp/wood_thrush_simulated_total_count.png)
+The strongest current result is that Wood Thrush reported observation intensity
+is not homogeneous across North Carolina. Coordinate-only spatial trends,
+seasonal day-of-year terms, and static environmental covariates all improve
+in-sample likelihood relative to the HPPP.
 
-Nonlinear simulation diagnostic:
+For generalization, the linear models are currently more reliable than the
+nonlinear models under spatial block cross-validation. The nonlinear models
+often improve in-sample likelihood and residual spread, but their held-out
+likelihood and simulation calibration show overfitting or poor count
+calibration.
 
-![A histogram of simulated total Wood Thrush counts under the Nonlinear IPPP with observed and expected counts](../images/wood_thrush_nippp/wood_thrush_nonlinear_simulated_total_count.png)
-
-Linear approximate inhomogeneous K-function:
-
-![An approximate inhomogeneous K-function diagnostic plot for the Wood Thrush experiment](../images/wood_thrush_nippp/wood_thrush_inhomogeneous_k.png)
-
-Nonlinear approximate inhomogeneous K-function:
-
-![An approximate inhomogeneous K-function diagnostic plot for the Wood Thrush Nonlinear IPPP](../images/wood_thrush_nippp/wood_thrush_nonlinear_inhomogeneous_k.png)
-
-## Interpretation
-
-The Wood Thrush experiment currently supports five main conclusions:
-
-- The Berman-Turner likelihood and PyTorch optimization are behaving as expected,
-  because the constant neural model recovers the HPPP baseline.
-- The linear IPPP substantially improves in-sample likelihood, AIC, BIC, and
-  likelihood-ratio fit relative to the HPPP.
-- The regularized nonlinear IPPP improves in-sample likelihood and AIC further,
-  but it does not beat the linear IPPP in total held-out spatial block
-  log-likelihood.
-- The linear IPPP is therefore the current preferred model by spatial
-  generalization, even though it is less flexible.
-- Residual diagnostics and the approximate inhomogeneous K-function indicate
-  remaining spatial structure, so the current coordinate-only spatial models are
-  still incomplete.
-
-The next modeling steps should add seasonal/temporal terms, observer-effort or
-sampling-bias controls, and environmental covariates such as canopy, elevation,
-distance to water, and distance to coast.
+The temporal run is ecologically important because Wood Thrush is migratory,
+and the cyclic day-of-year terms produce a well-calibrated total-count
+simulation for the linear temporal model. The next modeling step should combine
+the temporal terms with the spatial covariates, then reassess spatial block CV,
+simulation diagnostics, and the inhomogeneous K-function.

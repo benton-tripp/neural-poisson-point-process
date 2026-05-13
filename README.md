@@ -41,6 +41,7 @@ python scripts/data/usfs-tcc-canopy-bbox.py --south 33.85116926668266 --north 36
 python scripts/data/reproject-raster-to-template.py --input data/nc_usgs30m.tif --template data/nc_tcc_2020_2023.tif --output data/nc_usgs30m_match_tcc.tif
 python scripts/data/usgs-hydrography.py --south 33.85116926668266 --north 36.5881334409244 --west -84.32178200052 --east -75.45981513195132 --template data/nc_tcc_2020_2023.tif --output data/nc_hydro_distance_match_tcc.tif --boundary data/boundaries/nc_state_boundary.gpkg --search-buffer 10000
 python scripts/data/stack-rasters.py --inputs data/nc_tcc_2020_2023.tif data/nc_usgs30m_match_tcc.tif data/nc_hydro_distance_match_tcc.tif --crs EPSG:3857 --boundary data/boundaries/nc_state_boundary.gpkg --resampling bilinear --output data/nc_covariate_stack.tif
+python scripts/data/join-ebird-raster-covariates.py --points data/wood_thrush_nc_2020_2023.geojson --raster data/nc_covariate_stack.tif --output data/wood_thrush_nc_2020_2023_covariates.geojson
 python exp/plot_raster_previews.py 
 ```
 
@@ -62,6 +63,7 @@ Wood Thrush, North Carolina Experiment (temporal data, no covariates):
 
 ```
 python exp/wood_thrush_nippp.py --input data/wood_thrush_nc_2020_2023.geojson --boundary data/boundaries/nc_state_boundary.gpkg --analysis-crs EPSG:5070 --plot-crs EPSG:4326 --image-dir images/wood_thrush_nippp_temporal --cv-blocks-per-dim 5 --cv-folds 5 --simulation-count 500 --k-radii 50 --epochs-nonlinear 10000 --hidden-dim 16 --hidden-layers 1 --dropout 0.10 --nonlinear-lr 5e-4 --nonlinear-weight-decay 1e-3 --temporal-bins 12 --plot-day-of-year 150
+
 python exp/wood_thrush_temporal_gifs.py --input data/wood_thrush_nc_2020_2023.geojson --boundary data/boundaries/nc_state_boundary.gpkg --analysis-crs EPSG:5070 --plot-crs EPSG:4326 --output-dir images/wood_thrush_nippp_temporal/gifs --models linear nonlinear --grid-size 100 --plot-grid-size 120 --epochs-linear 10000 --epochs-nonlinear 10000 --hidden-dim 16 --hidden-layers 1 --dropout 0.10 --nonlinear-lr 5e-4 --nonlinear-weight-decay 1e-3 --temporal-bins 12
 
 ```
@@ -69,13 +71,13 @@ python exp/wood_thrush_temporal_gifs.py --input data/wood_thrush_nc_2020_2023.ge
 Wood Thrush, North Carolina Experiment (static data, with covariates):
 
 ```
-
+python exp/wood_thrush_nippp.py --input data/wood_thrush_nc_2020_2023_covariates.geojson --boundary data/boundaries/nc_state_boundary.gpkg --analysis-crs EPSG:5070 --plot-crs EPSG:4326 --image-dir images/wood_thrush_nippp_covariates --no-temporal --covariate-raster data/nc_covariate_stack.tif --covariates canopy_median nc_usgs30m_match_tcc distance_to_waterbody_m distance_to_coastline_m --cv-blocks-per-dim 5 --cv-folds 5 --simulation-count 500 --k-radii 50 --epochs-nonlinear 10000 --hidden-dim 16 --hidden-layers 1 --dropout 0.10 --nonlinear-lr 5e-4 --nonlinear-weight-decay 1e-3
 ```
 
 Wood Thrush, North Carolina Experiment (temporal data, with covariates):
 
 ```
-
+python exp/wood_thrush_nippp.py --input data/wood_thrush_nc_2020_2023_covariates.geojson --boundary data/boundaries/nc_state_boundary.gpkg --analysis-crs EPSG:5070 --plot-crs EPSG:4326 --image-dir images/wood_thrush_nippp_temporal_covariates --covariate-raster data/nc_covariate_stack.tif --covariates canopy_median nc_usgs30m_match_tcc distance_to_waterbody_m distance_to_coastline_m --cv-blocks-per-dim 5 --cv-folds 5 --simulation-count 500 --k-radii 50 --epochs-nonlinear 10000 --hidden-dim 16 --hidden-layers 1 --dropout 0.10 --nonlinear-lr 5e-4 --nonlinear-weight-decay 1e-3 --temporal-bins 12 --plot-day-of-year 150
 ```
 
 

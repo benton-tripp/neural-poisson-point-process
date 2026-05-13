@@ -1,13 +1,14 @@
 """
 Spatial IPPP experiment for Wood Thrush eBird observations.
 
-This mirrors the spatial portion of exp/nippp.py:
+This mirrors and extends the spatial portion of exp/nippp.py:
 
 - HPPP closed-form baseline
 - Constant neural IPPP sanity check
 - Linear IPPP with x/y trend
 - Regularized nonlinear neural IPPP with x/y trend
 - Optional cyclic day-of-year temporal terms
+- Optional raster-backed spatial covariates
 - likelihood-ratio test
 - Berman-Turner residual diagnostics
 - spatial block cross-validation
@@ -15,18 +16,27 @@ This mirrors the spatial portion of exp/nippp.py:
 - approximate inhomogeneous K diagnostics
 - grid-resolution sensitivity
 
-This version intentionally does not use raster covariates yet.
+Temporal terms and spatial covariates can be toggled independently or used
+together in the same model. When both are enabled, the linear and nonlinear
+IPPPs use x/y coordinates, selected raster covariates, and cyclic day-of-year
+features, and all diagnostics are recomputed for that combined feature set.
 The observation window can be an irregular boundary dataset, a WGS84 bbox, or
 the rectangular extent of the observations.
 
 Run from the project root:
 
     python exp/wood_thrush_nippp.py --input data/wood_thrush_nc_2020_2023.geojson
+
+Combined temporal plus covariate run:
+
+    python exp/wood_thrush_nippp.py --input data/wood_thrush_nc_2020_2023_covariates.geojson --boundary data/boundaries/nc_state_boundary.gpkg --analysis-crs EPSG:5070 --plot-crs EPSG:4326 --image-dir images/wood_thrush_nippp_temporal_covariates --covariate-raster data/nc_covariate_stack.tif --covariates canopy_median nc_usgs30m_match_tcc distance_to_waterbody_m distance_to_coastline_m --cv-blocks-per-dim 5 --cv-folds 5 --simulation-count 500 --k-radii 50 --epochs-nonlinear 10000 --hidden-dim 16 --hidden-layers 1 --dropout 0.10 --nonlinear-lr 5e-4 --nonlinear-weight-decay 1e-3 --temporal-bins 12 --plot-day-of-year 150
 """
 
 from __future__ import annotations
 
 import argparse
+import re
+import warnings
 from pathlib import Path
 
 import geopandas as gpd
@@ -36,6 +46,7 @@ from matplotlib.colors import Normalize, TwoSlopeNorm
 import numpy as np
 import pandas as pd
 from pyproj import CRS, Transformer
+import rasterio
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -48,6 +59,12 @@ DEFAULT_INPUT = "data/wood_thrush_nc_2020_2023.geojson"
 DEFAULT_IMAGE_DIR = "images/wood_thrush_nippp"
 MIN_LAMBDA = 1e-30
 MIN_EXPECTED_COUNT = 1e-12
+DEFAULT_COVARIATES = [
+    "canopy_median",
+    "nc_usgs30m_match_tcc",
+    "distance_to_waterbody_m",
+    "distance_to_coastline_m",
+]
 
 
 def parse_args() -> argparse.Namespace:
@@ -159,6 +176,28 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=150,
         help="Day of year used for map intensity surfaces when temporal terms are enabled. Defaults to 150.",
+    )
+    parser.add_argument(
+        "--covariate-raster",
+        help=(
+            "Optional raster stack used to sample spatial covariates at observed "
+            "points and quadrature cells."
+        ),
+    )
+    parser.add_argument(
+        "--covariates",
+        nargs="+",
+        default=None,
+        help=(
+            "Covariate columns to use from --covariate-raster. Defaults to "
+            "canopy_median nc_usgs30m_match_tcc distance_to_waterbody_m "
+            "distance_to_coastline_m when a covariate raster is provided."
+        ),
+    )
+    parser.add_argument(
+        "--canopy-prefix",
+        default="tcc_",
+        help="Band-name prefix used to identify yearly canopy bands. Defaults to tcc_.",
     )
     parser.add_argument(
         "--grid-sensitivity",
@@ -357,6 +396,187 @@ def phase_from_day_of_year(day_of_year: int) -> float:
     return ((float(day_of_year) - 1.0) / 365.25) % 1.0
 
 
+def selected_covariates(args: argparse.Namespace) -> list[str]:
+    if args.covariate_raster is None:
+        if args.covariates is not None:
+            raise ValueError("--covariates requires --covariate-raster.")
+        return []
+    return args.covariates if args.covariates is not None else list(DEFAULT_COVARIATES)
+
+
+def snake_case(value: str) -> str:
+    value = value.strip().lower()
+    value = re.sub(r"[^a-z0-9]+", "_", value)
+    value = re.sub(r"_+", "_", value).strip("_")
+    return value or "band"
+
+
+def unique_names(names: list[str]) -> list[str]:
+    seen: dict[str, int] = {}
+    unique = []
+    for name in names:
+        count = seen.get(name, 0)
+        seen[name] = count + 1
+        unique.append(name if count == 0 else f"{name}_{count + 1}")
+    return unique
+
+
+class RasterCovariateSampler:
+    def __init__(
+        self,
+        raster_path: Path,
+        selected_covariates: list[str],
+        canopy_prefix: str,
+    ):
+        if not raster_path.exists():
+            raise FileNotFoundError(f"Covariate raster does not exist: {raster_path}")
+
+        self.raster_path = raster_path
+        self.selected_covariates = selected_covariates
+        self.canopy_prefix = canopy_prefix
+        with rasterio.open(raster_path) as src:
+            if src.crs is None:
+                raise ValueError(f"Covariate raster has no CRS: {raster_path}")
+            self.crs = src.crs
+            self.band_names = self._band_names(src)
+            self.nodatavals = src.nodatavals
+
+        missing = [name for name in selected_covariates if name not in self.available_covariates]
+        if missing:
+            raise ValueError(
+                "Requested covariate(s) are unavailable in the raster stack: "
+                + ", ".join(missing)
+                + f". Available: {', '.join(self.available_covariates)}"
+            )
+
+    @staticmethod
+    def _band_names(src: rasterio.DatasetReader) -> list[str]:
+        names = []
+        for index, description in enumerate(src.descriptions, start=1):
+            names.append(snake_case(description if description else f"band_{index}"))
+        return unique_names(names)
+
+    @property
+    def canopy_columns(self) -> list[str]:
+        return [name for name in self.band_names if name.startswith(self.canopy_prefix)]
+
+    @property
+    def available_covariates(self) -> list[str]:
+        names = list(self.band_names)
+        if self.canopy_columns:
+            names.append("canopy_median")
+        return names
+
+    def selected_values_from_bands(self, band_values: np.ndarray) -> np.ndarray:
+        values_by_name = {
+            name: band_values[:, band_index]
+            for band_index, name in enumerate(self.band_names)
+        }
+        if self.canopy_columns:
+            canopy_values = np.column_stack([values_by_name[name] for name in self.canopy_columns])
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=RuntimeWarning)
+                values_by_name["canopy_median"] = np.nanmedian(canopy_values, axis=1)
+        return np.column_stack([values_by_name[name] for name in self.selected_covariates])
+
+    def clean_nodata(self, values: np.ndarray, src: rasterio.DatasetReader) -> np.ndarray:
+        values = np.asarray(values, dtype=np.float64)
+        for band_index, nodata in enumerate(src.nodatavals):
+            if nodata is not None:
+                values[:, band_index] = np.where(
+                    values[:, band_index] == nodata,
+                    np.nan,
+                    values[:, band_index],
+                )
+        return values
+
+    def nearest_valid_covariates(
+        self,
+        src: rasterio.DatasetReader,
+        x: float,
+        y: float,
+        max_radius_pixels: int = 8,
+    ) -> np.ndarray | None:
+        row, col = src.index(x, y)
+        row = int(np.clip(row, 0, src.height - 1))
+        col = int(np.clip(col, 0, src.width - 1))
+        best_distance = np.inf
+        best_values = None
+
+        for radius in range(1, max_radius_pixels + 1):
+            row_start = max(0, row - radius)
+            row_stop = min(src.height, row + radius + 1)
+            col_start = max(0, col - radius)
+            col_stop = min(src.width, col + radius + 1)
+            if row_stop <= row_start or col_stop <= col_start:
+                continue
+            window = rasterio.windows.Window(
+                col_start,
+                row_start,
+                col_stop - col_start,
+                row_stop - row_start,
+            )
+            data = src.read(window=window, masked=True).astype(np.float64).filled(np.nan)
+            band_pixels = data.reshape(src.count, -1).T
+            band_pixels = self.clean_nodata(band_pixels, src)
+            selected = self.selected_values_from_bands(band_pixels)
+            valid = ~np.isnan(selected).any(axis=1)
+            if not np.any(valid):
+                continue
+
+            rows, cols = np.indices((row_stop - row_start, col_stop - col_start))
+            rows = rows.ravel() + row_start
+            cols = cols.ravel() + col_start
+            distances = (rows - row) ** 2 + (cols - col) ** 2
+            valid_indices = np.flatnonzero(valid)
+            nearest_index = valid_indices[np.argmin(distances[valid_indices])]
+            nearest_distance = distances[nearest_index]
+            if nearest_distance < best_distance:
+                best_distance = nearest_distance
+                best_values = selected[nearest_index]
+            break
+
+        return best_values
+
+    def sample(self, spatial_raw: np.ndarray, source_crs) -> np.ndarray:
+        return self.sample_with_mask(spatial_raw, source_crs, allow_missing=False)[0]
+
+    def sample_with_mask(
+        self,
+        spatial_raw: np.ndarray,
+        source_crs,
+        allow_missing: bool = False,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        transformer = Transformer.from_crs(source_crs, self.crs, always_xy=True)
+        xs, ys = transformer.transform(spatial_raw[:, 0], spatial_raw[:, 1])
+        coordinates = list(zip(xs, ys))
+
+        with rasterio.open(self.raster_path) as src:
+            sampled = np.ma.asarray(list(src.sample(coordinates, masked=True)), dtype=np.float64)
+            sampled = sampled.filled(np.nan)
+            sampled = self.clean_nodata(sampled, src)
+            output = self.selected_values_from_bands(sampled)
+
+            missing_rows = np.flatnonzero(np.isnan(output).any(axis=1))
+            for row_index in missing_rows:
+                replacement = self.nearest_valid_covariates(
+                    src,
+                    coordinates[row_index][0],
+                    coordinates[row_index][1],
+                )
+                if replacement is not None:
+                    output[row_index] = replacement
+
+        missing_mask = np.isnan(output).any(axis=1)
+        if missing_mask.any() and not allow_missing:
+            bad_rows = int(np.isnan(output).any(axis=1).sum())
+            raise ValueError(
+                f"Sampled covariates contain missing values for {bad_rows:,} row(s). "
+                "Check raster coverage, boundary, and selected covariates."
+            )
+        return output.astype(np.float64), ~missing_mask
+
+
 class ConstantIPPP(nn.Module):
     """Constant-intensity IPPP: lambda(s) = lambda0."""
 
@@ -445,17 +665,31 @@ def lr_stat(ll_full: float, ll_reduced: float) -> float:
     return 2 * (ll_full - ll_reduced)
 
 
+def two_sided_simulation_pvalue(values: np.ndarray, observed: float) -> float:
+    lower_tail = np.mean(values <= observed)
+    upper_tail = np.mean(values >= observed)
+    return min(1.0, 2.0 * min(lower_tail, upper_tail))
+
+
 class WoodThrushExperiment:
     def __init__(
         self,
         coords_np: np.ndarray,
         window_geom,
         grid_size: int,
+        coord_crs,
+        covariate_sampler: RasterCovariateSampler | None = None,
         temporal_phase_np: np.ndarray | None = None,
         temporal_duration: float = 1.0,
         temporal_bins: int = 1,
     ):
         self.coords_np = coords_np.astype(np.float64)
+        self.coord_crs = coord_crs
+        self.covariate_sampler = covariate_sampler
+        self.use_covariates = covariate_sampler is not None
+        self.covariate_names = (
+            covariate_sampler.selected_covariates if covariate_sampler is not None else []
+        )
         self.temporal_phase_np = temporal_phase_np
         self.use_temporal = temporal_phase_np is not None
         if self.use_temporal and len(temporal_phase_np) != len(coords_np):
@@ -478,16 +712,30 @@ class WoodThrushExperiment:
         self.mean = self.coords_np.mean(axis=0)
         self.std = self.coords_np.std(axis=0)
         self.std[self.std == 0] = 1.0
+        if self.use_covariates:
+            self.covariates_np = self.covariate_sampler.sample(self.coords_np, self.coord_crs)
+            self.covariate_mean = self.covariates_np.mean(axis=0)
+            self.covariate_std = self.covariates_np.std(axis=0)
+            self.covariate_std[self.covariate_std == 0] = 1.0
+        else:
+            self.covariates_np = None
+            self.covariate_mean = None
+            self.covariate_std = None
         self.quad_keep_mask = None
         self.quad_raw_np = None
         self.quad_spatial_raw_np = None
         self.quad_spatial_weights_np = None
         self.quad_spatial_index_np = None
         self.quad_temporal_phase_np = None
+        self.quad_covariates_np = None
         self.quad_counts_np = None
         self.quad_weights_np = None
         self.coords_obs = torch.tensor(
-            self.make_features(self.coords_np, self.temporal_phase_np),
+            self.make_features(
+                self.coords_np,
+                temporal_phase=self.temporal_phase_np,
+                covariates_raw=self.covariates_np,
+            ),
             dtype=torch.float32,
         )
         self.quad_coords, self.quad_counts, self.quad_weights = (
@@ -496,16 +744,30 @@ class WoodThrushExperiment:
 
     @property
     def input_dim(self) -> int:
-        return 4 if self.use_temporal else 2
+        dim = 2
+        if self.use_covariates:
+            dim += len(self.covariate_names)
+        if self.use_temporal:
+            dim += 2
+        return dim
 
     def make_features(
         self,
         spatial_raw: np.ndarray,
         temporal_phase: np.ndarray | None = None,
+        covariates_raw: np.ndarray | None = None,
     ) -> np.ndarray:
-        spatial = (spatial_raw - self.mean) / self.std
+        parts = [(spatial_raw - self.mean) / self.std]
+
+        if self.use_covariates:
+            if covariates_raw is None:
+                covariates_raw = self.covariate_sampler.sample(spatial_raw, self.coord_crs)
+            covariates = (covariates_raw - self.covariate_mean) / self.covariate_std
+            parts.append(covariates)
+
         if not self.use_temporal:
-            return spatial
+            return np.column_stack(parts)
+
         if temporal_phase is None:
             raise ValueError("Temporal phase is required for temporal models.")
         phase = np.asarray(temporal_phase, dtype=np.float64).reshape(-1)
@@ -513,7 +775,8 @@ class WoodThrushExperiment:
             raise ValueError("Temporal phase must have one value per feature row.")
         angle = 2.0 * np.pi * phase
         temporal = np.column_stack([np.sin(angle), np.cos(angle)])
-        return np.column_stack([spatial, temporal])
+        parts.append(temporal)
+        return np.column_stack(parts)
 
     def make_berman_turner_grid(
         self, n_per_dim: int
@@ -534,6 +797,7 @@ class WoodThrushExperiment:
         y_counts_all = counts.ravel().astype(np.float64)
 
         weights = []
+        sample_points = []
         for i in range(n_per_dim):
             for j in range(n_per_dim):
                 cell = box(
@@ -542,15 +806,27 @@ class WoodThrushExperiment:
                     x_edges[i + 1],
                     y_edges[j + 1],
                 )
-                weights.append(cell.intersection(self.window_geom).area)
+                intersection = cell.intersection(self.window_geom)
+                weights.append(intersection.area)
+                if intersection.is_empty:
+                    sample_points.append((gx[i, j], gy[i, j]))
+                else:
+                    point = intersection.representative_point()
+                    sample_points.append((point.x, point.y))
 
         weights = np.asarray(weights, dtype=np.float64)
+        sample_points = np.asarray(sample_points, dtype=np.float64)
         keep = weights > 0
         if not np.any(keep):
             raise ValueError("No quadrature grid cells intersect the study window.")
 
-        spatial_raw = grid_raw[keep]
+        spatial_raw = sample_points[keep]
         spatial_weights = weights[keep]
+        spatial_covariates = (
+            self.covariate_sampler.sample(spatial_raw, self.coord_crs)
+            if self.use_covariates
+            else None
+        )
 
         if self.use_temporal:
             t_edges = np.linspace(0.0, 1.0, self.temporal_bins + 1)
@@ -570,18 +846,29 @@ class WoodThrushExperiment:
             spatial_index = np.repeat(np.arange(len(spatial_raw)), self.temporal_bins)
             temporal_phase = np.tile(t_centers, len(spatial_raw))
             feature_spatial = np.repeat(spatial_raw, self.temporal_bins, axis=0)
-            feature_matrix = self.make_features(feature_spatial, temporal_phase)
+            feature_covariates = (
+                np.repeat(spatial_covariates, self.temporal_bins, axis=0)
+                if self.use_covariates
+                else None
+            )
+            feature_matrix = self.make_features(
+                feature_spatial,
+                temporal_phase=temporal_phase,
+                covariates_raw=feature_covariates,
+            )
             y_counts = counts_spacetime.ravel().astype(np.float64)
             temporal_width = self.temporal_duration / self.temporal_bins
             weights = np.repeat(spatial_weights, self.temporal_bins) * temporal_width
             quad_raw = feature_spatial
+            quad_covariates = feature_covariates
         else:
             spatial_index = np.arange(len(spatial_raw))
             temporal_phase = None
-            feature_matrix = self.make_features(spatial_raw)
+            feature_matrix = self.make_features(spatial_raw, covariates_raw=spatial_covariates)
             y_counts = y_counts_all[keep]
             weights = spatial_weights
             quad_raw = spatial_raw
+            quad_covariates = spatial_covariates
 
         if n_per_dim == self.grid_size:
             self.quad_keep_mask = keep
@@ -590,6 +877,7 @@ class WoodThrushExperiment:
             self.quad_spatial_weights_np = spatial_weights
             self.quad_spatial_index_np = spatial_index
             self.quad_temporal_phase_np = temporal_phase
+            self.quad_covariates_np = quad_covariates
             self.quad_counts_np = y_counts
             self.quad_weights_np = weights
 
@@ -694,26 +982,58 @@ class WoodThrushExperiment:
         gx, gy = np.meshgrid(xs, ys)
 
         grid_raw = np.column_stack([gx.ravel(), gy.ravel()])
-        if self.use_temporal:
-            if temporal_phase is None:
-                raise ValueError("A temporal phase is required for temporal intensity prediction.")
-            phase = np.full(len(grid_raw), temporal_phase, dtype=np.float64)
-            grid_features = self.make_features(grid_raw, phase)
-        else:
-            grid_features = self.make_features(grid_raw)
-        grid_tensor = torch.tensor(grid_features, dtype=torch.float32)
-
-        with torch.no_grad():
-            intensity = model(grid_tensor).numpy().reshape(n_per_dim, n_per_dim)
-
         window_mask = np.array(
             [
                 self.window_geom.intersects(Point(x, y))
                 for x, y in grid_raw
             ],
             dtype=bool,
-        ).reshape(n_per_dim, n_per_dim)
-        intensity[~window_mask] = np.nan
+        )
+        grid_features = np.zeros((len(grid_raw), self.input_dim), dtype=np.float64)
+        if self.use_temporal:
+            if temporal_phase is None:
+                raise ValueError("A temporal phase is required for temporal intensity prediction.")
+            valid_grid = window_mask.copy()
+            if self.use_covariates:
+                grid_covariates, valid_covariates = self.covariate_sampler.sample_with_mask(
+                    grid_raw[window_mask],
+                    self.coord_crs,
+                    allow_missing=True,
+                )
+                valid_indices = np.flatnonzero(window_mask)
+                valid_grid[valid_indices[~valid_covariates]] = False
+                grid_covariates = grid_covariates[valid_covariates]
+            else:
+                grid_covariates = None
+            phase = np.full(valid_grid.sum(), temporal_phase, dtype=np.float64)
+            grid_features[valid_grid] = self.make_features(
+                grid_raw[valid_grid],
+                temporal_phase=phase,
+                covariates_raw=grid_covariates,
+            )
+        else:
+            valid_grid = window_mask.copy()
+            if self.use_covariates:
+                grid_covariates, valid_covariates = self.covariate_sampler.sample_with_mask(
+                    grid_raw[window_mask],
+                    self.coord_crs,
+                    allow_missing=True,
+                )
+                valid_indices = np.flatnonzero(window_mask)
+                valid_grid[valid_indices[~valid_covariates]] = False
+                grid_covariates = grid_covariates[valid_covariates]
+            else:
+                grid_covariates = None
+            grid_features[valid_grid] = self.make_features(
+                grid_raw[valid_grid],
+                covariates_raw=grid_covariates,
+            )
+        grid_tensor = torch.tensor(grid_features, dtype=torch.float32)
+
+        with torch.no_grad():
+            intensity = model(grid_tensor).numpy().reshape(n_per_dim, n_per_dim)
+
+        intensity[~valid_grid.reshape(n_per_dim, n_per_dim)] = np.nan
 
         return gx, gy, intensity
 
@@ -766,13 +1086,17 @@ def run_grid_sensitivity(
                 "LR_p_value": chi2.sf(lr_value, df=experiment.input_dim),
                 "beta_x": lin_g.linear.weight.detach().numpy()[0, 0],
                 "beta_y": lin_g.linear.weight.detach().numpy()[0, 1],
+                **{
+                    f"beta_{name}": lin_g.linear.weight.detach().numpy()[0, index + 2]
+                    for index, name in enumerate(experiment.covariate_names)
+                },
                 "beta_sin_doy": (
-                    lin_g.linear.weight.detach().numpy()[0, 2]
+                    lin_g.linear.weight.detach().numpy()[0, 2 + len(experiment.covariate_names)]
                     if experiment.use_temporal
                     else np.nan
                 ),
                 "beta_cos_doy": (
-                    lin_g.linear.weight.detach().numpy()[0, 3]
+                    lin_g.linear.weight.detach().numpy()[0, 3 + len(experiment.covariate_names)]
                     if experiment.use_temporal
                     else np.nan
                 ),
@@ -990,7 +1314,11 @@ def inhomogeneous_k_diagnostic(
         integrated = np.zeros(len(coords), dtype=np.float64)
         for phase in t_centers:
             phases = np.full(len(coords), phase, dtype=np.float64)
-            features = experiment.make_features(coords, phases)
+            features = experiment.make_features(
+                coords,
+                temporal_phase=phases,
+                covariates_raw=experiment.covariates_np,
+            )
             with torch.no_grad():
                 lambda_vals = model(torch.tensor(features, dtype=torch.float32)).numpy().ravel()
             integrated += lambda_vals * temporal_width
@@ -1313,7 +1641,16 @@ def average_spatial_intensity_by_day(
     for day in day_of_year:
         phase = phase_from_day_of_year(int(day))
         phases = np.full(len(experiment.quad_spatial_raw_np), phase, dtype=np.float64)
-        features = experiment.make_features(experiment.quad_spatial_raw_np, phases)
+        covariates = (
+            experiment.covariate_sampler.sample(experiment.quad_spatial_raw_np, experiment.coord_crs)
+            if experiment.use_covariates
+            else None
+        )
+        features = experiment.make_features(
+            experiment.quad_spatial_raw_np,
+            temporal_phase=phases,
+            covariates_raw=covariates,
+        )
         with torch.no_grad():
             lambda_vals = model(torch.tensor(features, dtype=torch.float32)).numpy().ravel()
         values.append(float(np.sum(spatial_weights * lambda_vals) / np.sum(spatial_weights)))
@@ -1460,6 +1797,16 @@ def main() -> None:
     )
 
     coords_np = np.column_stack([points.geometry.x, points.geometry.y]).astype(np.float64)
+    covariate_names = selected_covariates(args)
+    covariate_sampler = None
+    if covariate_names:
+        covariate_sampler = RasterCovariateSampler(
+            Path(args.covariate_raster),
+            selected_covariates=covariate_names,
+            canopy_prefix=args.canopy_prefix,
+        )
+        print(f"Using spatial covariates: {', '.join(covariate_names)}")
+
     if args.use_temporal:
         temporal_phase_np, temporal_duration = temporal_phase_from_dates(points, args.date_column)
         print(
@@ -1472,11 +1819,15 @@ def main() -> None:
     plot_temporal_phase = (
         phase_from_day_of_year(args.plot_day_of_year) if args.use_temporal else None
     )
+    if covariate_sampler is not None and temporal_phase_np is not None:
+        print("Using combined spatial covariate + cyclic temporal model features.")
 
     experiment = WoodThrushExperiment(
         coords_np=coords_np,
         window_geom=window_geom,
         grid_size=args.grid_size,
+        coord_crs=points.crs,
+        covariate_sampler=covariate_sampler,
         temporal_phase_np=temporal_phase_np,
         temporal_duration=temporal_duration,
         temporal_bins=args.temporal_bins,
@@ -1562,6 +1913,8 @@ def main() -> None:
     print("\nSanity checks:")
     print(f"Observations: {experiment.n:,}")
     print(f"Window area: {experiment.area:.4f}")
+    if experiment.use_covariates:
+        print(f"Covariates: {', '.join(experiment.covariate_names)}")
     if experiment.use_temporal:
         print(f"Temporal duration days: {experiment.temporal_duration:.0f}")
         print(f"Space-time measure: {experiment.measure:.4f}")
@@ -1579,16 +1932,20 @@ def main() -> None:
         f"{weight[0, 0]:.4f}*x",
         f"{weight[0, 1]:.4f}*y",
     ]
+    for cov_index, covariate_name in enumerate(experiment.covariate_names):
+        formula_terms.append(f"{weight[0, 2 + cov_index]:.4f}*{covariate_name}")
     if experiment.use_temporal:
+        temporal_start = 2 + len(experiment.covariate_names)
         formula_terms.extend(
             [
-                f"{weight[0, 2]:.4f}*sin_doy",
-                f"{weight[0, 3]:.4f}*cos_doy",
+                f"{weight[0, temporal_start]:.4f}*sin_doy",
+                f"{weight[0, temporal_start + 1]:.4f}*cos_doy",
             ]
         )
     print(
         "Fitted model is approximately: "
-        f"lambda(s,t) = exp({lin_model.linear.bias.item():.4f} + "
+        f"{'lambda(s,t)' if experiment.use_temporal else 'lambda(s)'} = "
+        f"exp({lin_model.linear.bias.item():.4f} + "
         + " + ".join(formula_terms)
         + ")"
     )
@@ -1670,18 +2027,14 @@ def main() -> None:
     simulation_nonlinear_df["model"] = "Nonlinear IPPP"
     observed_total = float(simulation_df["observed_total"].iloc[0])
     simulated_totals = simulation_df["total_count"].to_numpy()
-    lower_tail = np.mean(simulated_totals <= observed_total)
-    upper_tail = np.mean(simulated_totals >= observed_total)
     print("\nSimulation Diagnostics:")
     print("Linear IPPP:")
     print(f"Observed total count: {observed_total:.0f}")
     print(f"Simulated total mean: {simulated_totals.mean():.2f}")
     print(f"Simulated total 2.5%-97.5%: {np.quantile(simulated_totals, [0.025, 0.975])}")
-    print(f"Two-sided simulation p-value: {2 * min(lower_tail, upper_tail):.4f}")
+    print(f"Two-sided simulation p-value: {two_sided_simulation_pvalue(simulated_totals, observed_total):.4f}")
     observed_total_nonlinear = float(simulation_nonlinear_df["observed_total"].iloc[0])
     simulated_totals_nonlinear = simulation_nonlinear_df["total_count"].to_numpy()
-    lower_tail_nonlinear = np.mean(simulated_totals_nonlinear <= observed_total_nonlinear)
-    upper_tail_nonlinear = np.mean(simulated_totals_nonlinear >= observed_total_nonlinear)
     print("Nonlinear IPPP:")
     print(f"Observed total count: {observed_total_nonlinear:.0f}")
     print(f"Simulated total mean: {simulated_totals_nonlinear.mean():.2f}")
@@ -1689,7 +2042,10 @@ def main() -> None:
         "Simulated total 2.5%-97.5%: "
         f"{np.quantile(simulated_totals_nonlinear, [0.025, 0.975])}"
     )
-    print(f"Two-sided simulation p-value: {2 * min(lower_tail_nonlinear, upper_tail_nonlinear):.4f}")
+    print(
+        "Two-sided simulation p-value: "
+        f"{two_sided_simulation_pvalue(simulated_totals_nonlinear, observed_total_nonlinear):.4f}"
+    )
 
     k_df = inhomogeneous_k_diagnostic(
         experiment=experiment,
@@ -1709,6 +2065,11 @@ def main() -> None:
     print("Nonlinear IPPP:")
     print(k_nonlinear_df.head())
 
+    results_df.to_csv(image_dir / "wood_thrush_model_comparison.csv", index=False)
+    grid_sensitivity_df.to_csv(
+        image_dir / "wood_thrush_grid_sensitivity.csv",
+        index=False,
+    )
     cv_df.to_csv(image_dir / "wood_thrush_spatial_block_cv.csv", index=False)
     simulation_df.to_csv(image_dir / "wood_thrush_simulation_diagnostics.csv", index=False)
     simulation_nonlinear_df.to_csv(
@@ -1795,5 +2156,52 @@ if __name__ == "__main__":
     main()
 
 # TODO:
-# - Incorporating spatial covariates (both temporal and non-temporal) using raster data
 # - Adding temporal residual diagnostics beyond the annual-cycle curve
+# - Reducing overfitting while keeping ecologically important components:
+#   1. Add penalized linear IPPP fits. The current linear model is effectively
+#      unpenalized, so add ridge/L2 or elastic-net penalties for covariate
+#      coefficients. Temporal terms are strongly justified for a migratory
+#      species and should be penalized less heavily, or separately, from static
+#      spatial covariates.
+#   2. Prefer structured nonlinear models over a generic fully flexible NN.
+#      A better target is an additive log-intensity such as:
+#
+#          log lambda(s, t, z) =
+#              intercept
+#              + broad spatial trend
+#              + cyclic seasonal effect
+#              + covariate effects
+#              + small nonlinear residual correction
+#
+#      This is closer to a GAM/IPPP than a black-box NN and should reduce the
+#      model's ability to absorb clustered sampling artifacts as ecological
+#      signal.
+#   3. Implement a residual nonlinear model:
+#
+#          log lambda = linear_temporal_covariate_predictor + f_nn(features)
+#
+#      with a penalty that shrinks f_nn toward zero. This keeps the temporal
+#      and covariate structure primary, and only lets the NN explain remaining
+#      structure when it improves held-out spatial likelihood.
+#   4. Use spatial-block validation for nonlinear early stopping. The current
+#      nonlinear models improve in-sample BT likelihood but often lose held-out
+#      block likelihood and total-count calibration. Stop training when
+#      held-out spatial-block likelihood stops improving.
+#   5. Add an optional total-count calibration penalty for experimental runs:
+#
+#          alpha * (expected_total - observed_total)^2 / observed_total
+#
+#      This is not pure IPPP maximum likelihood, but it directly targets the
+#      observed failure mode where nonlinear models underpredict the total
+#      expected count while fitting local structure.
+#   6. Compare reduced feature sets to diagnose confounding:
+#      temporal + coordinates only; temporal + covariates only; temporal +
+#      covariates + broad spatial trend; temporal + covariates + penalized
+#      nonlinear residual. This is especially important because canopy,
+#      elevation, distance to coast, and x/y location can be spatially
+#      confounded in North Carolina.
+#   7. Add year-aligned canopy covariates. The current combined run used
+#      `canopy_median` because that was the selected covariate name. To use
+#      annual canopy aligned with each observation year, add a dynamic
+#      covariate feature that selects the matching `tcc_<year>` band for
+#      observation points and the matching year/bin during quadrature.
