@@ -136,6 +136,24 @@ def parse_args() -> argparse.Namespace:
         help="Adam learning rate. Defaults to 1e-3.",
     )
     parser.add_argument(
+        "--linear-xy-l2",
+        type=float,
+        default=0.0,
+        help="L2 penalty weight for linear IPPP x/y coefficients. Defaults to 0.",
+    )
+    parser.add_argument(
+        "--linear-covariate-l2",
+        type=float,
+        default=0.0,
+        help="L2 penalty weight for linear IPPP covariate coefficients. Defaults to 0.",
+    )
+    parser.add_argument(
+        "--linear-temporal-l2",
+        type=float,
+        default=0.0,
+        help="L2 penalty weight for linear IPPP cyclic temporal coefficients. Defaults to 0.",
+    )
+    parser.add_argument(
         "--nonlinear-lr",
         type=float,
         default=5e-4,
@@ -935,6 +953,7 @@ class WoodThrushExperiment:
         epochs: int,
         lr: float,
         weight_decay: float = 0.0,
+        linear_l2_weights: torch.Tensor | None = None,
         q_coords: torch.Tensor | None = None,
         q_counts: torch.Tensor | None = None,
         q_weights: torch.Tensor | None = None,
@@ -948,10 +967,35 @@ class WoodThrushExperiment:
             model.train()
             opt.zero_grad()
             loss = self.bt_nll_grid(model, q_coords, q_counts, q_weights)
+            if linear_l2_weights is not None:
+                if not isinstance(model, LinearIPPP):
+                    raise ValueError("linear_l2_weights can only be used with LinearIPPP.")
+                penalty = (linear_l2_weights * model.linear.weight.pow(2)).sum()
+                loss = loss + penalty
             loss.backward()
             opt.step()
         model.eval()
         return model
+
+    def linear_l2_weights(
+        self,
+        xy_l2: float,
+        covariate_l2: float,
+        temporal_l2: float,
+    ) -> torch.Tensor | None:
+        if xy_l2 < 0 or covariate_l2 < 0 or temporal_l2 < 0:
+            raise ValueError("Linear L2 penalty weights must be non-negative.")
+        weights = np.zeros(self.input_dim, dtype=np.float32)
+        weights[:2] = xy_l2
+        if self.use_covariates:
+            start = 2
+            stop = start + len(self.covariate_names)
+            weights[start:stop] = covariate_l2
+        if self.use_temporal:
+            weights[-2:] = temporal_l2
+        if not np.any(weights > 0):
+            return None
+        return torch.tensor(weights.reshape(1, -1), dtype=torch.float32)
 
     def berman_turner_residuals(
         self, model: nn.Module
@@ -1046,6 +1090,7 @@ def run_grid_sensitivity(
     epochs_constant: int,
     epochs_linear: int,
     lr: float,
+    linear_l2_weights: torch.Tensor | None,
 ) -> pd.DataFrame:
     rows = []
 
@@ -1066,6 +1111,7 @@ def run_grid_sensitivity(
             LinearIPPP(input_dim=experiment.input_dim, lambda_init=lambda_hat),
             epochs=epochs_linear,
             lr=lr,
+            linear_l2_weights=linear_l2_weights,
             q_coords=q_coords,
             q_counts=q_counts,
             q_weights=q_weights,
@@ -1156,6 +1202,7 @@ def run_spatial_block_cv(
     hidden_layers: int,
     dropout: float,
     lr: float,
+    linear_l2_weights: torch.Tensor | None,
     nonlinear_lr: float,
     nonlinear_weight_decay: float,
 ) -> pd.DataFrame:
@@ -1221,6 +1268,7 @@ def run_spatial_block_cv(
             LinearIPPP(input_dim=experiment.input_dim, lambda_init=lambda_train),
             epochs=epochs_linear,
             lr=lr,
+            linear_l2_weights=linear_l2_weights,
             q_coords=q_train_coords,
             q_counts=q_train_counts,
             q_weights=q_train_weights,
@@ -1293,6 +1341,58 @@ def run_simulation_diagnostics(
             "expected_total": expected.sum(),
         }
     )
+
+
+def run_temporal_residual_diagnostics(
+    experiment: WoodThrushExperiment,
+    model: nn.Module,
+    model_name: str,
+) -> pd.DataFrame:
+    if not experiment.use_temporal:
+        return pd.DataFrame()
+    if experiment.quad_temporal_phase_np is None:
+        raise ValueError("Temporal quadrature phases are unavailable.")
+
+    raw_resid, pearson_resid, expected_counts, observed_counts = (
+        experiment.berman_turner_residuals(model)
+    )
+    phase = experiment.quad_temporal_phase_np
+    bin_index = np.clip(
+        np.floor(phase * experiment.temporal_bins).astype(int),
+        0,
+        experiment.temporal_bins - 1,
+    )
+
+    rows = []
+    for index in range(experiment.temporal_bins):
+        mask = bin_index == index
+        if not np.any(mask):
+            continue
+        phase_start = index / experiment.temporal_bins
+        phase_end = (index + 1) / experiment.temporal_bins
+        phase_center = 0.5 * (phase_start + phase_end)
+        day_start = int(np.floor(phase_start * 365.25)) + 1
+        day_end = int(np.floor(phase_end * 365.25))
+        day_center = int(round(phase_center * 365.25)) + 1
+        rows.append(
+            {
+                "model": model_name,
+                "temporal_bin": index + 1,
+                "phase_start": phase_start,
+                "phase_end": phase_end,
+                "phase_center": phase_center,
+                "day_start": day_start,
+                "day_end": day_end,
+                "day_center": min(day_center, 366),
+                "observed_count": float(observed_counts[mask].sum()),
+                "expected_count": float(expected_counts[mask].sum()),
+                "raw_residual": float(raw_resid[mask].sum()),
+                "mean_pearson_residual": float(np.nanmean(pearson_resid[mask])),
+                "pearson_residual_sd": float(np.nanstd(pearson_resid[mask])),
+            }
+        )
+
+    return pd.DataFrame(rows)
 
 
 def inhomogeneous_k_diagnostic(
@@ -1689,6 +1789,55 @@ def plot_temporal_intensity_curve(
     plt.close(fig)
 
 
+def plot_temporal_residual_diagnostics(
+    temporal_residual_df: pd.DataFrame,
+    image_dir: Path,
+) -> None:
+    if temporal_residual_df.empty:
+        return
+
+    fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+    for model_name, group in temporal_residual_df.groupby("model"):
+        group = group.sort_values("day_center")
+        axes[0].plot(
+            group["day_center"],
+            group["observed_count"],
+            marker="o",
+            linestyle="--",
+            alpha=0.7,
+            label=f"{model_name} observed",
+        )
+        axes[0].plot(
+            group["day_center"],
+            group["expected_count"],
+            marker="o",
+            label=f"{model_name} expected",
+        )
+        axes[1].plot(
+            group["day_center"],
+            group["raw_residual"],
+            marker="o",
+            label=model_name,
+        )
+
+    axes[0].set_title("Temporal Residual Diagnostic by Annual-Cycle Bin")
+    axes[0].set_ylabel("Count")
+    axes[0].grid(alpha=0.3)
+    axes[0].legend(fontsize=8)
+    axes[1].axhline(0.0, color="black", linewidth=0.8, linestyle="--")
+    axes[1].set_xlabel("Day of year")
+    axes[1].set_ylabel("Observed - expected")
+    axes[1].grid(alpha=0.3)
+    axes[1].legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(
+        image_dir / "wood_thrush_temporal_residual_diagnostics.png",
+        dpi=300,
+        bbox_inches="tight",
+    )
+    plt.close(fig)
+
+
 def plot_grid_sensitivity(
     grid_sensitivity_df: pd.DataFrame,
     loglik_hppp: float,
@@ -1832,6 +1981,11 @@ def main() -> None:
         temporal_duration=temporal_duration,
         temporal_bins=args.temporal_bins,
     )
+    linear_l2_weights = experiment.linear_l2_weights(
+        xy_l2=args.linear_xy_l2,
+        covariate_l2=args.linear_covariate_l2,
+        temporal_l2=args.linear_temporal_l2,
+    )
     analysis_crs = points.crs
     plot_crs = CRS.from_user_input(args.plot_crs)
     plot_window = gpd.GeoSeries([window_geom], crs=analysis_crs).to_crs(plot_crs)
@@ -1850,6 +2004,7 @@ def main() -> None:
         LinearIPPP(input_dim=experiment.input_dim, lambda_init=lambda_hat),
         epochs=args.epochs_linear,
         lr=args.lr,
+        linear_l2_weights=linear_l2_weights,
     )
     loglik_lin = experiment.bt_loglik(lin_model)
 
@@ -1923,6 +2078,13 @@ def main() -> None:
     print(f"Constant NN loglik: {loglik_const:.4f}")
     print(f"Linear IPPP loglik: {loglik_lin:.4f}")
     print(f"Nonlinear IPPP loglik: {loglik_nonlinear:.4f}")
+    if linear_l2_weights is not None:
+        print(
+            "Linear L2 penalties: "
+            f"xy={args.linear_xy_l2:g}, "
+            f"covariates={args.linear_covariate_l2:g}, "
+            f"temporal={args.linear_temporal_l2:g}"
+        )
 
     print("\nCoefficients:")
     weight = lin_model.linear.weight.detach().numpy()
@@ -1981,6 +2143,7 @@ def main() -> None:
         epochs_constant=args.epochs_constant,
         epochs_linear=args.epochs_linear,
         lr=args.lr,
+        linear_l2_weights=linear_l2_weights,
     )
     print("\nBerman-Turner Grid Sensitivity:")
     print(grid_sensitivity_df)
@@ -1996,6 +2159,7 @@ def main() -> None:
         hidden_layers=args.hidden_layers,
         dropout=args.dropout,
         lr=args.lr,
+        linear_l2_weights=linear_l2_weights,
         nonlinear_lr=args.nonlinear_lr,
         nonlinear_weight_decay=args.nonlinear_weight_decay,
     )
@@ -2047,6 +2211,26 @@ def main() -> None:
         f"{two_sided_simulation_pvalue(simulated_totals_nonlinear, observed_total_nonlinear):.4f}"
     )
 
+    temporal_residual_df = pd.DataFrame()
+    if experiment.use_temporal:
+        temporal_residual_df = pd.concat(
+            [
+                run_temporal_residual_diagnostics(
+                    experiment,
+                    lin_model,
+                    "Linear IPPP",
+                ),
+                run_temporal_residual_diagnostics(
+                    experiment,
+                    nonlinear_model,
+                    "Nonlinear IPPP",
+                ),
+            ],
+            ignore_index=True,
+        )
+        print("\nTemporal Residual Diagnostics:")
+        print(temporal_residual_df.head())
+
     k_df = inhomogeneous_k_diagnostic(
         experiment=experiment,
         model=lin_model,
@@ -2076,6 +2260,11 @@ def main() -> None:
         image_dir / "wood_thrush_nonlinear_simulation_diagnostics.csv",
         index=False,
     )
+    if not temporal_residual_df.empty:
+        temporal_residual_df.to_csv(
+            image_dir / "wood_thrush_temporal_residual_diagnostics.csv",
+            index=False,
+        )
     k_df.to_csv(image_dir / "wood_thrush_inhomogeneous_k.csv", index=False)
     k_nonlinear_df.to_csv(
         image_dir / "wood_thrush_nonlinear_inhomogeneous_k.csv",
@@ -2133,6 +2322,7 @@ def main() -> None:
         output_name="wood_thrush_nonlinear_simulated_total_count.png",
         title="Simulation Diagnostic: Nonlinear IPPP Total Count",
     )
+    plot_temporal_residual_diagnostics(temporal_residual_df, image_dir)
     plot_inhomogeneous_k(k_df, image_dir)
     plot_inhomogeneous_k(
         k_nonlinear_df,
@@ -2156,13 +2346,12 @@ if __name__ == "__main__":
     main()
 
 # TODO:
-# - Adding temporal residual diagnostics beyond the annual-cycle curve
 # - Reducing overfitting while keeping ecologically important components:
-#   1. Add penalized linear IPPP fits. The current linear model is effectively
-#      unpenalized, so add ridge/L2 or elastic-net penalties for covariate
-#      coefficients. Temporal terms are strongly justified for a migratory
-#      species and should be penalized less heavily, or separately, from static
-#      spatial covariates.
+#   1. Done: penalized linear IPPP fits now support separate L2 penalty weights
+#      for x/y, covariate, and cyclic temporal coefficients via
+#      --linear-xy-l2, --linear-covariate-l2, and --linear-temporal-l2.
+#      Temporal terms are strongly justified for a migratory species and can be
+#      penalized less heavily, or separately, from static spatial covariates.
 #   2. Prefer structured nonlinear models over a generic fully flexible NN.
 #      A better target is an additive log-intensity such as:
 #
