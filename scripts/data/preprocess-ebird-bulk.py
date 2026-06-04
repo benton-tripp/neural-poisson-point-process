@@ -10,6 +10,8 @@ Examples:
 
     python scripts/data/preprocess-ebird-bulk.py --ebd-dir data/ebird/ebd_US-NC_202001_202312_smp_relApr-2026 --output-dir data/ebird/processed_nc_2020_2023 --raster data/nc_covariate_stack.tif
 
+    python scripts/data/preprocess-ebird-bulk.py --output-dir data/ebird/processed_nc_2020_2023 --boundary data/boundaries/nc_state_boundary.gpkg --update boundary effort-distance canopy linked-tables
+
     python scripts/data/preprocess-ebird-bulk.py --ebd-dir data/ebird/ebd_US-NC_202001_202312_smp_relApr-2026 --output-dir data/ebird/processed_nc_2020_2023 --protocol-code P21 --protocol-code P22 --protocol-code P23 --category species --category issf
 """
 
@@ -23,6 +25,7 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import rasterio
+from shapely.ops import unary_union
 
 try:
     import pyarrow  # noqa: F401
@@ -37,6 +40,9 @@ DEFAULT_CATEGORIES = ("species",)
 DEFAULT_SAMPLING_FILE_GLOB = "*_sampling.txt"
 DEFAULT_EBD_FILE_GLOB = "ebd_*.txt"
 DEFAULT_OUTPUT_CRS = "EPSG:5070"
+DEFAULT_STATIONARY_DISTANCE = "null"
+DEFAULT_TCC_MAX_CANOPY = 100.0
+UPDATE_STEPS = ("boundary", "effort-distance", "canopy", "linked-tables", "species")
 
 SAMPLING_COLUMNS = [
     "LAST EDITED DATE",
@@ -90,7 +96,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--ebd-dir",
-        required=True,
         help="Directory containing the eBird EBD .txt file and *_sampling.txt file.",
     )
     parser.add_argument(
@@ -114,6 +119,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--raster",
         help="Optional raster stack to sample onto retained checklists.",
+    )
+    parser.add_argument(
+        "--boundary",
+        help=(
+            "Optional boundary vector path readable by GeoPandas. Full runs keep "
+            "checklists intersecting the dissolved boundary. Update runs use this "
+            "with --update boundary."
+        ),
     )
     parser.add_argument(
         "--protocol-code",
@@ -162,6 +175,15 @@ def parse_args() -> argparse.Namespace:
         help="Maximum effort distance for traveling checklists. Defaults to 10.",
     )
     parser.add_argument(
+        "--stationary-distance",
+        choices=("keep", "null", "zero"),
+        default=DEFAULT_STATIONARY_DISTANCE,
+        help=(
+            "How to handle EFFORT DISTANCE KM on stationary checklists. "
+            "Defaults to null because stationary counts have no modeled travel distance."
+        ),
+    )
+    parser.add_argument(
         "--max-observers",
         type=float,
         default=20.0,
@@ -177,6 +199,35 @@ def parse_args() -> argparse.Namespace:
         "--write-detections-geo",
         action="store_true",
         help="Also write detections as GeoParquet with checklist geometry repeated.",
+    )
+    parser.add_argument(
+        "--tcc-max-canopy",
+        type=float,
+        default=DEFAULT_TCC_MAX_CANOPY,
+        help=(
+            "Maximum valid TCC percent canopy value. TCC values above this are "
+            f"set to missing before canopy_median is computed. Defaults to {DEFAULT_TCC_MAX_CANOPY:g}."
+        ),
+    )
+    parser.add_argument(
+        "--drop-missing-raster-covariates",
+        choices=("none", "any", "all"),
+        default="none",
+        help=(
+            "Drop checklists after raster sampling based on sampled raster "
+            "covariates. Use 'any' to make the raster stack's valid-data "
+            "footprint the effective checklist mask. Defaults to none."
+        ),
+    )
+    parser.add_argument(
+        "--update",
+        nargs="+",
+        choices=UPDATE_STEPS,
+        help=(
+            "Update existing processed outputs without re-streaming the raw EBD. "
+            "Steps run in dependency order. Choices: boundary, effort-distance, "
+            "canopy, linked-tables, species."
+        ),
     )
     parser.add_argument(
         "--overwrite",
@@ -205,6 +256,9 @@ def find_one_file(directory: Path, pattern: str, exclude_sampling: bool = False)
 
 
 def resolve_inputs(args: argparse.Namespace) -> tuple[Path, Path, Path]:
+    if args.ebd_dir is None:
+        raise ValueError("--ebd-dir is required for a full preprocessing run.")
+
     ebd_dir = Path(args.ebd_dir)
     if not ebd_dir.exists():
         raise FileNotFoundError(f"EBD directory does not exist: {ebd_dir}")
@@ -231,6 +285,14 @@ def ensure_outputs_can_be_written(output_dir: Path, overwrite: bool) -> None:
         names = ", ".join(str(path) for path in existing)
         raise FileExistsError(f"Output file(s) already exist. Use --overwrite to replace: {names}")
     output_dir.mkdir(parents=True, exist_ok=True)
+
+
+def ensure_update_outputs_exist(output_dir: Path) -> None:
+    required = [output_dir / "checklists.geoparquet"]
+    missing = [path for path in required if not path.exists()]
+    if missing:
+        names = ", ".join(str(path) for path in missing)
+        raise FileNotFoundError(f"Missing processed output(s) for --update: {names}")
 
 
 def read_tab_chunks(path: Path, usecols: list[str], chunksize: int):
@@ -289,6 +351,24 @@ def filter_sampling_chunk(
     mask &= ~is_traveling | distance.isna() | distance.le(max_travel_distance_km)
 
     return chunk.loc[mask].copy()
+
+
+def apply_stationary_distance_policy(
+    checklists: gpd.GeoDataFrame | pd.DataFrame,
+    policy: str,
+) -> gpd.GeoDataFrame | pd.DataFrame:
+    if policy == "keep" or "effort_distance_km" not in checklists.columns:
+        return checklists
+
+    output = checklists.copy()
+    stationary = output["protocol_code"].eq("P21")
+    if policy == "null":
+        output.loc[stationary, "effort_distance_km"] = pd.NA
+    elif policy == "zero":
+        output.loc[stationary, "effort_distance_km"] = 0
+    else:
+        raise ValueError(f"Unsupported stationary distance policy: {policy}")
+    return output
 
 
 def add_temporal_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -359,6 +439,40 @@ def load_checklists(
     return checklists
 
 
+def load_boundary_geometry(boundary_path: Path, target_crs: object) -> object:
+    if not boundary_path.exists():
+        raise FileNotFoundError(f"Boundary file does not exist: {boundary_path}")
+
+    boundary = gpd.read_file(boundary_path)
+    if boundary.empty:
+        raise ValueError(f"Boundary file has no features: {boundary_path}")
+    if boundary.crs is None:
+        raise ValueError(f"Boundary file has no CRS: {boundary_path}")
+
+    boundary = boundary[boundary.geometry.notna()].copy()
+    boundary = boundary[~boundary.geometry.is_empty].copy()
+    if boundary.empty:
+        raise ValueError(f"Boundary file has no valid geometries: {boundary_path}")
+
+    boundary = boundary.to_crs(target_crs)
+    if hasattr(boundary.geometry, "union_all"):
+        return boundary.geometry.union_all()
+    return unary_union(list(boundary.geometry))
+
+
+def filter_checklists_to_boundary(
+    checklists: gpd.GeoDataFrame,
+    boundary_path: Path,
+) -> gpd.GeoDataFrame:
+    boundary_geom = load_boundary_geometry(boundary_path, checklists.crs)
+    before = len(checklists)
+    filtered = checklists.loc[checklists.geometry.intersects(boundary_geom)].copy()
+    print(f"Boundary filter kept {len(filtered):,} of {before:,} checklists.")
+    if filtered.empty:
+        raise ValueError("Boundary filter removed all checklists.")
+    return filtered
+
+
 def raster_band_names(src: rasterio.DatasetReader) -> list[str]:
     names = []
     seen: dict[str, int] = {}
@@ -370,7 +484,11 @@ def raster_band_names(src: rasterio.DatasetReader) -> list[str]:
     return names
 
 
-def sample_raster_covariates(checklists: gpd.GeoDataFrame, raster_path: Path) -> gpd.GeoDataFrame:
+def sample_raster_covariates(
+    checklists: gpd.GeoDataFrame,
+    raster_path: Path,
+    tcc_max_canopy: float,
+) -> gpd.GeoDataFrame:
     if not raster_path.exists():
         raise FileNotFoundError(f"Raster file does not exist: {raster_path}")
 
@@ -391,10 +509,46 @@ def sample_raster_covariates(checklists: gpd.GeoDataFrame, raster_path: Path) ->
     for column, values in zip(band_names, sampled.T):
         output[column] = values
 
-    canopy_columns = [column for column in band_names if column.startswith("tcc_")]
+    return clean_tcc_columns(output, max_canopy=tcc_max_canopy)
+
+
+def clean_tcc_columns(
+    checklists: gpd.GeoDataFrame,
+    max_canopy: float,
+) -> gpd.GeoDataFrame:
+    output = checklists.copy()
+    canopy_columns = [column for column in output.columns if column.startswith("tcc_")]
     if canopy_columns:
+        for column in canopy_columns:
+            values = pd.to_numeric(output[column], errors="coerce")
+            output[column] = values.mask(values > max_canopy)
         output["canopy_median"] = output[canopy_columns].median(axis=1, skipna=True)
     return output
+
+
+def drop_missing_raster_covariates(
+    checklists: gpd.GeoDataFrame,
+    raster_columns: list[str],
+    mode: str,
+) -> gpd.GeoDataFrame:
+    if mode == "none" or not raster_columns:
+        return checklists
+    if mode == "any":
+        missing = checklists[raster_columns].isna().any(axis=1)
+    elif mode == "all":
+        missing = checklists[raster_columns].isna().all(axis=1)
+    else:
+        raise ValueError(f"Unsupported missing raster covariate drop mode: {mode}")
+
+    before = len(checklists)
+    filtered = checklists.loc[~missing].copy()
+    print(
+        f"Raster covariate mask kept {len(filtered):,} of {before:,} checklists "
+        f"using drop mode {mode!r}."
+    )
+    if filtered.empty:
+        raise ValueError("Raster covariate mask removed all checklists.")
+    return filtered
 
 
 def parse_observation_count(series: pd.Series) -> pd.Series:
@@ -442,6 +596,80 @@ def build_species_table(detections: pd.DataFrame) -> pd.DataFrame:
         .sort_values(["checklists_detected", "detection_edges"], ascending=False)
     )
     return grouped
+
+
+def read_existing_outputs(output_dir: Path) -> tuple[gpd.GeoDataFrame, pd.DataFrame | None]:
+    checklists_path = output_dir / "checklists.geoparquet"
+    detections_path = output_dir / "detections.parquet"
+    checklists = gpd.read_parquet(checklists_path)
+    detections = pd.read_parquet(detections_path) if detections_path.exists() else None
+    return checklists, detections
+
+
+def update_summary(output_dir: Path, checklists: gpd.GeoDataFrame, detections: pd.DataFrame | None) -> None:
+    metrics = [
+        {"metric": "checklists", "value": len(checklists)},
+        {"metric": "output_crs", "value": str(checklists.crs)},
+    ]
+    if detections is not None:
+        species = build_species_table(detections)
+        metrics.extend(
+            [
+                {"metric": "detection_edges", "value": len(detections)},
+                {"metric": "species", "value": len(species)},
+            ]
+        )
+    pd.DataFrame(metrics).to_csv(output_dir / "preprocessing_summary.csv", index=False)
+
+
+def run_update(args: argparse.Namespace, output_dir: Path) -> None:
+    if pyarrow is None:
+        raise RuntimeError(
+            "pyarrow is required to update Parquet/GeoParquet outputs. "
+            "Install project requirements again, or run: pip install pyarrow"
+        )
+
+    ensure_update_outputs_exist(output_dir)
+    checklists, detections = read_existing_outputs(output_dir)
+    steps = list(dict.fromkeys(args.update))
+
+    if "boundary" in steps:
+        if not args.boundary:
+            raise ValueError("--boundary is required for --update boundary.")
+        checklists = filter_checklists_to_boundary(checklists, Path(args.boundary))
+
+    if "effort-distance" in steps:
+        checklists = apply_stationary_distance_policy(checklists, args.stationary_distance)
+        print(f"Applied stationary distance policy: {args.stationary_distance}")
+
+    if "canopy" in steps:
+        checklists = clean_tcc_columns(checklists, max_canopy=args.tcc_max_canopy)
+        print(f"Masked TCC values above {args.tcc_max_canopy:g} and recomputed canopy_median.")
+
+    if "linked-tables" in steps:
+        if detections is None:
+            raise FileNotFoundError(f"Missing detections table: {output_dir / 'detections.parquet'}")
+        retained_event_ids = set(checklists["sampling_event_identifier"].dropna().astype(str))
+        before = len(detections)
+        detections = detections.loc[
+            detections["sampling_event_identifier"].astype(str).isin(retained_event_ids)
+        ].copy()
+        print(f"Linked-table update kept {len(detections):,} of {before:,} detection edges.")
+        species = build_species_table(detections)
+        detections.to_parquet(output_dir / "detections.parquet", index=False)
+        species.to_csv(output_dir / "species.csv", index=False)
+        print(f"Rebuilt species table with {len(species):,} rows.")
+
+    if "species" in steps and "linked-tables" not in steps:
+        if detections is None:
+            raise FileNotFoundError(f"Missing detections table: {output_dir / 'detections.parquet'}")
+        species = build_species_table(detections)
+        species.to_csv(output_dir / "species.csv", index=False)
+        print(f"Rebuilt species table with {len(species):,} rows.")
+
+    checklists.to_parquet(output_dir / "checklists.geoparquet", index=False)
+    update_summary(output_dir, checklists, detections)
+    print(f"Updated {output_dir / 'checklists.geoparquet'}")
 
 
 def write_outputs(
@@ -494,6 +722,11 @@ def write_outputs(
 
 def main() -> None:
     args = parse_args()
+    output_dir = Path(args.output_dir)
+    if args.update:
+        run_update(args, output_dir)
+        return
+
     ebd_file, sampling_file, output_dir = resolve_inputs(args)
     ensure_outputs_can_be_written(output_dir, args.overwrite)
 
@@ -515,9 +748,32 @@ def main() -> None:
         max_observers=args.max_observers,
         chunksize=args.chunksize,
     )
+    checklists = apply_stationary_distance_policy(checklists, args.stationary_distance)
+    if args.boundary:
+        checklists = filter_checklists_to_boundary(checklists, Path(args.boundary))
     if args.raster:
         print(f"Sampling raster covariates from {args.raster}")
-        checklists = sample_raster_covariates(checklists, Path(args.raster))
+        checklists = sample_raster_covariates(
+            checklists,
+            Path(args.raster),
+            tcc_max_canopy=args.tcc_max_canopy,
+        )
+        raster_columns = [
+            column
+            for column in checklists.columns
+            if column.startswith("tcc_")
+            or column in {
+                "canopy_median",
+                "nc_usgs30m_match_tcc",
+                "distance_to_waterbody_m",
+                "distance_to_coastline_m",
+            }
+        ]
+        checklists = drop_missing_raster_covariates(
+            checklists,
+            raster_columns=raster_columns,
+            mode=args.drop_missing_raster_covariates,
+        )
 
     retained_event_ids = set(checklists["sampling_event_identifier"].dropna().astype(str))
     detections = load_detection_edges(

@@ -157,25 +157,25 @@ This run adds static spatial covariates from `data/nc_covariate_stack.tif`:
 |---|---:|---:|---:|---:|
 | HPPP | 1 | -16454.7522 | 32911.5043 | 32916.2197 |
 | Constant NN | 1 | -16454.7520 | 32911.5039 | 32916.2193 |
-| Linear IPPP | 7 | -16145.6084 | 32305.2168 | 32338.2245 |
-| Nonlinear IPPP | 129 | -15518.5381 | 31295.0762 | 31903.3606 |
+| Linear IPPP | 7 | -16145.4902 | 32304.9805 | 32337.9882 |
+| Nonlinear IPPP | 129 | -15517.5254 | 31293.0508 | 31901.3352 |
 
 | Comparison | df | LR Statistic | p-value |
 |---|---:|---:|---:|
-| Linear IPPP vs HPPP | 6 | 618.2875 | 2.64652e-130 |
-| Nonlinear IPPP vs Linear IPPP | 122 | 1254.1406 | 4.25816e-187 |
+| Linear IPPP vs HPPP | 6 | 618.5238 | 2.35336e-130 |
+| Nonlinear IPPP vs Linear IPPP | 122 | 1255.9297 | 1.89588e-187 |
 
 The fitted linear covariate model is:
 
 ```text
 lambda(s) = exp(
-  -18.5727
-  - 1.0984*x
-  + 0.3147*y
-  - 0.0014*canopy_median
-  + 0.2027*nc_usgs30m_match_tcc
-  - 0.0012*distance_to_waterbody_m
-  - 0.3920*distance_to_coastline_m
+  -18.5753
+  - 1.0822*x
+  + 0.3120*y
+  + 0.0153*canopy_median
+  + 0.1964*nc_usgs30m_match_tcc
+  + 0.0003*distance_to_waterbody_m
+  - 0.3796*distance_to_coastline_m
 )
 ```
 
@@ -191,8 +191,8 @@ Spatial block CV totals:
 |---|---:|
 | HPPP | -16484.2557 |
 | Constant NN | -16484.2489 |
-| Linear IPPP | -16303.8328 |
-| Nonlinear IPPP | -16412.7032 |
+| Linear IPPP | -16308.2251 |
+| Nonlinear IPPP | -16422.6430 |
 
 The static covariates improve in-sample fit, especially for the nonlinear
 model, but they do not improve held-out spatial block likelihood relative to
@@ -203,28 +203,28 @@ Residual and simulation diagnostics:
 
 | Model | Mean raw residual | Mean Pearson residual | Pearson SD | Expected count |
 |---|---:|---:|---:|---:|
-| Linear IPPP | 0.000000 | -0.011604 | 1.993742 | 824.9998 |
-| Nonlinear IPPP | 0.021439 | 0.002100 | 1.417835 | 710.7501 |
+| Linear IPPP | -0.000000 | -0.011902 | 1.990379 | 825.0004 |
+| Nonlinear IPPP | 0.020528 | 0.004863 | 1.445846 | 715.6046 |
 
 | Model | Observed count | Simulated mean | 2.5% | 97.5% | p-value |
 |---|---:|---:|---:|---:|---:|
-| Linear IPPP | 825 | 825.27 | 768.950 | 885.050 | 0.9920 |
-| Nonlinear IPPP | 825 | 709.44 | 655.950 | 760.525 | 0.0000 |
+| Linear IPPP | 825 | 825.48 | 770.000 | 883.525 | 1.0000 |
+| Nonlinear IPPP | 825 | 715.95 | 660.900 | 768.575 | 0.0000 |
 
 Approximate inhomogeneous K diagnostics:
 
 | Model | Radius | Kinhom | Poisson theoretical |
 |---|---:|---:|---:|
-| Linear IPPP | 1742.0960 | 5.824366e+08 | 9.534415e+06 |
-| Linear IPPP | 3484.1920 | 7.333926e+08 | 3.813766e+07 |
-| Linear IPPP | 5226.2880 | 8.726226e+08 | 8.580973e+07 |
-| Linear IPPP | 6968.3840 | 1.164418e+09 | 1.525506e+08 |
-| Linear IPPP | 8710.4800 | 1.556633e+09 | 2.383604e+08 |
-| Nonlinear IPPP | 1742.0960 | 7.479942e+08 | 9.534415e+06 |
-| Nonlinear IPPP | 3484.1920 | 8.343663e+08 | 3.813766e+07 |
-| Nonlinear IPPP | 5226.2880 | 8.925454e+08 | 8.580973e+07 |
-| Nonlinear IPPP | 6968.3840 | 9.701416e+08 | 1.525506e+08 |
-| Nonlinear IPPP | 8710.4800 | 1.104006e+09 | 2.383604e+08 |
+| Linear IPPP | 1742.0960 | 5.789029e+08 | 9.534415e+06 |
+| Linear IPPP | 3484.1920 | 7.279722e+08 | 3.813766e+07 |
+| Linear IPPP | 5226.2880 | 8.664795e+08 | 8.580973e+07 |
+| Linear IPPP | 6968.3840 | 1.154436e+09 | 1.525506e+08 |
+| Linear IPPP | 8710.4800 | 1.541568e+09 | 2.383604e+08 |
+| Nonlinear IPPP | 1742.0960 | 9.113403e+08 | 9.534415e+06 |
+| Nonlinear IPPP | 3484.1920 | 1.016030e+09 | 3.813766e+07 |
+| Nonlinear IPPP | 5226.2880 | 1.081739e+09 | 8.580973e+07 |
+| Nonlinear IPPP | 6968.3840 | 1.171494e+09 | 1.525506e+08 |
+| Nonlinear IPPP | 8710.4800 | 1.363130e+09 | 2.383604e+08 |
 
 ## Figures
 

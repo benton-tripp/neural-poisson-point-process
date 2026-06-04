@@ -1,5 +1,9 @@
 # eBird Joint Effort and Multi-Species SDM Plan
 
+```
+python scripts\data\preprocess-ebird-bulk.py --ebd-dir data\ebird\ebd_US-NC_202001_202312_smp_relApr-2026 --output-dir data\ebird\processed_nc_2020_2023 --raster data\nc_covariate_stack.tif --boundary data\boundaries\nc_state_boundary.gpkg --stationary-distance zero
+```
+
 ## Goal
 
 Build a North Carolina eBird 2020-2023 modeling dataset and baseline workflow for

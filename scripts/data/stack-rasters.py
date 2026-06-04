@@ -5,10 +5,16 @@ By default, the output grid uses the coarsest resolution among the inputs
 after projecting them to the requested CRS. Use nearest resampling for
 categorical rasters and bilinear/cubic/average for continuous rasters.
 
+When a boundary is provided, the stack can also be restricted to the shared
+valid-data footprint of all output bands. This avoids inventing values where
+source rasters have different support, especially along coastlines and boundary
+edges.
+
 Examples:
 
     python scripts/data/stack-rasters.py --inputs data/nc_tcc_2020_2023.tif data/nc_usgs30m_match_tcc.tif data/nc_hydro_distance_match_tcc.tif --crs EPSG:3857 --boundary data/boundaries/nc_state_boundary.gpkg --output data/nc_covariate_stack.tif
     python scripts/data/stack-rasters.py --inputs data/nc_tcc_2020_2023.tif data/nc_usgs30m_match_tcc.tif data/nc_hydro_distance_match_tcc.tif --crs EPSG:3857 --resampling bilinear --south 33.85116926668266 --north 36.5881334409244 --west -84.32178200052 --east -75.45981513195132 --output data/nc_covariate_stack.tif
+    python scripts/data/stack-rasters.py --inputs data/nc_tcc_2020_2023.tif data/nc_usgs30m_match_tcc.tif data/nc_hydro_distance_match_tcc.tif --crs EPSG:3857 --boundary data/boundaries/nc_state_boundary.gpkg --resampling nearest bilinear bilinear --mask-tcc-above 100 --output data/nc_covariate_stack.tif --overwrite
 """
 
 from __future__ import annotations
@@ -72,6 +78,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--boundary",
         help="Optional boundary vector path readable by GeoPandas. Masks output outside the dissolved boundary.",
+    )
+    parser.add_argument(
+        "--mask-tcc-above",
+        type=float,
+        help=(
+            "For bands whose description starts with TCC, set values above this "
+            "threshold to output nodata after reprojection. USFS TCC valid canopy "
+            "values are 0-100; 254 is a non-processing mask and 255 is background."
+        ),
+    )
+    parser.add_argument(
+        "--valid-footprint",
+        choices=("boundary", "intersection"),
+        default="boundary",
+        help=(
+            "Output support mask. 'boundary' keeps every boundary cell and "
+            "preserves interior nodata. 'intersection' keeps only cells where "
+            "all output bands have valid data after reprojection and TCC "
+            "masking. Defaults to boundary."
+        ),
     )
     parser.add_argument("--south", type=float, help="Optional WGS84 bbox south coordinate.")
     parser.add_argument("--north", type=float, help="Optional WGS84 bbox north coordinate.")
@@ -232,6 +258,42 @@ def output_grid(
     return transform, width, height, adjusted_bounds, pixel_size
 
 
+def nodata_mask(values: np.ndarray) -> np.ndarray:
+    return np.isnan(values) | (values == OUTPUT_NODATA)
+
+
+def reproject_band_to_grid(
+    input_path: Path,
+    source_band: int,
+    height: int,
+    width: int,
+    transform: rasterio.Affine,
+    target_crs: str,
+    resampling: Resampling,
+) -> tuple[np.ndarray, str]:
+    with rasterio.open(input_path) as src:
+        destination = np.full((height, width), OUTPUT_NODATA, dtype=OUTPUT_DTYPE)
+        reproject(
+            source=rasterio.band(src, source_band),
+            destination=destination,
+            src_transform=src.transform,
+            src_crs=src.crs,
+            src_nodata=src.nodata,
+            dst_transform=transform,
+            dst_crs=target_crs,
+            dst_nodata=OUTPUT_NODATA,
+            resampling=resampling,
+        )
+
+        description = src.descriptions[source_band - 1]
+        if not description:
+            if src.count == 1:
+                description = input_path.stem
+            else:
+                description = f"{input_path.stem}_band_{source_band}"
+    return destination, description
+
+
 def stack_rasters(args: argparse.Namespace) -> Path:
     output_path = Path(args.output)
     if output_path.exists() and not args.overwrite:
@@ -279,43 +341,55 @@ def stack_rasters(args: argparse.Namespace) -> Path:
     )
     print(f"Stack bounds: {bounds}")
 
+    boundary_mask = None
+    if boundary_info is not None:
+        boundary_mask = geometry_mask(
+            boundary_info[0],
+            out_shape=(height, width),
+            transform=transform,
+            invert=True,
+        )
+
+    output_bands: list[tuple[np.ndarray, str]] = []
+    valid_footprint = boundary_mask.copy() if boundary_mask is not None else np.ones((height, width), dtype=bool)
+    for input_path, resampling in zip(input_paths, resampling_methods):
+        with rasterio.open(input_path) as src:
+            source_count = src.count
+        for source_band in range(1, source_count + 1):
+            destination, description = reproject_band_to_grid(
+                input_path=input_path,
+                source_band=source_band,
+                height=height,
+                width=width,
+                transform=transform,
+                target_crs=args.crs,
+                resampling=resampling,
+            )
+            is_tcc = description.strip().lower().startswith("tcc")
+            if args.mask_tcc_above is not None and is_tcc:
+                destination[destination > args.mask_tcc_above] = OUTPUT_NODATA
+
+            if boundary_mask is not None:
+                destination[~boundary_mask] = OUTPUT_NODATA
+
+            if args.valid_footprint == "intersection":
+                valid_footprint &= ~nodata_mask(destination)
+
+            output_bands.append((destination, description))
+
+    if args.valid_footprint == "intersection":
+        kept = int(valid_footprint.sum())
+        total_domain = int(boundary_mask.sum()) if boundary_mask is not None else height * width
+        print(f"Shared valid footprint kept {kept:,} of {total_domain:,} domain cells.")
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with rasterio.open(output_path, "w", **profile) as dst:
-        output_band = 1
-        for input_path, resampling in zip(input_paths, resampling_methods):
-            with rasterio.open(input_path) as src:
-                for source_band in range(1, src.count + 1):
-                    destination = np.full((height, width), OUTPUT_NODATA, dtype=OUTPUT_DTYPE)
-                    reproject(
-                        source=rasterio.band(src, source_band),
-                        destination=destination,
-                        src_transform=src.transform,
-                        src_crs=src.crs,
-                        src_nodata=src.nodata,
-                        dst_transform=transform,
-                        dst_crs=args.crs,
-                        dst_nodata=OUTPUT_NODATA,
-                        resampling=resampling,
-                    )
-
-                    if boundary_info is not None:
-                        mask = geometry_mask(
-                            boundary_info[0],
-                            out_shape=(height, width),
-                            transform=transform,
-                            invert=True,
-                        )
-                        destination[~mask] = OUTPUT_NODATA
-
-                    dst.write(destination, output_band)
-                    description = src.descriptions[source_band - 1]
-                    if not description:
-                        if src.count == 1:
-                            description = input_path.stem
-                        else:
-                            description = f"{input_path.stem}_band_{source_band}"
-                    dst.set_band_description(output_band, description)
-                    output_band += 1
+        for output_band, (destination, description) in enumerate(output_bands, start=1):
+            if args.valid_footprint == "intersection":
+                destination = destination.copy()
+                destination[~valid_footprint] = OUTPUT_NODATA
+            dst.write(destination, output_band)
+            dst.set_band_description(output_band, description)
 
     return output_path
 

@@ -38,6 +38,9 @@ DEFAULT_PIXEL_SIZE_METERS = 30
 DEFAULT_MAX_TILE_SIZE = 4096
 WEB_MERCATOR_WKID = 3857
 WGS84_WKID = 4326
+TCC_VALID_MIN = 0
+TCC_VALID_MAX = 100
+TCC_NODATA = 255
 
 
 @dataclass(frozen=True)
@@ -388,6 +391,39 @@ def stack_year_files(year_paths: list[Path], years: list[int], output_path: Path
             dataset.close()
 
 
+def mask_tcc_codes(raster_path: Path) -> None:
+    """Set USFS TCC mask codes to nodata while preserving 0-100 canopy values."""
+    try:
+        import rasterio
+    except ImportError as exc:
+        raise RuntimeError("Masking TCC codes requires rasterio.") from exc
+
+    temp_path = raster_path.with_name(f"{raster_path.stem}_tcc_masked{raster_path.suffix}")
+    with rasterio.open(raster_path) as src:
+        profile = src.profile.copy()
+        profile.update(nodata=TCC_NODATA)
+        descriptions = src.descriptions
+
+        with rasterio.open(temp_path, "w", **profile) as dst:
+            total_masked = 0
+            for band_index in range(1, src.count + 1):
+                data = src.read(band_index)
+                invalid = (data < TCC_VALID_MIN) | (data > TCC_VALID_MAX)
+                total_masked += int(invalid.sum())
+                data = data.copy()
+                data[invalid] = TCC_NODATA
+                dst.write(data, band_index)
+                description = descriptions[band_index - 1]
+                if description:
+                    dst.set_band_description(band_index, description)
+
+    temp_path.replace(raster_path)
+    print(
+        f"Masked {total_masked:,} TCC cells outside "
+        f"{TCC_VALID_MIN}-{TCC_VALID_MAX} to nodata ({TCC_NODATA})"
+    )
+
+
 def mosaic_tile_files(tile_paths: list[Path], output_path: Path) -> None:
     try:
         import rasterio
@@ -547,6 +583,7 @@ def download_canopy(args: argparse.Namespace) -> Path:
         if args.boundary:
             print(f"Masking {output_path} to {args.boundary}")
             mask_raster_with_boundary(output_path, args.boundary)
+        mask_tcc_codes(output_path)
         return output_path
 
     year_paths = []
@@ -571,6 +608,8 @@ def download_canopy(args: argparse.Namespace) -> Path:
     if args.boundary:
         print(f"Masking {output_path} to {args.boundary}")
         mask_raster_with_boundary(output_path, args.boundary)
+
+    mask_tcc_codes(output_path)
 
     if not args.keep_year_files:
         cleanup_year_files(year_paths, year_dir)

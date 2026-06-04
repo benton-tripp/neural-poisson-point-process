@@ -1,6 +1,5 @@
 # Using PyTorch to Fit an Inhomogeneous Poisson Point Process
 
-
 Spatial point patterns show up whenever the data are locations of events: trees in a plot, disease cases in a region, wildfire ignitions, animal observations, crime incidents, or defects on a manufactured surface. A basic modeling question is whether those events occur with roughly constant intensity over the study window, or whether the expected event density changes with location.
 
 One classical way to model this is with an inhomogeneous Poisson point process, or IPPP. The model describes the expected density of events through an intensity function. If the intensity is constant, the model is homogeneous. If the intensity varies over space, the model is inhomogeneous.
