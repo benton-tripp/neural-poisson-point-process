@@ -204,6 +204,56 @@ of many taxa as an effort surface, distance to roads or cities, collection
 institution, data source, year, coordinate uncertainty, and sampling campaign
 metadata when available.
 
+eBird bulk data makes joint effort-aware modeling feasible because complete checklists and Sampling Event Data expose the observation process. The model can attempt to separate shared observer effort from species-specific ecological structure, but the separation is approximate and must be validated with spatial blocking, sensitivity checks, and external survey comparisons where available.
+
+A good first implementation would be: NC only, complete checklists only, stationary/traveling protocols only, deduplicate shared checklists, restrict to reasonable effort ranges, model 20-100 species jointly, and compare against a Wood Thrush-only IPPP/GAM baseline.
+
+Spatial blocking plus stratified splitting is one of the better validation setups for this problem, and it directly targets the main failure mode: a model that looks good because it learned observer geography instead of species ecology.
+
+It will help most if you stratify blocks by observer/checklist density, not just by species detections. For example:
+
+1. Divide NC into spatial blocks.
+2. Compute checklist density per block from Sampling Event Data.
+3. Bin blocks into observer-effort strata:
+   - high effort
+   - medium effort
+   - low effort
+   - near-zero effort
+4. Split blocks into train/validation/test while preserving those strata.
+5. Evaluate performance separately within each stratum.
+
+This helps answer different questions:
+
+- High-effort test blocks: can the model predict in well-sampled birding areas?
+- Low-effort test blocks: does the model generalize away from birding hotspots?
+- High-to-low transfer: if trained mostly on sampled areas, does it extrapolate sensibly into undersampled habitat?
+- Effort correction behavior: does the effort-aware model improve low-effort predictions, or does it just suppress high-effort areas?
+- For cross-validation, you can do blocked stratified K-fold CV where the unit of assignment is the spatial block, not the individual checklist. That avoids leakage from nearby checklists or repeated visits to the same hotspot appearing in both train and test.
+
+A useful design would be:
+
+- Block unit: spatial grid cell, hex cell, county subdivision, or ecoregion-grid hybrid
+- Stratification variable: checklist density from SED
+- Optional extra strata: habitat/ecoregion, urbanization, elevation, protected-area status
+- Split unit: block
+- Evaluation unit: checklist/species outcomes within held-out blocks
+
+This will not fully solve the identifiability problem, but it makes the test much harder to game. If the model only learned Raleigh/Charlotte/Asheville/hotspot effort, it should degrade in held-out low-effort blocks or in held-out high-effort blocks with different habitat.
+
+I would use at least three evaluation summaries:
+
+Overall held-out performance
+Performance by observer-effort stratum
+Calibration/residual maps by spatial block
+And compare several models:
+
+1. Species-only environmental model
+2. Species + raw spatial coordinates
+3. Species + effort covariates
+4. Joint multi-species effort-aware model
+
+The key is to make sure “low-to-none observer density” blocks are not treated naively. If there are truly no checklists, you cannot directly evaluate checklist-level detection there. You can still use them for prediction maps and plausibility checks, but test metrics need held-out observations. For evaluation, “low effort” should usually mean sparse but nonzero checklist coverage.
+
 **Failure Mode: Ecology And Effort Can Be Confounded**
 
 This approach can perform poorly when a species is genuinely concentrated in
