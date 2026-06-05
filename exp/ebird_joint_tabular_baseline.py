@@ -540,6 +540,8 @@ def evaluate(
                 "common_name": row["common_name"],
                 "test_prevalence": float(y.mean()),
                 "test_detections": int(y.sum()),
+                "mean_predicted": float(p.mean()),
+                "calibration_error": float(abs(p.mean() - y.mean())),
                 "auroc": auc_roc(y, p),
                 "auprc": average_precision(y, p),
             }
@@ -553,6 +555,7 @@ def summarize_metrics(metrics: pd.DataFrame, y_test: np.ndarray, scores: np.ndar
         "macro_auprc": float(metrics["auprc"].mean()),
         "micro_auroc": auc_roc(y_test.ravel(), scores.ravel()),
         "micro_auprc": average_precision(y_test.ravel(), scores.ravel()),
+        "species_calibration_mae": float(metrics["calibration_error"].mean()),
     }
 
 

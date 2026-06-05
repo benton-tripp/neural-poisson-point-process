@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 
@@ -109,21 +110,28 @@ def load_tabular_metrics(
     frame = frame[frame["model"] == model_name].copy()
     if frame.empty:
         raise ValueError(f"No rows for model {model_name} in {path}")
-    frame = frame[
-        [
-            "species_key",
-            "common_name",
-            "test_prevalence",
-            "test_detections",
-            "auroc",
-            "auprc",
-        ]
-    ].copy()
+    keep = [
+        "species_key",
+        "common_name",
+        "test_prevalence",
+        "test_detections",
+        "auroc",
+        "auprc",
+    ]
+    optional = ["mean_predicted", "calibration_error"]
+    keep.extend([column for column in optional if column in frame.columns])
+    frame = frame[keep].copy()
+    if "mean_predicted" not in frame.columns:
+        frame["mean_predicted"] = np.nan
+    if "calibration_error" not in frame.columns:
+        frame["calibration_error"] = np.nan
     return frame.rename(
         columns={
             "common_name": "tabular_common_name",
             "test_prevalence": "tabular_test_prevalence",
             "test_detections": "tabular_test_detections",
+            "mean_predicted": "tabular_mean_predicted",
+            "calibration_error": "tabular_calibration_error",
             "auroc": "tabular_auroc",
             "auprc": "tabular_auprc",
         }
@@ -139,11 +147,20 @@ def load_graph_metrics(
     if graph_species_metrics:
         graph_path = graph_species_metrics
     else:
+        corrected_all_pairs_path = (
+            link_output_dir
+            / "species_embedding_link_test_all_pairs_prior_corrected_species_metrics.csv"
+        )
         all_pairs_path = (
             link_output_dir / "species_embedding_link_test_all_pairs_species_metrics.csv"
         )
         sampled_path = link_output_dir / "species_embedding_link_test_species_metrics.csv"
-        graph_path = all_pairs_path if all_pairs_path.exists() else sampled_path
+        if corrected_all_pairs_path.exists():
+            graph_path = corrected_all_pairs_path
+        elif all_pairs_path.exists():
+            graph_path = all_pairs_path
+        else:
+            graph_path = sampled_path
     if not species_path.exists():
         raise FileNotFoundError(f"Missing species node file: {species_path}")
     if not graph_path.exists():
@@ -163,7 +180,14 @@ def load_graph_metrics(
     count_column = "pairs" if "pairs" in graph.columns else "edges"
     positive_column = "positives"
     negative_column = "negatives"
-    target = "all_pairs" if count_column == "pairs" else "sampled_edges"
+    if count_column == "pairs" and "all_species_link" in graph_path.name:
+        target = "all_species_all_pairs"
+    elif count_column == "pairs" and "prior_corrected" in graph_path.name:
+        target = "prior_corrected_all_pairs"
+    elif count_column == "pairs":
+        target = "all_pairs"
+    else:
+        target = "sampled_edges"
     return graph.rename(
         columns={
             "common_name": "graph_common_name",
@@ -224,8 +248,11 @@ def main() -> None:
     output = (
         Path(args.output)
         if args.output
-        else link_output_dir
-        / f"top{args.top_species}_{args.tabular_model}_{args.feature_set}_{args.split}_{graph_target}_graph_vs_tabular_species.csv"
+        else (Path(args.graph_species_metrics).parent if args.graph_species_metrics else link_output_dir)
+        / (
+            f"top{args.top_species}_{args.tabular_model}_{args.feature_set}_"
+            f"{args.split}_{graph_path.stem}_graph_vs_tabular_species.csv"
+        )
     )
     comparison = comparison.sort_values(
         f"graph_minus_tabular_{args.metric}"
@@ -245,6 +272,7 @@ def main() -> None:
         "tabular_auprc",
         "graph_auprc",
         "graph_minus_tabular_auprc",
+        "tabular_calibration_error",
         "graph_calibration_error",
     ]
     print("\nLargest graph AUROC gains over tabular:")
@@ -261,7 +289,7 @@ def main() -> None:
         .head(12)
         .to_string(index=False, float_format="%.4f")
     )
-    auprc_label = "all-pairs" if graph_target == "all_pairs" else "sampled-edge"
+    auprc_label = "all-pairs" if "all_pairs" in graph_target else "sampled-edge"
     print(f"\nLargest graph {auprc_label} AUPRC gains over tabular:")
     print(
         comparison.sort_values("graph_minus_tabular_auprc", ascending=False)[

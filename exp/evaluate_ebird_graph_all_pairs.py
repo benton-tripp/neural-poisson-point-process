@@ -212,6 +212,11 @@ def main() -> None:
     )
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    link_metrics = json.loads(
+        (output_dir / "species_embedding_link_metrics.json").read_text(
+            encoding="utf-8"
+        )
+    )
     metadata = json.loads((graph_dir / "metadata.json").read_text(encoding="utf-8"))
     features_np = np.load(graph_dir / "checklist_features.npy").astype(np.float32)
     features = torch.from_numpy(features_np)
@@ -243,19 +248,32 @@ def main() -> None:
         columns=["checklist_index", "species_index", "split"],
     )
     positive_edges = positive_edges[positive_edges["split"] == args.split]
+    target_prevalence = float(len(positive_edges) / (len(checklist_indices) * species_count))
+    train_sample_prevalence = float(link_metrics["train"]["observed_rate"])
+    prior_logit_shift = logit(target_prevalence) - logit(train_sample_prevalence)
+    prior_correction = {
+        "method": "global_case_control_logit_shift",
+        "train_sample_prevalence": train_sample_prevalence,
+        "target_all_pairs_prevalence": target_prevalence,
+        "logit_shift": prior_logit_shift,
+    }
 
-    all_scores = []
+    all_raw_scores = []
+    all_corrected_scores = []
     all_labels = []
-    species_rows = []
+    raw_species_rows = []
+    corrected_species_rows = []
     for row in species.itertuples(index=False):
         species_index = int(row.species_index)
-        scores = score_species(
+        logits = score_species(
             model=model,
             features=features,
             checklist_indices=checklist_indices,
             species_index=species_index,
             batch_size=args.batch_size,
         )
+        raw_scores = sigmoid(logits)
+        corrected_scores = sigmoid(logits + prior_logit_shift)
         labels = np.zeros(len(checklist_indices), dtype=np.float32)
         species_positives = positive_edges[
             positive_edges["species_index"] == species_index
@@ -267,69 +285,87 @@ def main() -> None:
         ]
         labels[np.asarray(positive_positions, dtype=np.int64)] = 1.0
 
-        all_scores.append(scores.astype(np.float32))
+        all_raw_scores.append(raw_scores.astype(np.float32))
+        all_corrected_scores.append(corrected_scores.astype(np.float32))
         all_labels.append(labels)
-        species_rows.append(
-            {
-                "species_index": species_index,
-                "species_key": row.species_key,
-                "common_name": row.common_name,
-                "scientific_name": row.scientific_name,
-                "pairs": int(len(labels)),
-                "positives": int(labels.sum()),
-                "negatives": int(len(labels) - labels.sum()),
-                "observed_rate": float(labels.mean()),
-                "mean_predicted": float(scores.mean()),
-                "calibration_error": float(abs(scores.mean() - labels.mean())),
-                "auroc": auc_roc(labels, scores),
-                "auprc": average_precision(labels, scores),
-            }
+        raw_species_rows.append(species_metric_row(row, labels, raw_scores))
+        corrected_species_rows.append(
+            species_metric_row(row, labels, corrected_scores)
         )
         if (species_index + 1) % 10 == 0 or species_index + 1 == species_count:
             print(f"scored {species_index + 1:,} of {species_count:,} species")
 
-    score_np = np.concatenate(all_scores)
+    raw_score_np = np.concatenate(all_raw_scores)
+    corrected_score_np = np.concatenate(all_corrected_scores)
     label_np = np.concatenate(all_labels)
-    species_metrics = pd.DataFrame(species_rows)
-    calibration = calibration_table(score_np, label_np, args.calibration_bins)
-    ece = float((calibration["pair_fraction"] * calibration["calibration_error"]).sum())
-    summary = {
-        "split": args.split,
-        "checklists": int(len(checklist_indices)),
-        "species": species_count,
-        "pairs": int(len(label_np)),
-        "positives": int(label_np.sum()),
-        "observed_rate": float(label_np.mean()),
-        "auroc": auc_roc(label_np, score_np),
-        "auprc": average_precision(label_np, score_np),
-        "species_macro_auroc": float(species_metrics["auroc"].mean()),
-        "species_macro_auprc": float(species_metrics["auprc"].mean()),
-        "probability_bin_ece": ece,
-        "probability_bin_max_error": float(calibration["calibration_error"].max()),
-        "species_calibration_mae": float(
-            species_metrics["calibration_error"].mean()
-        ),
-    }
+    raw_species_metrics = pd.DataFrame(raw_species_rows)
+    corrected_species_metrics = pd.DataFrame(corrected_species_rows)
+    raw_calibration = calibration_table(raw_score_np, label_np, args.calibration_bins)
+    corrected_calibration = calibration_table(
+        corrected_score_np, label_np, args.calibration_bins
+    )
+    raw_summary = build_summary(
+        args.split,
+        len(checklist_indices),
+        species_count,
+        label_np,
+        raw_score_np,
+        raw_species_metrics,
+        raw_calibration,
+    )
+    corrected_summary = build_summary(
+        args.split,
+        len(checklist_indices),
+        species_count,
+        label_np,
+        corrected_score_np,
+        corrected_species_metrics,
+        corrected_calibration,
+        prior_correction=prior_correction,
+    )
 
     prefix = f"species_embedding_link_{args.split}_all_pairs"
-    species_metrics.to_csv(output_dir / f"{prefix}_species_metrics.csv", index=False)
-    calibration.to_csv(output_dir / f"{prefix}_calibration.csv", index=False)
+    raw_species_metrics.to_csv(output_dir / f"{prefix}_species_metrics.csv", index=False)
+    raw_calibration.to_csv(output_dir / f"{prefix}_calibration.csv", index=False)
+    corrected_species_metrics.to_csv(
+        output_dir / f"{prefix}_prior_corrected_species_metrics.csv", index=False
+    )
+    corrected_calibration.to_csv(
+        output_dir / f"{prefix}_prior_corrected_calibration.csv", index=False
+    )
     (output_dir / f"{prefix}_summary.json").write_text(
-        json.dumps(summary, indent=2), encoding="utf-8"
+        json.dumps(raw_summary, indent=2), encoding="utf-8"
+    )
+    (output_dir / f"{prefix}_prior_corrected_summary.json").write_text(
+        json.dumps(corrected_summary, indent=2), encoding="utf-8"
     )
 
     print("\nAll-pairs graph link metrics:")
     print(
-        f"micro AUROC={summary['auroc']:.4f}, micro AUPRC={summary['auprc']:.4f}"
+        f"raw micro AUROC={raw_summary['auroc']:.4f}, "
+        f"raw micro AUPRC={raw_summary['auprc']:.4f}"
     )
     print(
-        f"macro AUROC={summary['species_macro_auroc']:.4f}, "
-        f"macro AUPRC={summary['species_macro_auprc']:.4f}"
+        f"raw macro AUROC={raw_summary['species_macro_auroc']:.4f}, "
+        f"raw macro AUPRC={raw_summary['species_macro_auprc']:.4f}"
     )
     print(
-        f"ECE={summary['probability_bin_ece']:.4f}, "
-        f"max bin error={summary['probability_bin_max_error']:.4f}, "
-        f"species calibration MAE={summary['species_calibration_mae']:.4f}"
+        f"raw ECE={raw_summary['probability_bin_ece']:.4f}, "
+        f"raw max bin error={raw_summary['probability_bin_max_error']:.4f}, "
+        f"raw species calibration MAE={raw_summary['species_calibration_mae']:.4f}"
+    )
+    print(
+        f"prior-corrected ECE={corrected_summary['probability_bin_ece']:.4f}, "
+        "prior-corrected max bin error="
+        f"{corrected_summary['probability_bin_max_error']:.4f}, "
+        "prior-corrected species calibration MAE="
+        f"{corrected_summary['species_calibration_mae']:.4f}"
+    )
+    print(
+        "prior correction logit shift="
+        f"{prior_correction['logit_shift']:.4f} "
+        f"(train prevalence={train_sample_prevalence:.4f}, "
+        f"target prevalence={target_prevalence:.4f})"
     )
     print(f"Wrote outputs to {output_dir}")
 

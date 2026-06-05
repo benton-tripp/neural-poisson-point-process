@@ -434,15 +434,19 @@ python exp/evaluate_ebird_graph_all_pairs.py --graph-dir data/ebird/graph_top100
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | Sampled edges | 0.8761 | 0.8618 | 0.8068 | 0.7125 | 0.0150 | 0.0300 |
 | All held-out pairs | 0.8735 | 0.5450 | 0.8230 | 0.3758 | 0.2234 | 0.2234 |
+| All held-out pairs, prior corrected | 0.8735 | 0.5450 | 0.8230 | 0.3758 | 0.0089 | 0.0181 |
 
 - The all-pairs evaluation is the fair comparison to the tabular MLP. Under
   that target, the non-message-passing graph link baseline is slightly below the
   MLP ecology + effort baseline on micro AUPRC (0.5450 vs 0.5864) and macro
   AUPRC (0.3758 vs 0.4194), while micro AUROC is also lower (0.8735 vs 0.8921).
-- The large all-pairs calibration error is expected from the current training
+- The raw all-pairs calibration error is expected from the current training
   setup: the model was trained on a 50/50 sampled positive/negative edge set,
-  then evaluated on the real all-pairs prevalence of 0.1402. The ranking signal
-  is useful, but raw probabilities are not calibrated to the all-pairs target.
+  then evaluated on the real all-pairs prevalence of 0.1402.
+- A global case-control prior correction applies a logit shift of -1.8136,
+  moving from train-sample prevalence 0.5000 to all-pairs prevalence 0.1402.
+  This reduces ECE from 0.2234 to 0.0089 and species calibration MAE from 0.2234
+  to 0.0181. Ranking metrics are unchanged, as expected.
 - Species-level graph vs tabular comparison command:
 
 ```
@@ -450,9 +454,9 @@ python exp/compare_ebird_graph_tabular_species.py --graph-dir data/ebird/graph_t
 ```
 
 - The comparison writes
-  `top100_mlp_both_spatial-stratified_all_pairs_graph_vs_tabular_species.csv`
-  in the graph link baseline output directory when all-pairs metrics are
-  present.
+  `top100_mlp_both_spatial-stratified_prior_corrected_all_pairs_graph_vs_tabular_species.csv`
+  in the graph link baseline output directory when prior-corrected all-pairs
+  metrics are present.
 - With all-pairs metrics, graph AUPRC is now comparable to tabular AUPRC. The
   graph link baseline has only tiny AUROC gains for a few species, led by Hooded
   Warbler, Yellow-throated Warbler, Double-crested Cormorant, and House Sparrow.
@@ -463,10 +467,10 @@ python exp/compare_ebird_graph_tabular_species.py --graph-dir data/ebird/graph_t
   Chipping Sparrow, Red-breasted Nuthatch, Northern House Wren, and Turkey
   Vulture.
 - The corrected conclusion is that the species-embedding graph bridge baseline
-  is a useful sanity check, but it does not beat the tabular MLP on the fair
-  all-pairs target. Before a full GNN, either calibrate the sampled-edge model
-  to the real all-pairs prior or train/evaluate with a loss that better reflects
-  the target all-pairs distribution.
+  is a useful sanity check, and prior correction fixes most of its probability
+  calibration, but it does not beat the tabular MLP on the fair all-pairs
+  ranking target. The next modeling step should train/evaluate with a loss that
+  better reflects the target all-pairs distribution.
 
 Next graph-bridge calibration steps:
 
@@ -487,7 +491,7 @@ Next graph-bridge calibration steps:
 
    where \(\pi_{\text{train-sample}}\) is the sampled-edge training prevalence
    and \(\pi_{\text{all-pairs}}\) is the target all-pairs prevalence. This should
-   improve calibration without changing AUROC/AUPRC ranking.
+   improves calibration without changing AUROC/AUPRC ranking.
 2. If global correction fixes most of the ECE but species-level calibration
    remains poor, add species-specific intercept calibration or Platt scaling on
    a calibration split.
@@ -496,6 +500,144 @@ Next graph-bridge calibration steps:
    checklist, and train against the full checklist-by-species label vector. This
    matches the all-pairs evaluation target and should make probabilities more
    meaningful before adding graph message passing.
+
+All-species checklist-batch graph bridge command:
+
+```
+python exp/ebird_graph_all_species_baseline.py --graph-dir data/ebird/graph_top100_spatial --architecture pair-mlp --epochs 10 --batch-size 2048 --embedding-dim 32 --hidden-dim 64 --hidden-layers 1 --dropout 0.10
+```
+
+This writes outputs under `data/ebird/graph_top100_spatial/all_species_link_baselines`:
+
+- `all_species_link_<architecture>_summary.json`
+- `all_species_link_<architecture>_test_species_metrics.csv`
+- `all_species_link_<architecture>_test_calibration.csv`
+- `all_species_link_<architecture>_history.csv`
+- `all_species_link_<architecture>_model.pt`
+
+This bridge model still does not use graph message passing. Its purpose is to
+test whether aligning the training objective to the all-pairs target closes the
+gap with the tabular MLP before adding GNN complexity.
+
+All-species checklist-batch graph bridge result:
+
+| Model | Micro AUROC | Micro AUPRC | Macro AUROC | Macro AUPRC | ECE | Species calibration MAE |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| All-species checklist-batch graph bridge | 0.8809 | 0.5685 | 0.8292 | 0.3944 | 0.0094 | 0.0159 |
+
+Comparison to the best tabular MLP ecology + effort baseline:
+
+| Model | Micro AUROC | Micro AUPRC | Macro AUROC | Macro AUPRC | ECE | Species calibration MAE |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Tabular MLP ecology + effort | 0.8921 | 0.5864 | 0.8444 | 0.4194 | 0.0050 | not yet summarized |
+| All-species checklist-batch graph bridge | 0.8809 | 0.5685 | 0.8292 | 0.3944 | 0.0094 | 0.0159 |
+
+All-species bridge notes:
+
+- Training on the full checklist-by-species label matrix improves over the
+  sampled-edge bridge on the fair all-pairs target: micro AUPRC increases from
+  0.5450 to 0.5685 and macro AUPRC increases from 0.3758 to 0.3944.
+- Calibration is good without post-hoc prior correction because the training
+  objective now matches the all-pairs target prevalence.
+- The all-species bridge still does not beat the tabular MLP ecology + effort
+  model. It narrows the gap, but the remaining deficit is meaningful: macro
+  AUPRC is 0.3944 vs 0.4194 and micro AUPRC is 0.5685 vs 0.5864.
+- Species-level comparison shows only small AUROC gains for a few species,
+  including Brown Thrasher, Double-crested Cormorant, Brown-headed Nuthatch,
+  European Starling, and Hooded Warbler.
+- The largest AUROC/AUPRC losses remain Red-headed Woodpecker, Eastern
+  Meadowlark, Red-breasted Nuthatch, Tree Swallow, Cedar Waxwing, House Sparrow,
+  American Redstart, Blue-headed Vireo, Mallard, Chipping Sparrow, Gray Catbird,
+  and Northern House Wren.
+- This suggests the bridge architecture itself is now the limiting factor, not
+  just the sampled-edge objective. A full GNN should only be added if it
+  contributes information that the tabular MLP and checklist/species embedding
+  bridge cannot already express, such as spatial/locality/observer graph
+  structure or species co-occurrence context.
+
+Bridge architecture experiment:
+
+- `pair-mlp`: the current bridge. It scores each checklist/species pair by
+  concatenating checklist features with a learned species embedding and passing
+  that pair through an MLP.
+- `factorized`: encodes each checklist once, then scores species with a
+  low-rank checklist-latent by species-embedding dot product plus checklist and
+  species biases. This is more explicitly matrix-factorized and efficient, but
+  may underfit species-specific nonlinear responses.
+- `hybrid`: adds a direct multi-species checklist head to the factorized dot
+  product. This is closest to the tabular MLP while retaining an explicit
+  species-embedding interaction term. It is the recommended next bridge
+  architecture to test.
+
+Recommended bridge architecture commands:
+
+```
+python exp/ebird_graph_all_species_baseline.py --graph-dir data/ebird/graph_top100_spatial --architecture hybrid --epochs 10 --batch-size 2048 --hidden-dim 64 --hidden-layers 1 --latent-dim 64 --dropout 0.10
+python exp/ebird_graph_all_species_baseline.py --graph-dir data/ebird/graph_top100_spatial --architecture factorized --epochs 10 --batch-size 2048 --hidden-dim 64 --hidden-layers 1 --latent-dim 64 --dropout 0.10
+python exp/compare_ebird_graph_tabular_species.py --graph-dir data/ebird/graph_top100_spatial --baseline-dir data/ebird/baselines --top-species 100 --tabular-model mlp --feature-set both --split spatial-stratified --graph-species-metrics data/ebird/graph_top100_spatial/all_species_link_baselines/all_species_link_hybrid_test_species_metrics.csv
+```
+
+Bridge architecture results:
+
+| Model | Micro AUROC | Micro AUPRC | Macro AUROC | Macro AUPRC | ECE | Species calibration MAE |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Tabular MLP ecology + effort | 0.8921 | 0.5864 | 0.8444 | 0.4194 | 0.0050 | not yet summarized |
+| Pair MLP all-species bridge | 0.8809 | 0.5685 | 0.8292 | 0.3944 | 0.0094 | 0.0159 |
+| Factorized all-species bridge | 0.8859 | 0.5768 | 0.8364 | 0.4029 | 0.0140 | 0.0186 |
+| Hybrid all-species bridge | 0.8899 | 0.5840 | 0.8417 | 0.4117 | 0.0076 | 0.0144 |
+
+Hybrid bridge notes:
+
+- The hybrid architecture is now very close to the tabular MLP. It closes most
+  of the gap left by the pair MLP bridge: micro AUPRC improves from 0.5685 to
+  0.5840, and macro AUPRC improves from 0.3944 to 0.4117.
+- The factorized model improves over the pair MLP but trails the hybrid model,
+  suggesting the direct multi-species checklist head is carrying useful
+  checklist-to-species signal beyond the low-rank species interaction.
+- The hybrid bridge still narrowly trails the tabular MLP on all aggregate
+  ranking metrics: micro AUPRC 0.5840 vs 0.5864 and macro AUPRC 0.4117 vs
+  0.4194. Calibration is close, with ECE 0.0076.
+- Hybrid species-level gains over tabular are now real for some species. The
+  largest AUPRC gains include Bald Eagle, Hooded Warbler, Double-crested
+  Cormorant, Black-and-white Warbler, Brown Thrasher, Red-shouldered Hawk,
+  American Robin, Ruby-throated Hummingbird, House Finch, Eastern Towhee,
+  Pileated Woodpecker, and Yellow-throated Warbler.
+- The largest remaining hybrid losses include Eastern Meadowlark, Northern
+  Rough-winged Swallow, Mallard, Red-headed Woodpecker, Hooded Merganser, Wood
+  Duck, Pied-billed Grebe, American Herring Gull, Blue Grosbeak, Swamp Sparrow,
+  Great Egret, and Ring-billed Gull.
+- Because the hybrid bridge nearly matches the tabular MLP using only checklist
+  covariates and species interactions, a full GNN should focus on adding
+  information not present in the current feature matrix: locality/hotspot
+  repeated-visit structure, spatial neighbor edges, observer effects, or
+  checklist co-detection context.
+
+Near-term next steps:
+
+1. Add species-level calibration to the tabular MLP metrics so tabular and graph
+   bridge outputs can be compared on the same species calibration diagnostics.
+   The tabular metrics should include per-species `mean_predicted` and
+   `calibration_error`, with `species_calibration_mae` in the summary JSON.
+2. Run one stronger hybrid bridge as a capacity check:
+
+```
+python exp/ebird_graph_all_species_baseline.py --graph-dir data/ebird/graph_top100_spatial --architecture hybrid --epochs 10 --batch-size 2048 --hidden-dim 128 --hidden-layers 2 --latent-dim 128 --dropout 0.10
+```
+
+3. If the stronger hybrid matches or beats the tabular MLP, the remaining issue
+   was bridge capacity rather than graph structure. If it still trails, build a
+   locality/spatial-neighbor enriched bridge before adding message passing.
+4. Prioritize locality/spatial structure before observer structure. Observer
+   effects are likely strong but can dominate ecology and should be introduced
+   carefully after cleaner spatial/locality signals are tested.
+5. Candidate relational features for the enriched bridge:
+
+   - train-only locality or hotspot visit count
+   - train-only locality species detection rates
+   - spatial-neighborhood checklist density
+   - spatial-neighborhood species detection rates
+   - repeated-visit count by locality/month or locality/season
+   - local species richness or co-detection summaries fit from training data
 
 ## Training Objective Options
 
@@ -595,5 +737,6 @@ python exp/compare_ebird_calibration.py --top-species 100 --split spatial-strati
 9. Build graph-ready checklist/species node tables and positive/negative edge
    tables.
 10. Train a non-message-passing embedding/link baseline on the graph dataset.
-11. Add graph construction and a simple heterogeneous GNN.
-12. Compare Wood Thrush predictions to existing single-species IPPP/NIPPP runs.
+11. Train an all-species-per-checklist graph bridge objective.
+12. Add graph construction and a simple heterogeneous GNN.
+13. Compare Wood Thrush predictions to existing single-species IPPP/NIPPP runs.
