@@ -529,7 +529,7 @@ Comparison to the best tabular MLP ecology + effort baseline:
 
 | Model | Micro AUROC | Micro AUPRC | Macro AUROC | Macro AUPRC | ECE | Species calibration MAE |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Tabular MLP ecology + effort | 0.8921 | 0.5864 | 0.8444 | 0.4194 | 0.0050 | not yet summarized |
+| Tabular MLP ecology + effort | 0.8921 | 0.5864 | 0.8444 | 0.4194 | 0.0050 | 0.0132 |
 | All-species checklist-batch graph bridge | 0.8809 | 0.5685 | 0.8292 | 0.3944 | 0.0094 | 0.0159 |
 
 All-species bridge notes:
@@ -581,7 +581,7 @@ Bridge architecture results:
 
 | Model | Micro AUROC | Micro AUPRC | Macro AUROC | Macro AUPRC | ECE | Species calibration MAE |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Tabular MLP ecology + effort | 0.8921 | 0.5864 | 0.8444 | 0.4194 | 0.0050 | not yet summarized |
+| Tabular MLP ecology + effort | 0.8921 | 0.5864 | 0.8444 | 0.4194 | 0.0050 | 0.0132 |
 | Pair MLP all-species bridge | 0.8809 | 0.5685 | 0.8292 | 0.3944 | 0.0094 | 0.0159 |
 | Factorized all-species bridge | 0.8859 | 0.5768 | 0.8364 | 0.4029 | 0.0140 | 0.0186 |
 | Hybrid all-species bridge | 0.8899 | 0.5840 | 0.8417 | 0.4117 | 0.0076 | 0.0144 |
@@ -606,6 +606,9 @@ Hybrid bridge notes:
   Rough-winged Swallow, Mallard, Red-headed Woodpecker, Hooded Merganser, Wood
   Duck, Pied-billed Grebe, American Herring Gull, Blue Grosbeak, Swamp Sparrow,
   Great Egret, and Ring-billed Gull.
+- Species calibration is also now comparable across the tabular and bridge
+  outputs. The tabular MLP species calibration MAE is 0.0132, slightly better
+  than the hybrid bridge at 0.0144.
 - Because the hybrid bridge nearly matches the tabular MLP using only checklist
   covariates and species interactions, a full GNN should focus on adding
   information not present in the current feature matrix: locality/hotspot
