@@ -225,6 +225,7 @@ def load_temporal_experiment(args: argparse.Namespace) -> tuple[
         coords_np=coords_np,
         window_geom=window_geom,
         grid_size=args.grid_size,
+        coord_crs=points.crs,
         temporal_phase_np=temporal_phase_np,
         temporal_duration=temporal_duration,
         temporal_bins=args.temporal_bins,
