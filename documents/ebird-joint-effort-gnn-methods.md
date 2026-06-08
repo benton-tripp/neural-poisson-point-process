@@ -585,6 +585,13 @@ Bridge architecture results:
 | Pair MLP all-species bridge | 0.8809 | 0.5685 | 0.8292 | 0.3944 | 0.0094 | 0.0159 |
 | Factorized all-species bridge | 0.8859 | 0.5768 | 0.8364 | 0.4029 | 0.0140 | 0.0186 |
 | Hybrid all-species bridge | 0.8899 | 0.5840 | 0.8417 | 0.4117 | 0.0076 | 0.0144 |
+| Stronger hybrid all-species bridge | 0.8935 | 0.5895 | 0.8476 | 0.4242 | 0.0038 | 0.0136 |
+| Stronger hybrid + locality/spatial prior | 0.8605 | 0.5143 | 0.8059 | 0.3455 | 0.0130 | 0.0207 |
+| Stronger hybrid + locality/spatial scalars | 0.8671 | 0.5325 | 0.8217 | 0.3790 | 0.0181 | 0.0315 |
+| Stronger hybrid + locality/spatial prior, weight init 0 | 0.8694 | 0.5313 | 0.8209 | 0.3725 | 0.0195 | 0.0252 |
+| Stronger hybrid + spatial-neighbor scalars | 0.8859 | 0.5692 | 0.8406 | 0.4119 | 0.0057 | 0.0234 |
+| Stronger hybrid + spatial-neighbor prior, weight init 0 | 0.8859 | 0.5710 | 0.8402 | 0.4136 | 0.0063 | 0.0231 |
+| Stronger hybrid + RBF spatial residual | 0.8933 | 0.5910 | 0.8458 | 0.4248 | 0.0108 | 0.0144 |
 
 Hybrid bridge notes:
 
@@ -597,43 +604,140 @@ Hybrid bridge notes:
 - The hybrid bridge still narrowly trails the tabular MLP on all aggregate
   ranking metrics: micro AUPRC 0.5840 vs 0.5864 and macro AUPRC 0.4117 vs
   0.4194. Calibration is close, with ECE 0.0076.
+- The stronger hybrid capacity check (`hidden-dim=128`, `hidden-layers=2`,
+  `latent-dim=128`) now slightly beats the tabular MLP on all aggregate ranking
+  metrics: micro AUPRC 0.5895 vs 0.5864, macro AUPRC 0.4242 vs 0.4194, micro
+  AUROC 0.8935 vs 0.8921, and macro AUROC 0.8476 vs 0.8444. It also improves
+  ECE to 0.0038. Species calibration MAE is slightly worse than the tabular MLP
+  at 0.0136 vs 0.0132, but the gap is small.
 - Hybrid species-level gains over tabular are now real for some species. The
-  largest AUPRC gains include Bald Eagle, Hooded Warbler, Double-crested
-  Cormorant, Black-and-white Warbler, Brown Thrasher, Red-shouldered Hawk,
-  American Robin, Ruby-throated Hummingbird, House Finch, Eastern Towhee,
-  Pileated Woodpecker, and Yellow-throated Warbler.
-- The largest remaining hybrid losses include Eastern Meadowlark, Northern
-  Rough-winged Swallow, Mallard, Red-headed Woodpecker, Hooded Merganser, Wood
-  Duck, Pied-billed Grebe, American Herring Gull, Blue Grosbeak, Swamp Sparrow,
-  Great Egret, and Ring-billed Gull.
+  stronger hybrid's largest AUPRC gains include Bald Eagle, Brown Thrasher, Gray
+  Catbird, Black-and-white Warbler, Osprey, Pied-billed Grebe, Summer Tanager,
+  Yellow-throated Warbler, Eastern Towhee, Canada Goose, Indigo Bunting, and
+  Ruby-throated Hummingbird.
+- The largest remaining stronger-hybrid losses include Red-headed Woodpecker,
+  Wood Duck, Boat-tailed Grackle, Swamp Sparrow, Great Black-backed Gull,
+  Bufflehead, Purple Martin, American Herring Gull, Brown-headed Cowbird,
+  Chipping Sparrow, Mourning Dove, and Brown Pelican.
 - Species calibration is also now comparable across the tabular and bridge
   outputs. The tabular MLP species calibration MAE is 0.0132, slightly better
-  than the hybrid bridge at 0.0144.
-- Because the hybrid bridge nearly matches the tabular MLP using only checklist
-  covariates and species interactions, a full GNN should focus on adding
-  information not present in the current feature matrix: locality/hotspot
-  repeated-visit structure, spatial neighbor edges, observer effects, or
-  checklist co-detection context.
+  than the stronger hybrid bridge at 0.0136.
+- The stronger hybrid result means the previous deficit was mostly architecture
+  capacity, not evidence that graph message passing is required. A full GNN
+  should only be added after a focused relational-feature baseline, and it
+  should add information not present in the current feature matrix:
+  locality/hotspot repeated-visit structure, spatial neighbor edges, observer
+  effects, or checklist co-detection context.
+- The first locality/spatial prior run was a clear regression. It reduced micro
+  AUPRC from 0.5895 to 0.5143 and macro AUPRC from 0.4242 to 0.3455 relative to
+  the stronger hybrid, with species calibration MAE worsening from 0.0136 to
+  0.0207. The learned prior-logit weight increased to about 1.71, so the model
+  appears to have overused train-only locality/grid priors that do not transfer
+  cleanly under the spatial-block holdout.
+- This failed run is still useful: it argues against injecting same-locality or
+  same-grid species priors as a strong additive shortcut. The next relational
+  baseline should separate transferable scalar locality/spatial information
+  from direct species prior logits.
+- The follow-up locality/spatial scalar-only run also regressed: micro AUPRC was
+  0.5325 and macro AUPRC was 0.3790, with species calibration MAE worsening to
+  0.0315. This means the four simple locality/grid aggregate scalar features
+  are not helping the stronger hybrid transfer under the current spatial-block
+  split.
+- Retrying the per-species locality/spatial prior with prior-logit weight
+  initialized at zero was also worse than the plain stronger hybrid: micro AUPRC
+  0.5313, macro AUPRC 0.3725, ECE 0.0195, and species calibration MAE 0.0252.
+  This is better than the original weight-1 prior run on some species, but still
+  not close to the plain stronger hybrid.
+- Current conclusion: do not carry the locality/grid aggregate feature design
+  forward as the main relational path. It likely over-emphasizes sparse local
+  history or sampling geography that does not generalize across held-out spatial
+  blocks. The next relational test should use smoother transfer mechanisms,
+  such as distance-weighted neighbor summaries from nearby training cells,
+  spatial graph edges, or locality/month repeated-visit structure with stronger
+  regularization.
+- The spatial-neighbor scalar baseline is much healthier than the failed
+  same-cell/locality aggregates, but it still trails the plain stronger hybrid:
+  micro AUPRC 0.5692 vs 0.5895 and macro AUPRC 0.4119 vs 0.4242. It also has
+  worse species calibration MAE, 0.0234 vs 0.0136. This suggests that smoother
+  spatial summaries are useful for some species but are not yet a net improvement
+  over the checklist-only stronger hybrid.
+- Species-level gains from spatial-neighbor scalars are concentrated in several
+  water-associated or spatially clustered species, including Bufflehead,
+  Double-crested Cormorant, Pied-billed Grebe, Canada Goose, Mallard, Bald
+  Eagle, Great Blue Heron, and Tree Swallow. Losses remain for species such as
+  Gray Catbird, House Finch, Pileated Woodpecker, Wood Duck, Yellow-billed
+  Cuckoo, Ovenbird, Scarlet Tanager, Red-eyed Vireo, Field Sparrow, and Wood
+  Thrush.
+- The current spatial-neighbor scalar result does not justify replacing the
+  stronger hybrid as the default baseline. It does justify one controlled retry
+  with smoothed per-species spatial-neighbor prior logits initialized at zero,
+  because the scalar-only version improved selected spatially clustered species
+  but may be too compressed to express species-specific spatial structure.
+- The spatial-neighbor prior-logit retry improved slightly over the scalar-only
+  spatial-neighbor run: micro AUPRC 0.5710 vs 0.5692, macro AUPRC 0.4136 vs
+  0.4119, and species calibration MAE 0.0231 vs 0.0234. The learned prior-logit
+  weight stayed modest at about 0.21, unlike the failed locality prior run.
+- Even with the prior logits, spatial-neighbor augmentation still trails the
+  plain stronger hybrid: micro AUPRC 0.5710 vs 0.5895 and macro AUPRC 0.4136 vs
+  0.4242. The next step should not be more aggregate-feature variants unless
+  there is a specific ecological hypothesis. Move to a real graph/message-
+  passing baseline or an explicit spatial residual formulation.
+- Species-level gains from the spatial-neighbor prior are again concentrated in
+  water-associated or spatially clustered species: Bufflehead, Pied-billed
+  Grebe, Double-crested Cormorant, Canada Goose, Mallard, Great Blue Heron, Bald
+  Eagle, Eastern Meadowlark, American Robin, Tree Swallow, Hooded Merganser, and
+  Great Egret. The largest remaining losses include Great Black-backed Gull,
+  Wood Duck, Gray Catbird, American Herring Gull, Field Sparrow, Pileated
+  Woodpecker, House Finch, Red-headed Woodpecker, Yellow-billed Cuckoo,
+  Ovenbird, Red-eyed Vireo, and Brown Thrasher.
+- The explicit RBF spatial residual is the best aggregate ranking model so far:
+  micro AUPRC 0.5910 and macro AUPRC 0.4248. It improves slightly over the plain
+  stronger hybrid on micro AUPRC (0.5910 vs 0.5895) and essentially ties/slightly
+  improves macro AUPRC (0.4248 vs 0.4242), while keeping micro AUROC very close
+  (0.8933 vs 0.8935).
+- The spatial residual's tradeoff is calibration. Probability-bin ECE worsens
+  from 0.0038 for the plain stronger hybrid to 0.0108, and species calibration
+  MAE worsens from 0.0136 to 0.0144. This is still not a severe calibration
+  failure, but it matters because bias/effort modeling needs probability
+  estimates, not only ranking.
+- Species-level gains from the spatial residual are broader than the
+  spatial-neighbor aggregate gains. The largest AUPRC improvements over the
+  tabular MLP include Pied-billed Grebe, Black-and-white Warbler,
+  Double-crested Cormorant, Bufflehead, Bald Eagle, Brown Thrasher,
+  Yellow-throated Warbler, American Redstart, Great Egret, White-eyed Vireo,
+  Canada Goose, and Gray Catbird.
+- The largest AUPRC losses for the spatial residual include Red-headed
+  Woodpecker, Wood Duck, Northern Rough-winged Swallow, Swamp Sparrow, Mallard,
+  Great Black-backed Gull, Boat-tailed Grackle, American Herring Gull, Purple
+  Martin, Red-winged Blackbird, Brown-headed Cowbird, and Chipping Sparrow.
+- Current conclusion: the spatial residual is a useful final non-GNN benchmark.
+  It proves that smooth leftover spatial structure can improve ranking, but the
+  calibration penalty reinforces the original concern: spatial structure can
+  also encode observer geography or clustered sampling bias. A GNN should now be
+  tested against both the plain stronger hybrid and the spatial residual model.
 
 Near-term next steps:
 
-1. Add species-level calibration to the tabular MLP metrics so tabular and graph
+1. Completed: add species-level calibration to the tabular MLP metrics so tabular and graph
    bridge outputs can be compared on the same species calibration diagnostics.
    The tabular metrics should include per-species `mean_predicted` and
    `calibration_error`, with `species_calibration_mae` in the summary JSON.
-2. Run one stronger hybrid bridge as a capacity check:
+2. Completed: run one stronger hybrid bridge as a capacity check:
 
 ```
-python exp/ebird_graph_all_species_baseline.py --graph-dir data/ebird/graph_top100_spatial --architecture hybrid --epochs 10 --batch-size 2048 --hidden-dim 128 --hidden-layers 2 --latent-dim 128 --dropout 0.10
+python exp/ebird_graph_all_species_baseline.py --graph-dir data/ebird/graph_top100_spatial --architecture hybrid --run-name hybrid_h128_l2_z128 --epochs 10 --batch-size 2048 --hidden-dim 128 --hidden-layers 2 --latent-dim 128 --dropout 0.10
 ```
 
-3. If the stronger hybrid matches or beats the tabular MLP, the remaining issue
-   was bridge capacity rather than graph structure. If it still trails, build a
-   locality/spatial-neighbor enriched bridge before adding message passing.
-4. Prioritize locality/spatial structure before observer structure. Observer
+3. The stronger hybrid slightly beats the tabular MLP on aggregate ranking
+   metrics. Treat this as evidence that bridge capacity, not message passing,
+   explained most of the previous gap.
+4. Next: build a locality/spatial-neighbor enriched bridge before adding message
+   passing. This should test whether relational information helps when added as
+   train-only aggregate features.
+5. Prioritize locality/spatial structure before observer structure. Observer
    effects are likely strong but can dominate ecology and should be introduced
    carefully after cleaner spatial/locality signals are tested.
-5. Candidate relational features for the enriched bridge:
+6. Candidate relational features for the enriched bridge:
 
    - train-only locality or hotspot visit count
    - train-only locality species detection rates
@@ -641,6 +745,181 @@ python exp/ebird_graph_all_species_baseline.py --graph-dir data/ebird/graph_top1
    - spatial-neighborhood species detection rates
    - repeated-visit count by locality/month or locality/season
    - local species richness or co-detection summaries fit from training data
+
+Locality/spatial enriched bridge implementation:
+
+- `exp/ebird_graph_all_species_baseline.py` supports
+  `--feature-augmentation locality-spatial` and
+  `--feature-augmentation locality-spatial-scalars`.
+- The augmentation adds train-only scalar checklist features:
+
+  - `locality_train_checklists_log1p`
+  - `spatial_cell_train_checklists_log1p`
+  - `locality_train_species_rate_mean`
+  - `spatial_cell_train_species_rate_mean`
+
+- It also adds a per-checklist/species prior logit matrix based on smoothed
+  train-only locality and spatial-cell species detection rates. Training rows
+  use leave-one-out rates so the checklist's own labels are not copied into its
+  features; held-out rows use only training split aggregates.
+- `locality-spatial-scalars` uses only the four scalar checklist features and
+  omits the per-species prior logits. This is the next diagnostic run because
+  it tests whether repeated-visit/checklist-density information helps without
+  directly encoding species-specific hotspot priors.
+- For `locality-spatial`, `--prior-logit-weight` now defaults to 0.0. The prior
+  logit weight remains learnable, but starting from zero avoids injecting the
+  train-only prior as a strong shortcut before the model proves it helps.
+- Spatial cells default to 25 km in the analysis CRS. This is intentionally a
+  simple pre-GNN relational feature test rather than message passing.
+
+Locality/spatial prior run that regressed:
+
+```
+python exp/ebird_graph_all_species_baseline.py --graph-dir data/ebird/graph_top100_spatial --architecture hybrid --feature-augmentation locality-spatial --run-name hybrid_h128_l2_z128_locality_spatial --epochs 10 --batch-size 2048 --hidden-dim 128 --hidden-layers 2 --latent-dim 128 --dropout 0.10 --spatial-grid-size-m 25000 --prior-smoothing 20
+```
+
+Locality/scalar diagnostic that also regressed:
+
+```
+python exp/ebird_graph_all_species_baseline.py --graph-dir data/ebird/graph_top100_spatial --architecture hybrid --feature-augmentation locality-spatial-scalars --run-name hybrid_h128_l2_z128_locality_spatial_scalars --epochs 10 --batch-size 2048 --hidden-dim 128 --hidden-layers 2 --latent-dim 128 --dropout 0.10 --spatial-grid-size-m 25000 --prior-smoothing 20
+```
+
+Prior-logit retry initialized at zero that also regressed:
+
+```
+python exp/ebird_graph_all_species_baseline.py --graph-dir data/ebird/graph_top100_spatial --architecture hybrid --feature-augmentation locality-spatial --run-name hybrid_h128_l2_z128_locality_spatial_w0 --epochs 10 --batch-size 2048 --hidden-dim 128 --hidden-layers 2 --latent-dim 128 --dropout 0.10 --spatial-grid-size-m 25000 --prior-smoothing 20 --prior-logit-weight 0
+```
+
+Comparison command:
+
+```
+python exp/compare_ebird_graph_tabular_species.py --graph-dir data/ebird/graph_top100_spatial --baseline-dir data/ebird/baselines --top-species 100 --tabular-model mlp --feature-set both --split spatial-stratified --graph-species-metrics data/ebird/graph_top100_spatial/all_species_link_baselines/all_species_link_hybrid_h128_l2_z128_locality_spatial_scalars_test_species_metrics.csv
+```
+
+Recommended next modeling step:
+
+1. Keep the plain stronger hybrid as the current best bridge baseline.
+2. Completed: add a smoother spatial-neighbor relational baseline rather than
+   same-cell or same-locality aggregate priors. The implemented version
+   aggregates training checklists to grid cells, then builds distance-weighted
+   summaries over nearby training grid-cell centroids with a minimum-cell
+   threshold and shrinkage toward global prevalence.
+3. Completed: run the spatial-neighbor prior-logit diagnostic initialized at
+   zero. It modestly improves over the spatial-neighbor scalar run but still
+   trails the plain stronger hybrid.
+4. Completed: fit an explicit smooth spatial residual bridge before the first
+   full message-passing GNN. This gives a stronger and more interpretable
+   non-GNN benchmark: ecology, effort, temporal covariates, species
+   interactions, plus a constrained spatial correction term.
+5. Next: build the first true message-passing GNN and compare it against both
+   the plain stronger hybrid and the RBF spatial residual. The GNN needs to
+   improve ranking without worsening calibration enough to undermine the
+   bias/effort modeling goal.
+
+Spatial-neighbor bridge implementation:
+
+- `exp/ebird_graph_all_species_baseline.py` supports
+  `--feature-augmentation spatial-neighbor-scalars` and
+  `--feature-augmentation spatial-neighbor`.
+- `spatial-neighbor-scalars` adds four scalar checklist features:
+
+  - `spatial_neighbor_train_checklists_log1p`
+  - `spatial_neighbor_train_cells_log1p`
+  - `spatial_neighbor_species_rate_mean`
+  - `spatial_neighbor_mean_distance_ratio`
+
+- `spatial-neighbor` additionally adds smoothed per-species spatial-neighbor
+  prior logits, with the prior-logit weight initialized at zero by default.
+- Training rows use leave-one-out adjustment for the checklist's own grid cell.
+  Held-out rows use only training split grid-cell aggregates.
+- Default settings use 25 km training grid cells, a 75 km neighbor radius, a
+  50 km exponential distance-decay scale, at least 3 nearby training cells, and
+  prior smoothing of 20 checklist-equivalents.
+
+Recommended spatial-neighbor scalar diagnostic:
+
+```
+python exp/ebird_graph_all_species_baseline.py --graph-dir data/ebird/graph_top100_spatial --architecture hybrid --feature-augmentation spatial-neighbor-scalars --run-name hybrid_h128_l2_z128_spatial_neighbor_scalars --epochs 10 --batch-size 2048 --hidden-dim 128 --hidden-layers 2 --latent-dim 128 --dropout 0.10 --spatial-grid-size-m 25000 --spatial-neighbor-radius-m 75000 --spatial-neighbor-decay-m 50000 --spatial-neighbor-min-cells 3 --prior-smoothing 20
+```
+
+Spatial-neighbor scalar result:
+
+- Micro AUROC 0.8859, micro AUPRC 0.5692.
+- Macro AUROC 0.8406, macro AUPRC 0.4119.
+- ECE 0.0057, max probability-bin error 0.0424.
+- Species calibration MAE 0.0234.
+- This is better than the locality/grid aggregate variants but worse than the
+  plain stronger hybrid on ranking and species calibration.
+
+Spatial-neighbor prior-logit diagnostic:
+
+```
+python exp/ebird_graph_all_species_baseline.py --graph-dir data/ebird/graph_top100_spatial --architecture hybrid --feature-augmentation spatial-neighbor --run-name hybrid_h128_l2_z128_spatial_neighbor_w0 --epochs 10 --batch-size 2048 --hidden-dim 128 --hidden-layers 2 --latent-dim 128 --dropout 0.10 --spatial-grid-size-m 25000 --spatial-neighbor-radius-m 75000 --spatial-neighbor-decay-m 50000 --spatial-neighbor-min-cells 3 --prior-smoothing 20 --prior-logit-weight 0
+```
+
+Spatial-neighbor prior-logit result:
+
+- Micro AUROC 0.8859, micro AUPRC 0.5710.
+- Macro AUROC 0.8402, macro AUPRC 0.4136.
+- ECE 0.0063, max probability-bin error 0.0478.
+- Species calibration MAE 0.0231.
+- Learned prior-logit weight 0.2105.
+- This is the best spatial-neighbor variant so far, but it still trails the
+  plain stronger hybrid on aggregate ranking and species calibration.
+
+Comparison command:
+
+```
+python exp/compare_ebird_graph_tabular_species.py --graph-dir data/ebird/graph_top100_spatial --baseline-dir data/ebird/baselines --top-species 100 --tabular-model mlp --feature-set both --split spatial-stratified --graph-species-metrics data/ebird/graph_top100_spatial/all_species_link_baselines/all_species_link_hybrid_h128_l2_z128_spatial_neighbor_scalars_test_species_metrics.csv
+```
+
+Explicit spatial residual bridge:
+
+- `exp/ebird_graph_all_species_baseline.py` supports
+  `--spatial-residual rbf`.
+- This keeps the stronger hybrid bridge as the main ecology/effort/species
+  interaction model and adds a separate additive species-specific spatial
+  residual:
+
+  \[
+  \operatorname{logit} P(y_{c,j}=1)
+  =
+  \text{hybrid}_{j}(x_c)
+  +
+  r_j(s_c)
+  \]
+
+- The residual \(r_j(s_c)\) is a linear combination of fixed radial-basis
+  spatial features. The RBF centers are laid out over the training-checklist
+  spatial extent, features are standardized with training checklists only, and
+  the residual head is initialized at zero. This makes it an explicit correction
+  to the bridge rather than a replacement for effort/ecology covariates.
+- This benchmark answers: how much smooth spatial structure remains after the
+  current effort/ecology/species bridge? If this improves clustered species but
+  hurts spatial transfer or calibration, the eventual GNN must be constrained so
+  it does not just learn observer geography.
+
+Recommended spatial residual bridge command:
+
+```
+python exp/ebird_graph_all_species_baseline.py --graph-dir data/ebird/graph_top100_spatial --architecture hybrid --run-name hybrid_h128_l2_z128_spatial_residual_rbf --epochs 10 --batch-size 2048 --hidden-dim 128 --hidden-layers 2 --latent-dim 128 --dropout 0.10 --spatial-residual rbf --spatial-residual-grid-per-dim 12 --spatial-residual-length-scale-m 100000
+```
+
+Comparison command:
+
+```
+python exp/compare_ebird_graph_tabular_species.py --graph-dir data/ebird/graph_top100_spatial --baseline-dir data/ebird/baselines --top-species 100 --tabular-model mlp --feature-set both --split spatial-stratified --graph-species-metrics data/ebird/graph_top100_spatial/all_species_link_baselines/all_species_link_hybrid_h128_l2_z128_spatial_residual_rbf_test_species_metrics.csv
+```
+
+Spatial residual result:
+
+- Micro AUROC 0.8933, micro AUPRC 0.5910.
+- Macro AUROC 0.8458, macro AUPRC 0.4248.
+- ECE 0.0108, max probability-bin error 0.0382.
+- Species calibration MAE 0.0144.
+- This is the best aggregate ranking model so far, but its calibration is worse
+  than the plain stronger hybrid. Treat it as the final non-GNN benchmark for
+  the first true GNN.
 
 ## Training Objective Options
 
