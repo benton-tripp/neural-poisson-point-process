@@ -9,6 +9,7 @@ Run from the project root after running the graph link baseline:
 from __future__ import annotations
 
 import argparse
+import hashlib
 from pathlib import Path
 
 import numpy as np
@@ -17,6 +18,7 @@ import pandas as pd
 
 DEFAULT_GRAPH_DIR = "data/ebird/graph_top100_spatial"
 DEFAULT_BASELINE_DIR = "data/ebird/baselines"
+MAX_OUTPUT_STEM_LENGTH = 72
 
 
 def parse_args() -> argparse.Namespace:
@@ -90,6 +92,16 @@ def split_suffix(split: str) -> str:
 
 def model_file_suffix(model: str) -> str:
     return "" if model == "linear" else f"_{model}"
+
+
+def compact_output_name(name: str, max_stem_length: int = MAX_OUTPUT_STEM_LENGTH) -> str:
+    path = Path(name)
+    stem = path.stem
+    if len(stem) <= max_stem_length:
+        return name
+    digest = hashlib.sha1(stem.encode("utf-8")).hexdigest()[:8]
+    compact_stem = f"{stem[:max_stem_length]}_{digest}"
+    return f"{compact_stem}{path.suffix}"
 
 
 def load_tabular_metrics(
@@ -245,15 +257,19 @@ def main() -> None:
         comparison["graph_common_name"] == comparison["tabular_common_name"]
     )
 
-    output = (
-        Path(args.output)
-        if args.output
-        else (Path(args.graph_species_metrics).parent if args.graph_species_metrics else link_output_dir)
-        / (
+    if args.output:
+        output = Path(args.output)
+    else:
+        output_dir = (
+            Path(args.graph_species_metrics).parent
+            if args.graph_species_metrics
+            else link_output_dir
+        )
+        output_name = compact_output_name(
             f"top{args.top_species}_{args.tabular_model}_{args.feature_set}_"
             f"{args.split}_{graph_path.stem}_graph_vs_tabular_species.csv"
         )
-    )
+        output = output_dir / output_name
     comparison = comparison.sort_values(
         f"graph_minus_tabular_{args.metric}"
         if args.metric != "calibration_error"

@@ -21,29 +21,115 @@ explicit observation/effort process rather than as arbitrary pseudo-absences.
 
 ### Core modeling terms
 
-- **Species distribution model (SDM)**: A model that relates species observations to spatial, temporal, environmental, and sampling variables to estimate where and when a species is likely to occur or be detected.
-- **Detection probability**: The probability that a species is reported on a checklist, conditional on location, time, habitat, observer effort, and reporting process. In this workflow, the target is checklist-level detection, not confirmed biological presence or abundance.
-- **Complete checklist**: An eBird checklist where the observer reported all species they were able to identify. For retained complete checklists, an unreported modeled species is treated as an observed non-detection under the eBird observation process.
-- **Non-detection**: A species-checklist pair where the checklist is complete and the species was not reported. This is not proof that the species was absent.
-- **Presence-only data**: Data containing reported presences without reliable absences or non-detections. The broader SDM motivation comes from presence-only citizen-science data, but this workflow uses complete eBird checklists to construct detections and non-detections.
-- **Pseudo-absence / background sample**: A sampled location or species-checklist pair used as a comparison point when true absences are unavailable. In this workflow, pseudo-absences are mostly avoided for the complete-checklist baselines, but sampled negative edges are used in some graph link baselines.
-- **Ecological process**: The latent biological process governing where and when species occur, based on habitat, climate, seasonality, geography, and other environmental factors.
-- **Observation process**: The process determining whether a species is detected and reported, given that it may be present. This includes observer effort, protocol, duration, distance traveled, observer count, time of day, and reporting behavior.
-- **Observer effort**: Checklist-level variables that affect the chance of detecting and reporting species, such as duration, distance traveled, protocol type, number of observers, and start time.
-- **Effort/reporting surface**: A modeled spatial-temporal pattern in checklist intensity, observer behavior, or reporting probability that is shared across species.
-- **Species-specific detectability**: Variation in how easily different species are detected or reported under the same effort conditions.
-- **Checklist node**: A graph node representing one retained eBird checklist or deduplicated checklist group.
+- **Species distribution model (SDM)**: A model relating species observations to
+  spatial, temporal, environmental, and sampling variables. In this project the
+  immediate target is checklist-level detection; biological occurrence is only
+  partially observed through the eBird reporting process.
+- **Occupancy / biological presence**: Whether a species truly occurs at a
+  location and time. Occupancy is not directly observed in this workflow because
+  a complete checklist can still miss present species.
+- **Detection probability**: The probability that a species is reported on a
+  checklist, conditional on location, time, habitat, observer effort, and the
+  reporting process. This is the modeled outcome here, not confirmed abundance.
+- **Complete checklist**: An eBird checklist where the observer indicated that
+  all species they could identify were reported. For retained complete
+  checklists, an unreported modeled species is treated as an observed
+  non-detection under the eBird observation process.
+- **Detection**: A species-checklist pair where the species was reported.
+- **Non-detection**: A species-checklist pair where the checklist is complete
+  and the species was not reported. This is not proof that the species was
+  truly absent.
+- **True absence**: A location/time where a species was actually absent. True
+  absences are rarely known in citizen-science data and should not be confused
+  with complete-checklist non-detections.
+- **Presence-only data**: Data containing reported presences without reliable
+  absences or non-detections. The broader SDM motivation comes from
+  presence-only citizen-science data, but this workflow uses complete eBird
+  checklists to construct detections and non-detections.
+- **Pseudo-absence / background sample**: A sampled location or
+  species-checklist pair used as a comparison point when true absences are
+  unavailable. In this workflow, arbitrary pseudo-absences are mostly avoided,
+  but sampled unobserved species-checklist pairs are used in some graph link
+  baselines.
+- **Ecological process**: The latent biological process governing where and when
+  species occur, based on habitat, climate, seasonality, geography, and other
+  environmental factors.
+- **Observation process**: The process determining whether a species is detected
+  and reported, given that it may be present. This includes effort, protocol,
+  duration, distance traveled, observer count, time of day, and reporting
+  behavior.
+- **Observer effort**: Checklist-level variables that affect the chance of
+  detecting and reporting species, such as duration, distance traveled,
+  protocol type, number of observers, and start time.
+- **Protocol**: The eBird sampling method for a checklist. Protocol matters
+  because stationary, traveling, area, incidental, and other protocols imply
+  different observation processes and different meanings for effort variables.
+- **Stationary checklist**: A checklist where the observer sampled from one
+  location rather than along a route. In this workflow, stationary effort
+  distance should be zero or missing by construction, not inferred as movement.
+- **Traveling checklist**: A checklist where the observer sampled while moving
+  along a route. Distance traveled is meaningful for these records and can
+  affect detection probability.
+- **Reporting bias / sampling bias**: Non-ecological structure in where, when,
+  and how observers submit checklists. Examples include hotspots, roads, parks,
+  weekends, high-effort birding routes, and observer preferences.
+- **Observer geography**: Spatial structure caused by where people go birding
+  rather than where species occur. It can improve prediction while hurting
+  ecological interpretation or transfer.
+- **Effort/reporting surface**: A modeled spatial-temporal pattern in checklist
+  intensity, observer behavior, or reporting probability that is shared across
+  species.
+- **Checklist intensity**: The rate or density of checklist submissions over
+  space and time. It reflects observation effort, not species occurrence.
+- **Species-specific detectability**: Variation in how easily different species
+  are detected or reported under the same effort conditions.
+- **Identifiability**: Whether model components can be uniquely separated from
+  the data. In eBird data, ecological occurrence, effort, and detectability are
+  not fully identifiable without assumptions, so ablations and validation are
+  essential.
+- **Checklist node**: A graph node representing one retained eBird checklist or
+  deduplicated checklist group.
 - **Species node**: A graph node representing one modeled species.
-- **Detection edge**: A graph edge connecting a species node to a checklist node when that species was reported on that checklist.
-- **Positive edge**: A species-checklist pair where the species was detected.
-- **Negative edge**: A species-checklist pair where the checklist was complete and the species was not reported, or a sampled unobserved species-checklist pair used for link prediction.
-- **All-pairs target**: The full evaluation target formed by crossing every held-out checklist with every modeled species. This reflects the real checklist-by-species prediction problem.
-- **Sampled-edge target**: An evaluation or training target formed from sampled positive and negative species-checklist edges, often with an artificial positive/negative balance. It is useful for graph link-model diagnostics but is not directly comparable to all-pairs evaluation unless prevalence is accounted for.
+- **Observer node**: A possible future graph node representing an eBird
+  observer. Observer nodes could capture repeated observer behavior or skill,
+  but they need careful privacy, leakage, and transfer handling.
+- **Locality node / hotspot node**: A possible future graph node representing a
+  repeated eBird location or hotspot. These nodes can capture locality history
+  but may also encode observer geography too strongly.
+- **Detection edge / positive edge**: A graph edge connecting a species node to
+  a checklist node when that species was reported on that checklist.
+- **Negative edge**: A species-checklist pair where the checklist was complete
+  and the species was not reported, or a sampled unobserved pair used for link
+  prediction.
+- **All-pairs target**: The full target formed by crossing every held-out
+  checklist with every modeled species. This is the fair evaluation target for
+  checklist-by-species detection prediction.
+- **Sampled-edge target**: A training or evaluation target formed from sampled
+  positive and negative species-checklist edges, often with artificial
+  positive/negative balance. It is useful for graph link diagnostics but is not
+  directly comparable to all-pairs evaluation unless prevalence is accounted
+  for.
+- **Target distribution**: The distribution of examples the model is intended
+  to predict on. Here, the main target distribution is all held-out
+  checklist-by-species pairs under the spatial-stratified split.
+- **Data leakage**: Using information from held-out data during feature
+  construction, splitting, calibration, or training. Train-only aggregates and
+  leave-one-out adjustments are used to avoid leakage.
+- **Train-only aggregate**: A locality, spatial-cell, or neighbor summary
+  computed from training checklists only before being applied to held-out
+  checklists.
+- **Leave-one-out aggregate**: A training-row aggregate that excludes the
+  checklist's own labels so a checklist does not copy its target into its
+  features.
 
 ### Metrics
 
 - **AUROC / ROC AUC**: Area under the receiver operating characteristic curve. It measures how well the model ranks positive examples above negative examples across thresholds. A value of 1.0 is perfect ranking, while 0.5 is random ranking.
-- **AUPRC / PR AUC**: Area under the precision-recall curve. It measures the tradeoff between precision and recall across thresholds. AUPRC is especially useful when detections are rare because its baseline depends on prevalence.
+- **AUPRC / PR AUC**: Area under the precision-recall curve. It measures the
+  tradeoff between precision and recall across thresholds. AUPRC is especially
+  useful when detections are rare because its baseline depends on prevalence.
+  AUPRC values are only directly comparable when evaluated on the same target
+  distribution.
 - **Precision**: Among the species-checklist pairs predicted as positive, the proportion that were actually positive.
 - **Recall**: Among the actually positive species-checklist pairs, the proportion the model identified as positive.
 - **Macro AUROC / Macro AUPRC**: The metric is computed separately for each species and then averaged across species. Macro metrics treat each species equally, so they are useful for checking whether performance gains help uncommon species rather than only common species.
@@ -52,6 +138,13 @@ explicit observation/effort process rather than as arbitrary pseudo-absences.
 - **Test AUROC / Test AUPRC**: AUROC or AUPRC computed on held-out data. These metrics are the primary indicators of generalization.
 - **Species macro AUROC / Species macro AUPRC**: Species-level AUROC or AUPRC averaged across modeled species. This is used in graph-link outputs to distinguish species-level performance from pooled sampled-edge performance.
 - **Prevalence**: The observed proportion of positive species-checklist pairs. Prevalence can be computed per species, across all pairs, or within a sampled training or evaluation set.
+- **All-pairs prevalence**: The detection prevalence across the full
+  checklist-by-species target. This is much lower than a balanced sampled-edge
+  prevalence and is the relevant prevalence for all-pairs calibration.
+- **Sampled-edge prevalence**: The positive fraction in a sampled edge training
+  or evaluation set. It may be artificial, such as 50/50 positive/negative, and
+  can make sampled-edge AUPRC and raw probabilities misleading for all-pairs
+  evaluation.
 - **Train prevalence baseline**: A baseline that predicts each species' training prevalence for every checklist. It contains no checklist-level ecological or effort information. Its macro AUROC is 0.5 because it gives the same score to every checklist within a species. Its micro AUROC can exceed 0.5 because different species receive different constant scores.
 - **Probability-bin calibration**: A calibration check where predictions are grouped into probability bins and compared with observed frequencies within each bin.
 - **ECE / Expected Calibration Error**: The weighted average absolute difference between predicted probability and observed frequency across probability bins. Lower values indicate better aggregate probability calibration.
@@ -80,11 +173,18 @@ explicit observation/effort process rather than as arbitrary pseudo-absences.
 
 - **Point process**: A statistical model for events observed at locations in space or space-time. In species modeling, the events are usually species occurrence or detection locations.
 - **Intensity**: The expected rate of points per unit area or space-time. Higher intensity means the model expects more observations in that region.
+- **Exposure / offset**: A known or separately estimated term that scales an
+  expected count or intensity. In this project, checklist effort could sometimes
+  be treated as an exposure-like quantity, but only with care because effort
+  also changes detectability and reporting behavior.
 - **IPP / Inhomogeneous Poisson process**: A point-process model where the intensity varies across space, time, or covariates.
 - **IPPP**: Inhomogeneous Poisson point process. This term is often used interchangeably with IPP in spatial point-process modeling.
 - **NIPPP / Neural IPPP**: A neural inhomogeneous Poisson point process where a neural network represents the log-intensity function. It can model nonlinear species-environment relationships.
 - **Single-species IPPP / NIPPP**: A point-process model fit for one species at a time. In this workflow, this serves as a single-species spatial modeling reference before moving to joint multi-species models.
 - **Log-intensity decomposition**: A modeling structure where observed intensity is decomposed into ecological, effort/reporting, and species-specific detectability components on the log scale.
+- **Quadrature / integration points**: Background locations used to approximate
+  the spatial integral in a point-process likelihood. They are not observed
+  absences; they are numerical integration support for the likelihood.
 
 ### Graph and bridge models
 
@@ -92,6 +192,10 @@ explicit observation/effort process rather than as arbitrary pseudo-absences.
 - **Bipartite graph**: A graph with two node sets where edges connect nodes across sets, not within the same set. The species-checklist detection graph is bipartite because edges connect species to checklists.
 - **Graph neural network / GNN**: A neural network that learns from graph-structured data by passing information between connected nodes.
 - **Message passing**: The process by which a GNN updates node representations using information from neighboring nodes.
+- **Species co-detection / co-occurrence signal**: Information from species that
+  are reported together on checklists. It can help joint prediction, but it is
+  still an observation-level signal and should not be interpreted automatically
+  as biological interaction.
 - **Non-message-passing link baseline**: A link-prediction model that uses species embeddings and checklist features to predict species-checklist detections, but does not pass messages across graph edges.
 - **Sampled-edge link baseline**: A graph link model trained on sampled positive and negative species-checklist edges. It is useful as a bridge between tabular models and GNNs, but its sampled prevalence may differ from the real all-pairs target prevalence.
 - **All-species checklist-batch bridge**: A non-message-passing bridge model trained by scoring all modeled species for each checklist in a batch. This aligns training with the all-pairs checklist-by-species evaluation target.
@@ -105,6 +209,10 @@ explicit observation/effort process rather than as arbitrary pseudo-absences.
 
 - **Spatial block holdout**: A validation strategy that holds out spatial blocks rather than randomly holding out checklists. This tests whether the model generalizes to new areas rather than memorizing repeated locations.
 - **Spatial-stratified split**: A spatial validation split designed to hold out blocks while approximately preserving checklist effort, environmental covariates, and common-species prevalence.
+- **Spatial transfer**: Generalization from training areas to held-out areas.
+  This is central to the bias/effort goal because a model that only memorizes
+  observer geography may score well on random splits but fail under spatial
+  transfer.
 - **Locality / hotspot**: A recurring eBird location where multiple checklists may be submitted over time.
 - **Locality/spatial prior**: A train-only prior based on species detection rates at localities or spatial cells. It can encode useful local information but can also overfit sampling geography.
 - **Prior logit**: A prior probability transformed to the logit scale and added to model logits. In this workflow, locality or spatial species-detection rates may be converted into prior logits.
@@ -138,6 +246,12 @@ explicit observation/effort process rather than as arbitrary pseudo-absences.
 - **Feature set**: The group of input variables used by a model, such as ecology, effort, or both.
 - **Ecology covariates**: Environmental, spatial, or temporal variables intended to represent species habitat or ecological conditions.
 - **Effort covariates**: Checklist and observer variables intended to represent the observation/reporting process.
+- **Temporal covariates**: Time-derived variables such as day of year, day of
+  week, month, year, or start time. They can encode seasonality and observation
+  behavior.
+- **Environmental covariates**: Raster or tabular variables describing
+  environmental conditions, such as canopy cover, elevation, land cover, or
+  distance to water.
 - **Bridge model**: A model between tabular baselines and full GNNs. It uses graph-ready species/checklist data structures and species embeddings, but may not use graph message passing.
 - **Relational-feature baseline**: A non-GNN baseline that adds graph-like information, such as locality history or spatial-neighbor summaries, as explicit features.
 - **Fair comparison target**: An evaluation target that matches the intended prediction task. In this workflow, all held-out checklist-by-species pairs are the fair comparison target for tabular and graph models.
@@ -148,6 +262,11 @@ explicit observation/effort process rather than as arbitrary pseudo-absences.
 - **Regularization**: Techniques such as dropout or weight decay that limit overfitting.
 - **Weight decay**: A regularization method that penalizes large model weights during training.
 - **Dropout**: A regularization method that randomly disables hidden units during training to reduce dependence on any single pathway.
+- **Residual correction**: An additive model component that starts from a base
+  prediction and learns only the leftover structure. The spatial residual and
+  residual spatial-cell GCN are both residual corrections.
+- **Gate**: A learned multiplier that controls how much a residual or message
+  passing component can affect a prediction.
 - **Species-level diagnostics**: Per-species metrics and calibration checks used to identify which species improve or degrade under a model.
 - **Aggregate metrics**: Metrics computed across many species-checklist pairs or averaged across species. Aggregate improvements can hide species-specific failures, so they should be interpreted alongside species-level diagnostics.
 
@@ -1165,6 +1284,125 @@ Residual/gated spatial GNN results:
   Pine Warbler (0.0270). These are lower than the earlier gated model's worst
   calibration failures, which supports favoring the residual 64-hidden,
   one-layer configuration for now.
+- The completed 24-run residual/gated grid confirms that conclusion rather than
+  overturning it. The best aggregate ranking run remains the one-layer,
+  64-hidden residual GCN with weight decay 1e-3:
+  `spatial_gcn_residual_h128_l2_z128_cell64_cl1_wd0p001` has micro AUPRC
+  0.5928, macro AUPRC 0.4284, ECE 0.0087, and species calibration MAE 0.0146.
+  The nearly tied weight-decay 1e-4 run has slightly lower micro AUPRC but
+  slightly better macro AUPRC, ECE, and species calibration MAE, so it remains
+  the preferred primary model for interpretation.
+- The best gated GCNs are competitive but do not clearly surpass the residual
+  models. The strongest calibration/ranking compromise is
+  `spatial_gcn_gated_h128_l2_z128_cell64_cl1_wd0p0001_gbm2` with micro AUPRC
+  0.5923, macro AUPRC 0.4282, ECE 0.0078, and species calibration MAE 0.0144.
+  This makes it a useful sensitivity run, not the main model.
+- Gating is most useful when it is shallow and moderately permissive. The
+  gate-bias -2 runs generally beat or tie the gate-bias -3 runs on ranking.
+  The stricter -3 initialization can improve ECE in some cases, but often gives
+  up AUPRC.
+- The grid gives a strong warning against adding spatial-cell GCN depth before
+  solving diagnostics. Two-layer 64-hidden gated GCNs are among the weakest
+  spatial GNN runs, with micro AUPRC around 0.5875-0.5881 and species
+  calibration MAE around 0.021-0.022. This is consistent with over-smoothing or
+  excessive spatial correction.
+- Current interpretation: the spatial-cell GNN is now doing something useful,
+  but its gain is still a small spatial residual improvement over a strong
+  tabular/bridge baseline. The next step should be diagnostic and validation
+  work, not a larger architecture. The main question is whether the GNN is
+  improving transferable species-environment/effort structure or just adding a
+  smoother version of observer geography.
+
+Next steps after the 24-run grid:
+
+1. Treat `spatial_gcn_residual_h128_l2_z128_cell64_cl1_wd0p0001` as the primary
+   spatial GNN candidate and
+   `spatial_gcn_gated_h128_l2_z128_cell64_cl1_wd0p0001_gbm2` as the calibration
+   sensitivity candidate.
+2. Run species-level comparisons for the gated sensitivity model and compare
+   the species gain/loss list against the primary residual model. If the gated
+   run reduces the worst residual species losses without losing much aggregate
+   ranking, keep both in the report.
+3. Diagnose the repeated failure species, especially Red-headed Woodpecker,
+   Swamp Sparrow, Wood Duck, Green Heron, and Ovenbird. For each, inspect
+   spatial distribution of positives, held-out block coverage, prevalence,
+   effort strata, and whether the GNN correction is pushing probabilities in
+   ecologically plausible directions.
+4. Add a spatial correction visualization for one or two representative species:
+   one species with a large gain and one with a large loss. The plot should show
+   the GNN residual or probability difference relative to the stronger hybrid,
+   not just final predicted probability.
+5. Before adding richer heterogeneous graph nodes, repeat the best residual
+   candidate under at least one alternate spatial split seed or spatial-block
+   granularity. A real GNN gain should be stable under a changed held-out
+   geography.
+6. Only after those diagnostics should the graph be expanded to include richer
+   relation types, such as species co-detection edges, environmental-neighbor
+   cell edges, protocol/effort context nodes, locality nodes, or observer nodes.
+
+Primary-vs-gated species diagnostics:
+
+- The graph-vs-tabular comparison now uses short, stable output filenames to
+  avoid Windows path-length failures:
+  `residual_primary_graph_vs_tabular_species.csv` and
+  `gated_gbm2_graph_vs_tabular_species.csv`.
+- The gated sensitivity model is not a replacement for the residual primary
+  model. It improves some species more strongly, especially Eastern Meadowlark
+  (+0.0926 AUPRC vs +0.0459 for residual), Mallard (+0.0778 vs +0.0656),
+  American Robin (+0.0595 vs +0.0442), and Great Egret (+0.0507 vs +0.0368).
+  But it worsens some key failure species: Red-headed Woodpecker (-0.1140 vs
+  -0.1067), Wood Duck (-0.0666 vs -0.0480), Bufflehead (-0.0576 vs -0.0117),
+  and Great Black-backed Gull (-0.0412 vs -0.0365).
+- Gating can reduce calibration error for some failure species while still
+  hurting ranking. Red-headed Woodpecker's gated calibration error is low
+  (0.0038), but its AUPRC loss is worse than the residual model. This means
+  species-level calibration alone is not enough; spatial ranking diagnostics are
+  still needed.
+- The repeated failure species are not simply too sparse. In the held-out split,
+  Red-headed Woodpecker has 8,150 positive checklists across 25 positive
+  spatial cells and 17 counties; Swamp Sparrow has 7,812 positives across 26
+  cells and 20 counties; Wood Duck has 5,382 positives across 24 cells and 19
+  counties. These are adequate for diagnosis, so the failure is more likely a
+  spatial/effort interaction or an over-smoothing problem.
+- Some coastal or localized species have narrower held-out spatial support and
+  should be interpreted separately. Boat-tailed Grackle appears in only one
+  held-out spatial block and 9 positive cells; Great Black-backed Gull appears
+  in two held-out blocks and 8 positive cells. For these species, split geometry
+  can dominate model differences.
+- Effort/protocol structure is strong for both gains and losses. For example,
+  Red-headed Woodpecker prevalence is 0.0916 on traveling held-out checklists
+  versus 0.0157 on stationary checklists; Swamp Sparrow is 0.0928 versus
+  0.0075; Wood Duck is 0.0618 versus 0.0083; Black-and-white Warbler is 0.0700
+  versus 0.0157. The next diagnostic should therefore inspect whether spatial
+  residuals are learning species geography or implicitly amplifying the
+  traveling-checklist effort pattern.
+- Current conclusion after the first diagnostics: keep the residual primary
+  model as the main spatial GNN result, keep the gated model as a sensitivity
+  check, and move next to residual/probability-difference maps for one large
+  gain species and one large loss species.
+- The first residual probability-difference maps were generated for
+  Black-and-white Warbler, Eastern Meadowlark, Red-headed Woodpecker, Swamp
+  Sparrow, Wood Duck, and Green Heron. These maps compare the trained spatial
+  GNN's full prediction to its own base checklist/species path before adding the
+  spatial residual; they do not directly show the full graph-vs-tabular
+  difference.
+- The primary residual GNN mostly applies a negative probability correction for
+  these focus species. This is especially strong for failure species:
+  Red-headed Woodpecker mean probability changes from 0.1268 to 0.0699, with
+  positive-checklist mean delta -0.0887; Green Heron changes from 0.0580 to
+  0.0334, with positive-checklist mean delta -0.0862; Swamp Sparrow positives
+  have mean delta -0.0430. This supports the hypothesis that some failures come
+  from overly aggressive spatial down-correction in held-out areas.
+- The gain species are more subtle. Black-and-white Warbler and Eastern
+  Meadowlark also receive negative average residual corrections, but their
+  AUPRC improves against the tabular baseline. This means the residual can still
+  improve ranking if it downweights negatives or low-quality effort/geography
+  contexts more than it harms the highest-ranked positives. These species should
+  be inspected on the map rather than interpreted from mean deltas alone.
+- All diagnostic maps now draw the NC state boundary from
+  `data/boundaries/nc_state_boundary.gpkg`, projected to EPSG:5070 by default.
+  This makes coastal/island and edge behavior easier to distinguish from empty
+  plot area.
 
 Residual/gated grid search:
 
@@ -1233,6 +1471,59 @@ After each promising grid run, compare species-level deltas:
 ```
 python exp/compare_ebird_graph_tabular_species.py --graph-dir data/ebird/graph_top100_spatial --baseline-dir data/ebird/baselines --top-species 100 --tabular-model mlp --feature-set both --split spatial-stratified --graph-species-metrics data/ebird/graph_top100_spatial/spatial_gnn_baselines/spatial_gnn_<RUN_NAME>_test_species_metrics.csv
 ```
+
+Concrete next comparison commands:
+
+```
+python exp/compare_ebird_graph_tabular_species.py --graph-dir data/ebird/graph_top100_spatial --baseline-dir data/ebird/baselines --top-species 100 --tabular-model mlp --feature-set both --split spatial-stratified --graph-species-metrics data/ebird/graph_top100_spatial/spatial_gnn_baselines/spatial_gnn_spatial_gcn_residual_h128_l2_z128_cell64_cl1_wd0p0001_test_species_metrics.csv
+```
+
+```
+python exp/compare_ebird_graph_tabular_species.py --graph-dir data/ebird/graph_top100_spatial --baseline-dir data/ebird/baselines --top-species 100 --tabular-model mlp --feature-set both --split spatial-stratified --graph-species-metrics data/ebird/graph_top100_spatial/spatial_gnn_baselines/spatial_gnn_spatial_gcn_gated_h128_l2_z128_cell64_cl1_wd0p0001_gbm2_test_species_metrics.csv
+```
+
+Preferred short-output comparison commands:
+
+```
+python exp/compare_ebird_graph_tabular_species.py --graph-dir data/ebird/graph_top100_spatial --baseline-dir data/ebird/baselines --top-species 100 --tabular-model mlp --feature-set both --split spatial-stratified --graph-species-metrics data/ebird/graph_top100_spatial/spatial_gnn_baselines/spatial_gnn_spatial_gcn_residual_h128_l2_z128_cell64_cl1_wd0p0001_test_species_metrics.csv --output data/ebird/graph_top100_spatial/spatial_gnn_baselines/residual_primary_graph_vs_tabular_species.csv
+```
+
+```
+python exp/compare_ebird_graph_tabular_species.py --graph-dir data/ebird/graph_top100_spatial --baseline-dir data/ebird/baselines --top-species 100 --tabular-model mlp --feature-set both --split spatial-stratified --graph-species-metrics data/ebird/graph_top100_spatial/spatial_gnn_baselines/spatial_gnn_spatial_gcn_gated_h128_l2_z128_cell64_cl1_wd0p0001_gbm2_test_species_metrics.csv --output data/ebird/graph_top100_spatial/spatial_gnn_baselines/gated_gbm2_graph_vs_tabular_species.csv
+```
+
+Species diagnostic command:
+
+```
+python exp/diagnose_ebird_spatial_gnn_species.py --graph-dir data/ebird/graph_top100_spatial --comparison-csv data/ebird/graph_top100_spatial/spatial_gnn_baselines/residual_primary_graph_vs_tabular_species.csv --comparison-csv data/ebird/graph_top100_spatial/spatial_gnn_baselines/gated_gbm2_graph_vs_tabular_species.csv --boundary data/boundaries/nc_state_boundary.gpkg
+```
+
+Species diagnostic outputs:
+
+- `focus_species_model_deltas.csv`: residual and gated species-level deltas
+  against the tabular MLP.
+- `focus_species_split_summary.csv`: train/test positives, prevalence, and
+  spatial coverage by focus species.
+- `focus_species_test_strata.csv`: held-out prevalence by protocol, duration,
+  distance, observer count, and spatial block.
+- `focus_species_test_covariates.csv`: held-out positive-vs-background
+  covariate means.
+- `focus_species_auprc_delta.png` and `focus_species_test_coverage.png`.
+- one held-out positive-location map per focus species.
+
+Residual probability-difference map command:
+
+```
+python exp/plot_ebird_spatial_gnn_residual_maps.py --graph-dir data/ebird/graph_top100_spatial --run-name spatial_gcn_residual_h128_l2_z128_cell64_cl1_wd0p0001 --species "Black-and-white Warbler" "Eastern Meadowlark" "Red-headed Woodpecker" "Swamp Sparrow" "Wood Duck" "Green Heron" --boundary data/boundaries/nc_state_boundary.gpkg
+```
+
+Residual map outputs:
+
+- one `*_residual_probability_delta.png` map per selected species under
+  `data/ebird/graph_top100_spatial/spatial_gnn_baselines/diagnostics/residual_maps`
+- `spatial_gcn_residual_h128_l2_z128_cell64_cl1_wd0p0001_residual_probability_summary.csv`
+  with mean base probability, full probability, residual delta, and
+  positive-vs-negative delta summaries.
 
 Then rerun:
 
