@@ -11,7 +11,145 @@ The first target is a reusable intermediate dataset, not a final model:
 - detection edges connecting species to checklists or aggregated location-time cells
 
 This representation can support both a joint neural point-process model and a
-heterogeneous graph neural network for presence-only SDM.
+heterogeneous graph neural network for complete-checklist detection modeling.
+Although the broader SDM motivation starts from presence-only citizen-science
+data, the current eBird workflow uses complete checklists, so unreported modeled
+species on retained checklists are treated as observed non-detections under an
+explicit observation/effort process rather than as arbitrary pseudo-absences.
+
+## Glossary
+
+### Core modeling terms
+
+- **Species distribution model (SDM)**: A model that relates species observations to spatial, temporal, environmental, and sampling variables to estimate where and when a species is likely to occur or be detected.
+- **Detection probability**: The probability that a species is reported on a checklist, conditional on location, time, habitat, observer effort, and reporting process. In this workflow, the target is checklist-level detection, not confirmed biological presence or abundance.
+- **Complete checklist**: An eBird checklist where the observer reported all species they were able to identify. For retained complete checklists, an unreported modeled species is treated as an observed non-detection under the eBird observation process.
+- **Non-detection**: A species-checklist pair where the checklist is complete and the species was not reported. This is not proof that the species was absent.
+- **Presence-only data**: Data containing reported presences without reliable absences or non-detections. The broader SDM motivation comes from presence-only citizen-science data, but this workflow uses complete eBird checklists to construct detections and non-detections.
+- **Pseudo-absence / background sample**: A sampled location or species-checklist pair used as a comparison point when true absences are unavailable. In this workflow, pseudo-absences are mostly avoided for the complete-checklist baselines, but sampled negative edges are used in some graph link baselines.
+- **Ecological process**: The latent biological process governing where and when species occur, based on habitat, climate, seasonality, geography, and other environmental factors.
+- **Observation process**: The process determining whether a species is detected and reported, given that it may be present. This includes observer effort, protocol, duration, distance traveled, observer count, time of day, and reporting behavior.
+- **Observer effort**: Checklist-level variables that affect the chance of detecting and reporting species, such as duration, distance traveled, protocol type, number of observers, and start time.
+- **Effort/reporting surface**: A modeled spatial-temporal pattern in checklist intensity, observer behavior, or reporting probability that is shared across species.
+- **Species-specific detectability**: Variation in how easily different species are detected or reported under the same effort conditions.
+- **Checklist node**: A graph node representing one retained eBird checklist or deduplicated checklist group.
+- **Species node**: A graph node representing one modeled species.
+- **Detection edge**: A graph edge connecting a species node to a checklist node when that species was reported on that checklist.
+- **Positive edge**: A species-checklist pair where the species was detected.
+- **Negative edge**: A species-checklist pair where the checklist was complete and the species was not reported, or a sampled unobserved species-checklist pair used for link prediction.
+- **All-pairs target**: The full evaluation target formed by crossing every held-out checklist with every modeled species. This reflects the real checklist-by-species prediction problem.
+- **Sampled-edge target**: An evaluation or training target formed from sampled positive and negative species-checklist edges, often with an artificial positive/negative balance. It is useful for graph link-model diagnostics but is not directly comparable to all-pairs evaluation unless prevalence is accounted for.
+
+### Metrics
+
+- **AUROC / ROC AUC**: Area under the receiver operating characteristic curve. It measures how well the model ranks positive examples above negative examples across thresholds. A value of 1.0 is perfect ranking, while 0.5 is random ranking.
+- **AUPRC / PR AUC**: Area under the precision-recall curve. It measures the tradeoff between precision and recall across thresholds. AUPRC is especially useful when detections are rare because its baseline depends on prevalence.
+- **Precision**: Among the species-checklist pairs predicted as positive, the proportion that were actually positive.
+- **Recall**: Among the actually positive species-checklist pairs, the proportion the model identified as positive.
+- **Macro AUROC / Macro AUPRC**: The metric is computed separately for each species and then averaged across species. Macro metrics treat each species equally, so they are useful for checking whether performance gains help uncommon species rather than only common species.
+- **Micro AUROC / Micro AUPRC**: The metric is computed after pooling all species-checklist pairs together. Micro metrics weight common species and common detection patterns more heavily because they contribute more observations.
+- **Train AUROC / Train AUPRC**: AUROC or AUPRC computed on the training data. These metrics help diagnose whether the model is fitting the training target.
+- **Test AUROC / Test AUPRC**: AUROC or AUPRC computed on held-out data. These metrics are the primary indicators of generalization.
+- **Species macro AUROC / Species macro AUPRC**: Species-level AUROC or AUPRC averaged across modeled species. This is used in graph-link outputs to distinguish species-level performance from pooled sampled-edge performance.
+- **Prevalence**: The observed proportion of positive species-checklist pairs. Prevalence can be computed per species, across all pairs, or within a sampled training or evaluation set.
+- **Train prevalence baseline**: A baseline that predicts each species' training prevalence for every checklist. It contains no checklist-level ecological or effort information. Its macro AUROC is 0.5 because it gives the same score to every checklist within a species. Its micro AUROC can exceed 0.5 because different species receive different constant scores.
+- **Probability-bin calibration**: A calibration check where predictions are grouped into probability bins and compared with observed frequencies within each bin.
+- **ECE / Expected Calibration Error**: The weighted average absolute difference between predicted probability and observed frequency across probability bins. Lower values indicate better aggregate probability calibration.
+- **Max bin error**: The largest absolute calibration error among probability bins. It identifies the worst-calibrated probability range, even when average ECE is low.
+- **Species calibration error**: For one species, the difference between that species' mean predicted detection probability and its observed detection rate.
+- **Species calibration MAE**: The mean absolute species calibration error across species. Lower values indicate that predicted probabilities are better aligned with species-level observed detection rates.
+- **Effort-stratum calibration**: Calibration measured within effort-defined groups, such as duration bins, traveling-distance bins, protocol types, or observer-count bins.
+- **Ranking metric**: A metric such as AUROC or AUPRC that evaluates ordering of predictions, not whether predicted probabilities are calibrated.
+- **Calibration metric**: A metric such as ECE or species calibration MAE that evaluates whether predicted probabilities match observed frequencies.
+
+### Baseline and tabular models
+
+- **Prevalence baseline**: A constant-probability baseline where each species is assigned its training detection prevalence. It is a sanity-check reference for more complex models.
+- **Linear ecology model**: A logistic regression model using environmental, spatial, and temporal covariates, but not effort variables. It tests how much predictive signal comes from ecological covariates alone.
+- **Linear effort model**: A logistic regression model using checklist and observer-effort variables, but not environmental covariates. It tests how much predictive signal comes from the observation/reporting process alone.
+- **Linear ecology + effort model**: A logistic regression model combining ecological and effort covariates. It tests whether ecological and observation-process variables provide complementary predictive signal.
+- **MLP**: Multilayer perceptron. A feed-forward neural network that can learn nonlinear relationships among covariates.
+- **MLP ecology model**: An MLP using ecological covariates only.
+- **MLP effort model**: An MLP using effort covariates only.
+- **MLP ecology + effort model**: An MLP using both ecological and effort covariates. In the current workflow, this is the strongest non-graph tabular baseline.
+- **Tabular joint baseline**: A multi-species model that predicts checklist-level detections from tabular checklist features and species information, without graph message passing.
+- **Species embedding**: A learned vector representation of a species. Species embeddings let a joint model share information across species while still learning species-specific detection patterns.
+- **Joint multi-species model**: A model that predicts detections for multiple species in one shared framework, rather than fitting a separate model for each species.
+
+### Point-process models
+
+- **Point process**: A statistical model for events observed at locations in space or space-time. In species modeling, the events are usually species occurrence or detection locations.
+- **Intensity**: The expected rate of points per unit area or space-time. Higher intensity means the model expects more observations in that region.
+- **IPP / Inhomogeneous Poisson process**: A point-process model where the intensity varies across space, time, or covariates.
+- **IPPP**: Inhomogeneous Poisson point process. This term is often used interchangeably with IPP in spatial point-process modeling.
+- **NIPPP / Neural IPPP**: A neural inhomogeneous Poisson point process where a neural network represents the log-intensity function. It can model nonlinear species-environment relationships.
+- **Single-species IPPP / NIPPP**: A point-process model fit for one species at a time. In this workflow, this serves as a single-species spatial modeling reference before moving to joint multi-species models.
+- **Log-intensity decomposition**: A modeling structure where observed intensity is decomposed into ecological, effort/reporting, and species-specific detectability components on the log scale.
+
+### Graph and bridge models
+
+- **Heterogeneous graph**: A graph with multiple node or edge types. In this workflow, the main node types are species and checklists, and the main edge type is detected-on.
+- **Bipartite graph**: A graph with two node sets where edges connect nodes across sets, not within the same set. The species-checklist detection graph is bipartite because edges connect species to checklists.
+- **Graph neural network / GNN**: A neural network that learns from graph-structured data by passing information between connected nodes.
+- **Message passing**: The process by which a GNN updates node representations using information from neighboring nodes.
+- **Non-message-passing link baseline**: A link-prediction model that uses species embeddings and checklist features to predict species-checklist detections, but does not pass messages across graph edges.
+- **Sampled-edge link baseline**: A graph link model trained on sampled positive and negative species-checklist edges. It is useful as a bridge between tabular models and GNNs, but its sampled prevalence may differ from the real all-pairs target prevalence.
+- **All-species checklist-batch bridge**: A non-message-passing bridge model trained by scoring all modeled species for each checklist in a batch. This aligns training with the all-pairs checklist-by-species evaluation target.
+- **Pair MLP bridge**: A bridge model that concatenates checklist features with a species embedding and passes the pair through an MLP to score each species-checklist pair.
+- **Factorized bridge**: A bridge model that encodes each checklist into a latent vector, then scores species using a low-rank interaction such as a dot product with species embeddings plus checklist and species biases.
+- **Hybrid bridge**: A bridge model that combines a direct multi-species checklist prediction head with a species-embedding interaction term. This retains the strength of the tabular MLP while adding explicit species-embedding structure.
+- **Stronger hybrid bridge**: A higher-capacity hybrid bridge with larger hidden dimensions, more hidden layers, and larger latent species/checklist interaction space. In the current workflow, this becomes a strong non-GNN bridge baseline.
+- **Link prediction**: The task of predicting whether an edge exists between two nodes. Here, it means predicting whether a species was detected on a checklist.
+
+### Spatial and relational model components
+
+- **Spatial block holdout**: A validation strategy that holds out spatial blocks rather than randomly holding out checklists. This tests whether the model generalizes to new areas rather than memorizing repeated locations.
+- **Spatial-stratified split**: A spatial validation split designed to hold out blocks while approximately preserving checklist effort, environmental covariates, and common-species prevalence.
+- **Locality / hotspot**: A recurring eBird location where multiple checklists may be submitted over time.
+- **Locality/spatial prior**: A train-only prior based on species detection rates at localities or spatial cells. It can encode useful local information but can also overfit sampling geography.
+- **Prior logit**: A prior probability transformed to the logit scale and added to model logits. In this workflow, locality or spatial species-detection rates may be converted into prior logits.
+- **Prior-logit weight**: A learned scalar weight controlling how strongly the model uses the prior logit. Initializing this weight at zero forces the model to learn whether the prior is useful instead of relying on it immediately.
+- **Spatial-neighbor scalar features**: Checklist-level features summarizing nearby training checklist density or detection rates using distance-weighted neighboring spatial cells.
+- **Spatial-neighbor prior logits**: Species-specific prior logits computed from nearby training cells rather than the same locality or same grid cell. These are smoother than direct locality/spatial-cell priors.
+- **RBF spatial residual**: A smooth spatial correction term based on radial basis functions. It models residual spatial structure left over after ecology, effort, temporal variables, and species interactions are accounted for.
+- **Spatial residual**: A model component added to capture leftover spatial pattern in predictions. It can improve ranking but may also encode observer geography or sampling bias if not carefully constrained.
+- **Spatial-cell graph**: A graph where nodes represent spatial grid cells and edges connect neighboring cells.
+- **Queen-neighbor edges**: Spatial adjacency edges connecting grid cells that touch by either an edge or a corner, similar to queen contiguity in spatial analysis.
+- **GCN / Graph convolutional network**: A GNN architecture that updates node embeddings by aggregating information from neighboring nodes.
+- **Spatial-cell GCN**: A GCN applied to spatial-cell nodes. It learns spatial context from neighboring cells and passes that context into the species detection model.
+- **Concat spatial-cell GCN**: A GNN design that concatenates each checklist's spatial-cell embedding with checklist features before prediction. This directly injects message-passing context into the detector.
+- **Residual spatial-cell GCN**: A GNN design that keeps the stronger checklist/species model as the base prediction and adds a small species-specific spatial GCN correction to the logits.
+- **Gated residual spatial-cell GCN**: A residual GNN design where the spatial correction is multiplied by a learned gate. The gate allows the model to reduce or ignore spatial messages when they hurt transfer or calibration.
+- **Over-smoothing**: A GNN failure mode where repeated message passing makes neighboring node representations too similar, reducing useful local or species-specific signal.
+
+### Calibration and prior correction
+
+- **Logit**: The log-odds transformation of a probability: `log(p / (1 - p))`.
+- **Sigmoid**: The inverse-logit function that maps logits back to probabilities between 0 and 1.
+- **Case-control prior correction**: A post-hoc correction for models trained on artificially balanced positive/negative samples. It shifts logits from the sampled training prevalence to the target all-pairs prevalence.
+- **Global prior correction**: A single logit shift applied to all predictions to adjust for the difference between sampled-edge prevalence and all-pairs prevalence.
+- **Species-specific intercept calibration**: A calibration method that adjusts each species' predictions with its own intercept shift.
+- **Platt scaling**: A calibration method that fits a logistic transformation of model scores on a calibration set.
+- **Calibration split**: A held-out subset used to fit calibration adjustments without using the test set.
+
+### Model comparison terms
+
+- **Ablation**: A controlled model comparison where one component or feature group is removed or changed. For example, comparing ecology-only, effort-only, and ecology + effort models isolates the contribution of each feature group.
+- **Feature set**: The group of input variables used by a model, such as ecology, effort, or both.
+- **Ecology covariates**: Environmental, spatial, or temporal variables intended to represent species habitat or ecological conditions.
+- **Effort covariates**: Checklist and observer variables intended to represent the observation/reporting process.
+- **Bridge model**: A model between tabular baselines and full GNNs. It uses graph-ready species/checklist data structures and species embeddings, but may not use graph message passing.
+- **Relational-feature baseline**: A non-GNN baseline that adds graph-like information, such as locality history or spatial-neighbor summaries, as explicit features.
+- **Fair comparison target**: An evaluation target that matches the intended prediction task. In this workflow, all held-out checklist-by-species pairs are the fair comparison target for tabular and graph models.
+- **Target-aware objective**: A training objective that matches the intended evaluation distribution. The all-species checklist-batch bridge is target-aware because it trains on the full checklist-by-species label matrix rather than a balanced sampled-edge set.
+- **Model capacity**: The flexibility of a model, controlled by factors such as hidden dimension, number of layers, embedding dimension, and architecture.
+- **Underfitting**: A model failure mode where the model is too simple to capture important structure in the data.
+- **Overfitting**: A model failure mode where the model learns training-specific patterns that do not generalize to held-out data.
+- **Regularization**: Techniques such as dropout or weight decay that limit overfitting.
+- **Weight decay**: A regularization method that penalizes large model weights during training.
+- **Dropout**: A regularization method that randomly disables hidden units during training to reduce dependence on any single pathway.
+- **Species-level diagnostics**: Per-species metrics and calibration checks used to identify which species improve or degrade under a model.
+- **Aggregate metrics**: Metrics computed across many species-checklist pairs or averaged across species. Aggregate improvements can hide species-specific failures, so they should be interpreted alongside species-level diagnostics.
 
 ## Data Preparation
 
@@ -491,7 +629,7 @@ Next graph-bridge calibration steps:
 
    where \(\pi_{\text{train-sample}}\) is the sampled-edge training prevalence
    and \(\pi_{\text{all-pairs}}\) is the target all-pairs prevalence. This should
-   improves calibration without changing AUROC/AUPRC ranking.
+   improve calibration without changing AUROC/AUPRC ranking.
 2. If global correction fixes most of the ECE but species-level calibration
    remains poor, add species-specific intercept calibration or Platt scaling on
    a calibration split.
@@ -566,8 +704,8 @@ Bridge architecture experiment:
   may underfit species-specific nonlinear responses.
 - `hybrid`: adds a direct multi-species checklist head to the factorized dot
   product. This is closest to the tabular MLP while retaining an explicit
-  species-embedding interaction term. It is the recommended next bridge
-  architecture to test.
+  species-embedding interaction term. This became the main bridge architecture
+  for the later spatial residual and spatial-cell GNN tests.
 
 Recommended bridge architecture commands:
 
@@ -592,6 +730,11 @@ Bridge architecture results:
 | Stronger hybrid + spatial-neighbor scalars | 0.8859 | 0.5692 | 0.8406 | 0.4119 | 0.0057 | 0.0234 |
 | Stronger hybrid + spatial-neighbor prior, weight init 0 | 0.8859 | 0.5710 | 0.8402 | 0.4136 | 0.0063 | 0.0231 |
 | Stronger hybrid + RBF spatial residual | 0.8933 | 0.5910 | 0.8458 | 0.4248 | 0.0108 | 0.0144 |
+| Spatial-cell GCN hybrid | 0.8910 | 0.5828 | 0.8455 | 0.4182 | 0.0109 | 0.0195 |
+| Spatial-cell GCN residual hybrid | 0.8923 | 0.5857 | 0.8476 | 0.4280 | 0.0136 | 0.0215 |
+| Spatial-cell GCN gated residual hybrid | 0.8922 | 0.5877 | 0.8478 | 0.4258 | 0.0153 | 0.0218 |
+| Spatial-cell GCN residual, 64 hidden, 1 layer, wd 1e-4 | 0.8944 | 0.5927 | 0.8484 | 0.4287 | 0.0085 | 0.0144 |
+| Spatial-cell GCN residual, 64 hidden, 1 layer, wd 1e-3 | 0.8944 | 0.5928 | 0.8484 | 0.4284 | 0.0087 | 0.0146 |
 
 Hybrid bridge notes:
 
@@ -690,7 +833,8 @@ Hybrid bridge notes:
   Wood Duck, Gray Catbird, American Herring Gull, Field Sparrow, Pileated
   Woodpecker, House Finch, Red-headed Woodpecker, Yellow-billed Cuckoo,
   Ovenbird, Red-eyed Vireo, and Brown Thrasher.
-- The explicit RBF spatial residual is the best aggregate ranking model so far:
+- Before the first successful spatial-cell GNN grid, the explicit RBF spatial
+  residual was the best aggregate ranking model:
   micro AUPRC 0.5910 and macro AUPRC 0.4248. It improves slightly over the plain
   stronger hybrid on micro AUPRC (0.5910 vs 0.5895) and essentially ties/slightly
   improves macro AUPRC (0.4248 vs 0.4242), while keeping micro AUROC very close
@@ -715,8 +859,28 @@ Hybrid bridge notes:
   calibration penalty reinforces the original concern: spatial structure can
   also encode observer geography or clustered sampling bias. A GNN should now be
   tested against both the plain stronger hybrid and the spatial residual model.
+- The first true message-passing GNN, a spatial-cell GCN feeding the hybrid
+  detection head, does not beat the stronger hybrid or the RBF spatial residual.
+  It achieves micro AUPRC 0.5828 and macro AUPRC 0.4182, below the stronger
+  hybrid's 0.5895/0.4242 and the spatial residual's 0.5910/0.4248. Its
+  calibration is also weaker: ECE 0.0109 and species calibration MAE 0.0195.
+- The spatial-cell GCN still improves some spatially clustered or effort-biased
+  species relative to the tabular MLP, including Double-crested Cormorant,
+  Eastern Meadowlark, Mallard, Black-and-white Warbler, Bald Eagle, American
+  Robin, Indigo Bunting, Canada Goose, Great Blue Heron, Eastern Towhee,
+  Yellow-throated Warbler, and Hooded Warbler. Losses include Red-headed
+  Woodpecker, Swamp Sparrow, Brown Pelican, Gray Catbird, Ovenbird, Acadian
+  Flycatcher, Great Egret, Great Black-backed Gull, Wood Duck, American Herring
+  Gull, Pileated Woodpecker, and Bufflehead.
+- Current GNN conclusion: message passing is not automatically helpful. The
+  first GCN likely smooths spatial context too generically and loses some of the
+  stronger hybrid's checklist-level signal. The next GNN iteration should be
+  residual/gated rather than replacing checklist context with cell context:
+  start from the stronger hybrid logits and add a small learned GNN residual, or
+  use a learned gate that can ignore spatial-cell messages when they hurt
+  calibration or species transfer.
 
-Near-term next steps:
+Completed modeling sequence:
 
 1. Completed: add species-level calibration to the tabular MLP metrics so tabular and graph
    bridge outputs can be compared on the same species calibration diagnostics.
@@ -731,9 +895,9 @@ python exp/ebird_graph_all_species_baseline.py --graph-dir data/ebird/graph_top1
 3. The stronger hybrid slightly beats the tabular MLP on aggregate ranking
    metrics. Treat this as evidence that bridge capacity, not message passing,
    explained most of the previous gap.
-4. Next: build a locality/spatial-neighbor enriched bridge before adding message
-   passing. This should test whether relational information helps when added as
-   train-only aggregate features.
+4. Completed: build locality/spatial-neighbor enriched bridges before adding
+   message passing. These tested whether relational information helps when added
+   as train-only aggregate features.
 5. Prioritize locality/spatial structure before observer structure. Observer
    effects are likely strong but can dominate ecology and should be introduced
    carefully after cleaner spatial/locality signals are tested.
@@ -796,7 +960,7 @@ Comparison command:
 python exp/compare_ebird_graph_tabular_species.py --graph-dir data/ebird/graph_top100_spatial --baseline-dir data/ebird/baselines --top-species 100 --tabular-model mlp --feature-set both --split spatial-stratified --graph-species-metrics data/ebird/graph_top100_spatial/all_species_link_baselines/all_species_link_hybrid_h128_l2_z128_locality_spatial_scalars_test_species_metrics.csv
 ```
 
-Recommended next modeling step:
+Completed relational/GNN modeling sequence:
 
 1. Keep the plain stronger hybrid as the current best bridge baseline.
 2. Completed: add a smoother spatial-neighbor relational baseline rather than
@@ -811,10 +975,305 @@ Recommended next modeling step:
    full message-passing GNN. This gives a stronger and more interpretable
    non-GNN benchmark: ecology, effort, temporal covariates, species
    interactions, plus a constrained spatial correction term.
-5. Next: build the first true message-passing GNN and compare it against both
-   the plain stronger hybrid and the RBF spatial residual. The GNN needs to
+5. Completed: build the first true message-passing GNN and compare it against
+   both the plain stronger hybrid and the RBF spatial residual. The GNN needs to
    improve ranking without worsening calibration enough to undermine the
    bias/effort modeling goal.
+6. Completed: first spatial-cell GCN hybrid. It underperforms the stronger
+   hybrid and RBF spatial residual, so the next GNN should be residual/gated
+   instead of directly concatenating cell message-passing context into the
+   checklist encoder.
+7. Completed: run residual and gated spatial-cell GCNs. These keep the stronger
+   checklist/species hybrid as the base detector and add spatial-cell message
+   passing only as a learned correction. This tests whether graph structure can
+   improve spatially clustered or effort-biased species without degrading the
+   strong checklist-level signal and calibration.
+8. Completed: diagnose the residual/gated GNN tradeoff before adding more graph
+   complexity. The residual/gated GNNs improved over the direct concat GCN, but
+   the first untuned versions did not beat the RBF spatial residual on micro
+   AUPRC and worsened calibration. This led to the residual grid search.
+9. Current: favor the one-layer, 64-hidden residual spatial-cell GCN as the best
+   GNN candidate so far. It improves aggregate ranking over the RBF spatial
+   residual and keeps calibration better than the RBF residual, but species-level
+   failures remain, especially Red-headed Woodpecker.
+
+First spatial-cell GNN:
+
+- `exp/ebird_spatial_gnn_baseline.py` implements the first conservative
+  message-passing baseline.
+- It keeps the all-species checklist-batch objective and the hybrid
+  checklist/species detection head, but adds a spatial-cell GCN before
+  detection scoring:
+
+  1. assign each checklist to a 25 km spatial grid cell
+  2. create spatial-cell nodes
+  3. build queen-neighbor spatial-cell edges
+  4. initialize cell features from train-only checklist summaries plus cell
+     coordinates and train checklist counts
+  5. run GCN message passing across spatial cells
+  6. concatenate each checklist's original features with its spatial-cell GNN
+     embedding
+  7. score all top-100 species with the hybrid all-species detection head
+
+- This is the first actual GNN test in the workflow. It asks whether learned
+  spatial message passing improves over the stronger hybrid and over the RBF
+  spatial residual without relying on pseudo-absence background sampling.
+- The main comparison target is still the all held-out checklist/species pairs
+  under the same spatial-stratified split.
+
+Recommended first spatial GNN command:
+
+```
+python exp/ebird_spatial_gnn_baseline.py --graph-dir data/ebird/graph_top100_spatial --run-name spatial_gcn_h128_l2_z128_cell64_l2 --epochs 10 --batch-size 2048 --hidden-dim 128 --hidden-layers 2 --latent-dim 128 --cell-hidden-dim 64 --cell-layers 2 --dropout 0.10 --spatial-grid-size-m 25000
+```
+
+Comparison command:
+
+```
+python exp/compare_ebird_graph_tabular_species.py --graph-dir data/ebird/graph_top100_spatial --baseline-dir data/ebird/baselines --top-species 100 --tabular-model mlp --feature-set both --split spatial-stratified --graph-species-metrics data/ebird/graph_top100_spatial/spatial_gnn_baselines/spatial_gnn_spatial_gcn_h128_l2_z128_cell64_l2_test_species_metrics.csv
+```
+
+First spatial GNN result:
+
+- Micro AUROC 0.8910, micro AUPRC 0.5828.
+- Macro AUROC 0.8455, macro AUPRC 0.4182.
+- ECE 0.0109, max probability-bin error 0.0496.
+- Species calibration MAE 0.0195.
+- Graph: 268 spatial-cell nodes, 2,164 spatial-cell edges, 262 cells with
+  training checklists.
+- This is below the stronger hybrid and below the RBF spatial residual. The next
+  GNN should use message passing as an additive/gated residual over the stronger
+  hybrid, not as a direct replacement for the bridge context.
+
+Residual/gated spatial-cell GNN:
+
+- `exp/ebird_spatial_gnn_baseline.py` now supports `--gnn-mode concat`,
+  `--gnn-mode residual`, and `--gnn-mode gated`.
+- `concat` is the original spatial-cell GCN: concatenate each checklist's cell
+  embedding into the checklist encoder.
+- `residual` keeps the stronger checklist-only hybrid path and adds a
+  zero-initialized species-specific residual from the spatial-cell GCN:
+
+  \[
+  \operatorname{logit} P(y_{c,j}=1)
+  =
+  f_{\text{hybrid}}(x_c, j)
+  +
+  r_j(g_{\text{cell}}(s_c))
+  \]
+
+- `gated` uses the same residual but multiplies it by a learned
+  checklist/species gate. The gate starts conservative, so the model can ignore
+  spatial-cell messages when they hurt transfer or calibration.
+- These modes are closer to the overall bias/effort goal than the direct concat
+  GCN because they treat spatial graph structure as a correction to
+  ecology/effort/species interactions, not as a replacement for those
+  covariates. A useful GNN should beat or tie the stronger hybrid and RBF
+  residual on ranking while preserving calibration.
+
+Residual/gated spatial GNN results:
+
+- Residual GCN: micro AUROC 0.8923, micro AUPRC 0.5857, macro AUROC 0.8476,
+  macro AUPRC 0.4280, ECE 0.0136, species calibration MAE 0.0215.
+- Gated residual GCN: micro AUROC 0.8922, micro AUPRC 0.5877, macro AUROC
+  0.8478, macro AUPRC 0.4258, ECE 0.0153, species calibration MAE 0.0218.
+- The first residual/gated design improves over the direct concat GCN,
+  especially for macro AUPRC. These untuned residual/gated runs were later
+  superseded by the one-layer residual grid results.
+- These are still not decisive wins over the non-GNN benchmarks. The gated run
+  approaches the stronger hybrid's micro AUPRC (0.5877 vs 0.5895), and the
+  residual run exceeds the stronger hybrid/RBF residual on macro AUPRC (0.4280
+  vs 0.4242/0.4248), but both GNN variants have weaker calibration than the
+  stronger hybrid and RBF residual.
+- Species-level residual gains are concentrated in species where spatial
+  context plausibly helps: Black-and-white Warbler, Mallard, Eastern
+  Meadowlark, Double-crested Cormorant, Indigo Bunting, Yellow-billed Cuckoo,
+  Great Blue Heron, Yellow-throated Warbler, Bald Eagle, Hooded Warbler,
+  Hooded Merganser, and Blue Grosbeak. Losses still include Red-headed
+  Woodpecker, Swamp Sparrow, Wood Duck, Brown Pelican, Pileated Woodpecker,
+  Great Black-backed Gull, Green Heron, Red-winged Blackbird, Common Grackle,
+  Ovenbird, Wood Thrush, and Boat-tailed Grackle.
+- The gated comparison is similar but slightly more polarized. Its largest
+  AUPRC gains over the tabular MLP are Eastern Meadowlark (+0.1171),
+  Black-and-white Warbler (+0.0993), Mallard (+0.0956), Double-crested
+  Cormorant (+0.0621), American Robin (+0.0493), Bald Eagle (+0.0483),
+  Indigo Bunting (+0.0445), Great Blue Heron (+0.0410), Hooded Warbler
+  (+0.0380), Hooded Merganser (+0.0353), Eastern Towhee (+0.0352), and
+  Canada Goose (+0.0303).
+- The gated model's largest AUPRC losses are Red-headed Woodpecker (-0.1224),
+  Boat-tailed Grackle (-0.0558), Swamp Sparrow (-0.0380), Green Heron
+  (-0.0322), Acadian Flycatcher (-0.0309), Wood Duck (-0.0302), Ovenbird
+  (-0.0253), Barn Swallow (-0.0245), Wood Thrush (-0.0239), Brown Pelican
+  (-0.0212), Yellow-billed Cuckoo (-0.0197), and American Herring Gull
+  (-0.0191). The large Red-headed Woodpecker loss is a warning that the gate is
+  not yet reliably protecting species where spatial smoothing is harmful.
+- The gated model's largest species calibration errors are Pileated Woodpecker
+  and American Crow (both 0.0785), followed by Mourning Dove (0.0662),
+  White-breasted Nuthatch (0.0613), Turkey Vulture (0.0595), Pine Warbler
+  (0.0546), Chipping Sparrow (0.0500), and Double-crested Cormorant (0.0478).
+  Calibration is therefore the main weakness of the current residual/gated
+  spatial-cell GNN family.
+- Interim interpretation before the grid search: residual/gated message passing
+  was the right direction relative to concat, but the GNN was still acting like
+  an imperfect spatial correction. That motivated tuning residual strength and
+  spatial-cell capacity before adding graph nodes for locality, protocol/effort,
+  and environmental neighborhoods.
+- The next tuning step should be a small, resumable grid over residual/gated
+  spatial-cell GNN capacity and regularization. The goal is not to maximize one
+  ranking metric at any cost; it is to find whether graph message passing can
+  improve species-level ranking while keeping calibration close to the stronger
+  hybrid and RBF spatial residual baselines.
+- The first residual-only grid pass is encouraging. The best runs use a single
+  spatial-cell GCN layer with 64 hidden units. They beat the RBF spatial
+  residual on ranking while keeping calibration better than the RBF residual:
+
+  - `spatial_gcn_residual_h128_l2_z128_cell64_cl1_wd0p0001`: micro AUPRC
+    0.5927, macro AUPRC 0.4287, ECE 0.0085, species calibration MAE 0.0144.
+  - `spatial_gcn_residual_h128_l2_z128_cell64_cl1_wd0p001`: micro AUPRC
+    0.5928, macro AUPRC 0.4284, ECE 0.0087, species calibration MAE 0.0146.
+
+- This is the first GNN result that is clearly competitive with the non-GNN
+  spatial residual. It improves micro AUPRC over the RBF residual (0.5928 vs
+  0.5910), improves macro AUPRC (0.4284/0.4287 vs 0.4248), and improves ECE
+  relative to the RBF residual (0.0085-0.0087 vs 0.0108). It still does not
+  match the plain stronger hybrid's ECE (0.0038), so calibration remains the
+  main constraint.
+- Two-layer residual GCNs are worse than one-layer residual GCNs in this grid,
+  especially with 64 hidden units. This suggests over-smoothing or excessive
+  spatial correction, not under-capacity.
+- Species-level diagnostics for the best residual grid run
+  (`spatial_gcn_residual_h128_l2_z128_cell64_cl1_wd0p0001`) show that the
+  aggregate improvement is ecologically plausible but not uniformly beneficial.
+  Largest AUPRC gains over the tabular MLP are Black-and-white Warbler
+  (+0.1119), Double-crested Cormorant (+0.0877), Mallard (+0.0656),
+  Yellow-billed Cuckoo (+0.0637), Eastern Meadowlark (+0.0459), American Robin
+  (+0.0442), Yellow-throated Warbler (+0.0438), Pied-billed Grebe (+0.0425),
+  Indigo Bunting (+0.0421), Great Blue Heron (+0.0401), Great Egret (+0.0368),
+  and Brown Thrasher (+0.0367).
+- Largest AUPRC losses for that same run are Red-headed Woodpecker (-0.1067),
+  Swamp Sparrow (-0.0581), Wood Duck (-0.0480), Great Black-backed Gull
+  (-0.0365), Pileated Woodpecker (-0.0285), American Herring Gull (-0.0197),
+  Ovenbird (-0.0191), Green Heron (-0.0174), Brown-headed Cowbird (-0.0153),
+  Royal Tern (-0.0148), Red-winged Blackbird (-0.0126), and Bufflehead
+  (-0.0117). Red-headed Woodpecker remains the clearest failure case and should
+  be inspected before claiming the GNN is broadly better.
+- The largest species calibration errors for the best residual run are
+  White-breasted Nuthatch (0.0600), Chipping Sparrow (0.0542), Mourning Dove
+  (0.0366), American Goldfinch (0.0319), European Starling (0.0317), Hairy
+  Woodpecker (0.0304), Pileated Woodpecker (0.0295), Northern Cardinal (0.0287),
+  Turkey Vulture (0.0287), Mallard (0.0286), Ruby-crowned Kinglet (0.0272), and
+  Pine Warbler (0.0270). These are lower than the earlier gated model's worst
+  calibration failures, which supports favoring the residual 64-hidden,
+  one-layer configuration for now.
+
+Residual/gated grid search:
+
+- `exp/run_ebird_spatial_gnn_grid.py` wraps
+  `exp/ebird_spatial_gnn_baseline.py` and runs named residual/gated
+  configurations. It skips existing summary JSONs by default, so it can be
+  stopped and resumed.
+- The first grid should stay small and targeted:
+
+  - `--gnn-mode residual` and `--gnn-mode gated`
+  - cell hidden dimensions 32 and 64
+  - one and two spatial-cell GCN layers
+  - weight decay 1e-4 and 1e-3
+  - gated init biases -2 and -3
+
+- Interpretation targets:
+
+  - preserve or improve micro AUPRC relative to the stronger hybrid (0.5895)
+    and RBF spatial residual (0.5910)
+  - preserve or improve macro AUPRC relative to the stronger hybrid (0.4242)
+    and RBF spatial residual (0.4248)
+  - keep ECE and species calibration MAE close to the stronger hybrid/RBF
+    residual, because the bias/effort goal needs sane detection probabilities
+  - reduce the large species-level losses for Red-headed Woodpecker, Swamp
+    Sparrow, Wood Duck, Green Heron, Ovenbird, and Wood Thrush
+
+Grid dry-run command:
+
+```
+python exp/run_ebird_spatial_gnn_grid.py --dry-run
+```
+
+Conservative first grid command:
+
+```
+python exp/run_ebird_spatial_gnn_grid.py --max-runs 8
+```
+
+Full default grid command:
+
+```
+python exp/run_ebird_spatial_gnn_grid.py
+```
+
+Visual diagnostics:
+
+- `exp/plot_ebird_spatial_gnn_grid.py` reads the spatial GNN output directory,
+  all-species link baseline summaries, the tabular MLP summary, calibration
+  tables, and any graph-vs-tabular species comparison CSVs.
+- It writes:
+
+  - `spatial_gnn_run_summary.csv`
+  - `run_metric_bars.png`
+  - `ranking_calibration_tradeoff.png`
+  - `spatial_gnn_calibration_curves.png`
+  - one top/bottom species AUPRC-delta plot for each available comparison CSV
+
+Visual diagnostic command:
+
+```
+python exp/plot_ebird_spatial_gnn_grid.py
+```
+
+After each promising grid run, compare species-level deltas:
+
+```
+python exp/compare_ebird_graph_tabular_species.py --graph-dir data/ebird/graph_top100_spatial --baseline-dir data/ebird/baselines --top-species 100 --tabular-model mlp --feature-set both --split spatial-stratified --graph-species-metrics data/ebird/graph_top100_spatial/spatial_gnn_baselines/spatial_gnn_<RUN_NAME>_test_species_metrics.csv
+```
+
+Then rerun:
+
+```
+python exp/plot_ebird_spatial_gnn_grid.py
+```
+
+Species-level comparison for the best residual grid run:
+
+```
+python exp/compare_ebird_graph_tabular_species.py --graph-dir data/ebird/graph_top100_spatial --baseline-dir data/ebird/baselines --top-species 100 --tabular-model mlp --feature-set both --split spatial-stratified --graph-species-metrics data/ebird/graph_top100_spatial/spatial_gnn_baselines/spatial_gnn_spatial_gcn_residual_h128_l2_z128_cell64_cl1_wd0p0001_test_species_metrics.csv
+```
+
+The `wd0p001` run has slightly higher micro AUPRC, but `wd0p0001` has slightly
+better macro AUPRC, ECE, and species calibration MAE. Use `wd0p0001` as the
+first species-level diagnostic unless later plots show a specific reason to
+prefer `wd0p001`.
+
+Recommended residual spatial GNN command:
+
+```
+python exp/ebird_spatial_gnn_baseline.py --graph-dir data/ebird/graph_top100_spatial --run-name spatial_gcn_residual_h128_l2_z128_cell64_l2 --gnn-mode residual --epochs 10 --batch-size 2048 --hidden-dim 128 --hidden-layers 2 --latent-dim 128 --cell-hidden-dim 64 --cell-layers 2 --dropout 0.10 --spatial-grid-size-m 25000
+```
+
+Recommended gated spatial GNN command:
+
+```
+python exp/ebird_spatial_gnn_baseline.py --graph-dir data/ebird/graph_top100_spatial --run-name spatial_gcn_gated_h128_l2_z128_cell64_l2 --gnn-mode gated --epochs 10 --batch-size 2048 --hidden-dim 128 --hidden-layers 2 --latent-dim 128 --cell-hidden-dim 64 --cell-layers 2 --dropout 0.10 --spatial-grid-size-m 25000 --gate-init-bias -2
+```
+
+Residual comparison command:
+
+```
+python exp/compare_ebird_graph_tabular_species.py --graph-dir data/ebird/graph_top100_spatial --baseline-dir data/ebird/baselines --top-species 100 --tabular-model mlp --feature-set both --split spatial-stratified --graph-species-metrics data/ebird/graph_top100_spatial/spatial_gnn_baselines/spatial_gnn_spatial_gcn_residual_h128_l2_z128_cell64_l2_test_species_metrics.csv
+```
+
+Gated comparison command:
+
+```
+python exp/compare_ebird_graph_tabular_species.py --graph-dir data/ebird/graph_top100_spatial --baseline-dir data/ebird/baselines --top-species 100 --tabular-model mlp --feature-set both --split spatial-stratified --graph-species-metrics data/ebird/graph_top100_spatial/spatial_gnn_baselines/spatial_gnn_spatial_gcn_gated_h128_l2_z128_cell64_l2_test_species_metrics.csv
+```
 
 Spatial-neighbor bridge implementation:
 
@@ -917,9 +1376,9 @@ Spatial residual result:
 - Macro AUROC 0.8458, macro AUPRC 0.4248.
 - ECE 0.0108, max probability-bin error 0.0382.
 - Species calibration MAE 0.0144.
-- This is the best aggregate ranking model so far, but its calibration is worse
-  than the plain stronger hybrid. Treat it as the final non-GNN benchmark for
-  the first true GNN.
+- This was the best aggregate ranking model before the tuned spatial-cell GNN
+  grid, but its calibration is worse than the plain stronger hybrid. Treat it
+  as the final non-GNN benchmark for the first true GNN.
 
 ## Training Objective Options
 
