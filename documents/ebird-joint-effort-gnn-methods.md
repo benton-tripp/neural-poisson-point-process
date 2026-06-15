@@ -4039,6 +4039,138 @@ Spatial residual result:
   grid, but its calibration is worse than the plain stronger hybrid. Treat it
   as the final non-GNN benchmark for the first true GNN.
 
+## Current Framework Checkpoint
+
+The repeated result across the frozen-access spatial GNN, environmental-neighbor
+edges, separated spatial channels, access-density supervision, and raw
+co-detection species GCNs is that aggregate metrics move only modestly while
+the same held-out coastal block remains fragile. This suggests the immediate
+problem is not a lack of small architecture variants. It is likely a support and
+regime-transfer problem: the held-out coastal/island block has species,
+water/coast, elevation/canopy, and access structure that may not have close
+training analogs.
+
+Current interpretation:
+
+- Keep `spatial_gcn_frozen_access_h64_l2_z64` as the clean spatial-cell GNN
+  baseline.
+- Keep `spatial_gcn_frozen_access_env_edges_k6` as a targeted comparison for
+  environmentally similar cell transfer.
+- Pause the raw co-detection species GCN branch. It adds a small aggregate
+  ranking gain, but worsens block 79 and appears to transfer common checklist
+  assemblage structure more than robust ecological structure.
+- Do not tune the split away from block 79 yet. It is useful as a stress test,
+  but we need to diagnose whether it is out of support before using it to choose
+  architectures.
+
+Next diagnostic step:
+
+- `exp/diagnose_ebird_regime_support.py` summarizes held-out block/cell support
+  in coastal, waterbody, elevation, canopy, and effort/access space.
+- The goal is to determine whether block 79 is genuinely out of support, whether
+  environmental-neighbor edges are connecting it to useful training analogs, and
+  whether future work should prioritize:
+  - richer coastal/water/habitat covariates,
+  - a broader geographic training domain with more coastal analogs,
+  - a revised blocked validation design with multiple coastal and inland test
+    blocks, or
+  - ecologically constrained species graphs rather than raw co-detection.
+
+Regime-support diagnostic command:
+
+```
+python exp/diagnose_ebird_regime_support.py --graph-dir data/ebird/graph_top100_spatial_10x10
+```
+
+Primary outputs:
+
+- `data/ebird/graph_top100_spatial_10x10/spatial_gnn_baselines/diagnostics/regime_support/regime_support_test_block_summary.csv`
+- `data/ebird/graph_top100_spatial_10x10/spatial_gnn_baselines/diagnostics/regime_support/regime_support_test_cells.csv`
+- `data/ebird/graph_top100_spatial_10x10/spatial_gnn_baselines/diagnostics/regime_support/regime_support_top_species_by_test_block.csv`
+
+How to read this diagnostic:
+
+- High `nearest_train_ecology_distance` means held-out cells differ from the
+  training cells in canopy, elevation, waterbody distance, and coastline
+  distance after standardization.
+- High `nearest_train_access_distance` means the held-out cells differ in
+  protocol/effort structure, not just habitat.
+- Large `nearest_train_spatial_distance_m` is expected for held-out blocks, but
+  it matters most when paired with high ecological/access distance.
+- If block 79 is high on ecological distance, the next framework step should be
+  richer coastal/water/habitat features or broader geography.
+- If block 79 is ecologically similar but access-different, the next step should
+  be a stronger explicit access/bias component.
+- If block 79 is neither ecologically nor access out-of-support, then the model
+  architecture or loss/objective is more likely the bottleneck.
+
+Diagnostic revision after first run:
+
+- The first regime-support run showed block 79 as fully coastal and strongly
+  near-water, with top positives dominated by coastal/water-associated species
+  such as Double-crested Cormorant, Red-winged Blackbird, Boat-tailed Grackle,
+  Laughing Gull, and American Herring Gull.
+- However, the first script version also reported non-test blocks in the
+  held-out summary because 25 km regime cells can straddle validation block
+  boundaries and were labeled by the modal block across all checklists.
+- `exp/diagnose_ebird_regime_support.py` was revised so training support cells
+  are summarized from train rows only, and held-out cells are summarized by
+  `(spatial_block, spatial_cell)` from test rows only.
+- Rerun the command above before interpreting the ecology/access support
+  distances. The top-species signal from the first run is still useful, but the
+  block-level support distances should come from the revised script.
+
+Corrected regime-support result:
+
+- Held-out block 79 is the only coastal test block:
+  - coastal rate 1.0000
+  - near-water rate 0.7611
+  - mean coastline distance about 1.03 km
+  - mean waterbody distance about 1.36 km
+- Block 79 has the highest access/effort regime distance from training cells:
+  - nearest train access distance 0.8826
+  - block 31 is 0.4329
+  - block 65 is 0.3561
+- Block 79 is not the most ecologically distant block by the current broad
+  raster covariates:
+  - nearest train ecology distance 0.4908
+  - block 31 is higher at 0.6112
+  - block 65 is lower at 0.3521
+- Block 79 top positives are strongly coastal/water-associated: Double-crested
+  Cormorant, Red-winged Blackbird, Boat-tailed Grackle, Laughing Gull, and
+  American Herring Gull.
+
+Interpretation:
+
+- The repeated block-79 failure is probably not just an ecological covariate
+  out-of-support problem. It is more likely a combination of:
+  - coastal/water species assemblage,
+  - distinct access/effort geography,
+  - and a validation design where the only fully coastal block is held out.
+- The existing continuous water/coast distance covariates are present, but the
+  model may still need explicit coastal/access regime structure so it does not
+  treat coastal observer geography as an unconstrained spatial residual.
+- The fact that block 79 species have substantial train detections means this is
+  not simply a no-training-data species problem. It is a checklist-regime and
+  spatial-transfer problem.
+
+Next step:
+
+- Add a targeted coastal/access-regime diagnostic or model feature set before
+  more GNN architecture changes.
+- Candidate derived features:
+  - coastal indicator, for example distance to coastline <= 25 km
+  - near-water indicator, for example distance to waterbody <= 2.5 km
+  - log coastline distance and log waterbody distance, if not already modeled
+    in transformed form
+  - coastal-by-effort interactions, especially coastal x traveling, coastal x
+    effort distance, coastal x duration, and near-water x protocol
+- Then compare the tabular MLP and clean frozen-access spatial GNN with and
+  without these derived regime features. If the tabular model improves block 79,
+  the missing piece is feature representation rather than message passing. If
+  the tabular model does not improve but the GNN does, the graph structure is
+  adding useful transfer beyond explicit covariates.
+
 ## Training Objective Options
 
 For graph link prediction:
