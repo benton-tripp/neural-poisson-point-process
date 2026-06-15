@@ -1404,6 +1404,2359 @@ Primary-vs-gated species diagnostics:
   This makes coastal/island and edge behavior easier to distinguish from empty
   plot area.
 
+How to interpret the residual/probability-difference maps:
+
+- Read the residual map as "what the spatial GNN changed after the
+  checklist/species base model." Red means the spatial residual increased the
+  detection probability; blue means it decreased the detection probability.
+  This is not the final prediction surface and it is not a direct
+  graph-vs-tabular map.
+- Compare the residual panel to the held-out positive panel. A useful residual
+  should generally increase probabilities where held-out positives cluster or
+  decrease probabilities in areas with many held-out checklists but few
+  positives. A concerning residual suppresses broad areas that contain many
+  positives or boosts areas where positives are absent.
+- Look for whether the residual correction follows plausible species geography
+  or simply follows observer geography. A correction aligned with habitat or
+  range structure is more encouraging than one aligned only with high-effort
+  corridors, hotspots, or coastal/island checklist density.
+- Look for edge and coastal artifacts. The NC boundary helps distinguish real
+  coastal/island structure from empty plot space. If strong red/blue correction
+  occurs only at the state edge, coastline, or isolated islands, treat it as a
+  possible split/coverage artifact.
+- Look for one-sided corrections. In the current primary residual GNN, several
+  focus species receive mostly negative corrections. That is not automatically
+  wrong, but it is suspicious for species where held-out positives are also
+  being suppressed.
+- Interpret gains and losses through ranking, not just average residual. A
+  species can have a negative mean residual and still gain AUPRC if the residual
+  downweights negatives more than it downweights the highest-ranked positives.
+  This is why the delta map and the positive-location map need to be read
+  together.
+
+Effort-stratified graph-vs-tabular diagnostics:
+
+- `exp/compare_ebird_effort_strata.py` retrains the tabular MLP on the graph
+  dataset's standardized checklist features and compares it against the saved
+  spatial GNN on the same held-out all-pairs target within effort and spatial
+  strata.
+- The corrected first run used the original all-checklist spatial block
+  assignment, not a recomputed grid over only held-out rows.
+- The spatial GNN's biggest micro-AUPRC gains occur in higher-effort contexts:
+  distance `(2,5]` km (+0.0134), distance `5+` km (+0.0131), 3+ observers
+  (+0.0130), 2 observers (+0.0101), duration `121+` minutes (+0.0095), and
+  traveling checklists (+0.0076). This suggests the spatial residual is most
+  useful where effort is high enough to reveal local assemblage/geography.
+- The weakest stratum is short traveling/local movement, distance `(0,0.5]` km,
+  where micro AUPRC drops by -0.0047. Stationary checklists and zero-distance
+  checklists still gain slightly, but less than traveling/high-distance
+  checklists.
+- Macro AUPRC improves in every reported effort/spatial stratum, even where
+  micro AUPRC is weak. This means species-level ranking is generally helped,
+  but common species/checklist patterns can still drive local micro losses.
+- Calibration remains the main tradeoff. ECE often worsens when ranking
+  improves, especially for long duration (`121+`, delta ECE +0.0115), traveling
+  checklists (+0.0052), and the large held-out block 44 (+0.0042). For a
+  bias/effort model, these probability-calibration costs should not be ignored.
+- Current interpretation: the spatial GNN appears to add real ranking signal in
+  high-effort strata, but it may be using effort-correlated geography in a way
+  that worsens probability calibration. The next validation should test whether
+  this pattern holds under a changed spatial split.
+
+Step 3 placeholder, alternate spatial split validation:
+
+- Rebuild the graph dataset with at least one alternate spatial split seed or a
+  different block granularity, then rerun only the primary residual GNN and the
+  effort-strata diagnostics. The key question is whether the residual GNN still
+  improves high-effort/traveling strata and whether the same species failures
+  recur.
+- Candidate variants:
+  - same 8x8 blocks with a different `--split-seed`
+  - finer blocks, such as 10x10, if test block selection remains balanced
+  - coarser blocks only if the held-out geography remains representative
+- Do not expand the graph architecture until the primary residual result is at
+  least directionally stable under one changed held-out geography.
+- Alternate split seed 37 graph dataset was built in
+  `data/ebird/graph_top100_spatial_seed37` with the same top-100 species,
+  features, 8x8 spatial blocks, test fraction, stratification species count,
+  and negative sampling settings as the seed-19 graph dataset.
+- The seed-37 graph dataset validated successfully and produced the same
+  checklist/edge counts as seed 19: 661,979 checklists, 100 species, 529,526
+  train checklists, 132,453 test checklists, 7,160,399 train positives, and
+  1,857,102 test positives.
+- The seed-37 primary residual spatial GNN is effectively identical to the
+  seed-19 result: micro AUROC 0.8942, micro AUPRC 0.5927, macro AUROC 0.8482,
+  macro AUPRC 0.4279, ECE 0.0084, and species calibration MAE 0.0145. The
+  original seed-19 primary residual was micro AUROC 0.8944, micro AUPRC 0.5927,
+  macro AUROC 0.8484, macro AUPRC 0.4287, ECE 0.0085, and species calibration
+  MAE 0.0144.
+- The seed-37 effort-strata diagnostics also replicate the same pattern:
+  strongest micro-AUPRC gains in higher-effort contexts, including distance
+  `(2,5]` km (+0.0136), distance `5+` km (+0.0132), 3+ observers (+0.0128),
+  2 observers (+0.0096), duration `121+` minutes (+0.0096), and traveling
+  checklists (+0.0075). The same weak stratum remains distance `(0,0.5]` km
+  (-0.0048).
+- Interpretation: changing only the split seed did not meaningfully change the
+  validation problem. This is reassuring for reproducibility, but it is not a
+  strong spatial-transfer stress test. The next split validation should change
+  spatial block granularity, such as 10x10 blocks, rather than only changing the
+  tie-break seed.
+
+Completed seed-37 validation commands:
+
+```
+python exp/validate_ebird_graph_dataset.py --graph-dir data/ebird/graph_top100_spatial_seed37
+```
+
+```
+python exp/ebird_spatial_gnn_baseline.py --graph-dir data/ebird/graph_top100_spatial_seed37 --run-name spatial_gcn_residual_h128_l2_z128_cell64_cl1_wd0p0001 --gnn-mode residual --epochs 10 --batch-size 2048 --hidden-dim 128 --hidden-layers 2 --latent-dim 128 --cell-hidden-dim 64 --cell-layers 1 --dropout 0.10 --weight-decay 0.0001 --spatial-grid-size-m 25000
+```
+
+```
+python exp/compare_ebird_effort_strata.py --graph-dir data/ebird/graph_top100_spatial_seed37 --spatial-run-name spatial_gcn_residual_h128_l2_z128_cell64_cl1_wd0p0001
+```
+
+```
+python exp/compare_ebird_graph_tabular_species.py --graph-dir data/ebird/graph_top100_spatial_seed37 --baseline-dir data/ebird/baselines --top-species 100 --tabular-model mlp --feature-set both --split spatial-stratified --graph-species-metrics data/ebird/graph_top100_spatial_seed37/spatial_gnn_baselines/spatial_gnn_spatial_gcn_residual_h128_l2_z128_cell64_cl1_wd0p0001_test_species_metrics.csv --output data/ebird/graph_top100_spatial_seed37/spatial_gnn_baselines/residual_primary_graph_vs_tabular_species.csv
+```
+
+Recommended next stronger spatial validation, 10x10 blocks:
+
+```
+python exp/build_ebird_graph_dataset.py --processed-dir data/ebird/processed_nc_2020_2023 --output-dir data/ebird/graph_top100_spatial_10x10 --top-species 100 --feature-set both --split spatial-stratified --spatial-blocks-per-dim 10 --test-fraction 0.2 --stratify-species-count 20 --split-seed 19 --negative-ratio 5
+```
+
+```
+python exp/validate_ebird_graph_dataset.py --graph-dir data/ebird/graph_top100_spatial_10x10
+```
+
+```
+python exp/ebird_spatial_gnn_baseline.py --graph-dir data/ebird/graph_top100_spatial_10x10 --run-name spatial_gcn_residual_h128_l2_z128_cell64_cl1_wd0p0001 --gnn-mode residual --epochs 10 --batch-size 2048 --hidden-dim 128 --hidden-layers 2 --latent-dim 128 --cell-hidden-dim 64 --cell-layers 1 --dropout 0.10 --weight-decay 0.0001 --spatial-grid-size-m 25000
+```
+
+```
+python exp/compare_ebird_effort_strata.py --graph-dir data/ebird/graph_top100_spatial_10x10 --spatial-run-name spatial_gcn_residual_h128_l2_z128_cell64_cl1_wd0p0001
+```
+
+10x10 spatial-block validation result:
+
+- The 10x10 graph dataset built and validated successfully:
+  661,979 checklists, 100 species, 524,959 train checklists, 137,020 test
+  checklists, 7,149,369 train positives, and 1,868,132 test positives.
+- The 10x10 primary residual spatial GNN is weaker on ranking than the 8x8
+  split but much better calibrated: micro AUROC 0.8904, micro AUPRC 0.5763,
+  macro AUROC 0.8428, macro AUPRC 0.4100, ECE 0.0014, max bin error 0.0072,
+  and species calibration MAE 0.0129.
+- Compared with the 8x8 seed-19 primary residual model, the 10x10 split loses
+  about 0.0164 micro AUPRC and 0.0187 macro AUPRC, while ECE improves from
+  0.0085 to 0.0014 and species calibration MAE improves from 0.0144 to 0.0129.
+  This suggests the 10x10 held-out geography is a different and harder ranking
+  problem, not just a rerun of the same validation setting.
+- The effort-strata pattern is directionally similar but weaker. The spatial
+  GNN still helps most in high-effort strata: duration `121+` minutes
+  (+0.0118 micro AUPRC), distance `5+` km (+0.0113), distance `(2,5]` km
+  (+0.0098), and traveling checklists (+0.0058). Stationary/zero-distance and
+  short-duration strata are weaker, and block 79 is a clear local failure
+  (-0.0127 micro AUPRC).
+- Unlike the 8x8 split, the 10x10 effort-strata ECE deltas are mostly negative,
+  meaning the spatial GNN improves or preserves calibration within most effort
+  strata while losing some ranking. This changes the interpretation: the GNN is
+  not simply overfitting effort geography, but its ranking advantage is
+  sensitive to held-out block granularity.
+- Current interpretation after 10x10: the spatial residual GNN is a credible
+  component, but not yet a robust win. It improves calibration under the harder
+  10x10 split and preserves the high-effort-strata signal, but the aggregate
+  ranking gain seen in 8x8 does not transfer cleanly. The next diagnostic should
+  compare 10x10 species-level deltas to the 8x8 species failures and identify
+  whether the ranking drop is broad or concentrated in a few blocks/species.
+
+10x10 species-level comparison command:
+
+```
+python exp/compare_ebird_graph_tabular_species.py --graph-dir data/ebird/graph_top100_spatial_10x10 --baseline-dir data/ebird/baselines --top-species 100 --tabular-model mlp --feature-set both --split spatial-stratified --graph-species-metrics data/ebird/graph_top100_spatial_10x10/spatial_gnn_baselines/spatial_gnn_spatial_gcn_residual_h128_l2_z128_cell64_cl1_wd0p0001_test_species_metrics.csv --output data/ebird/graph_top100_spatial_10x10/spatial_gnn_baselines/residual_primary_graph_vs_tabular_species.csv
+```
+
+10x10 species diagnostic command:
+
+```
+python exp/diagnose_ebird_spatial_gnn_species.py --graph-dir data/ebird/graph_top100_spatial_10x10 --comparison-csv data/ebird/graph_top100_spatial_10x10/spatial_gnn_baselines/residual_primary_graph_vs_tabular_species.csv --boundary data/boundaries/nc_state_boundary.gpkg
+```
+
+Important comparability note for 10x10 species deltas:
+
+- The first 10x10 species comparison above is exploratory only. It compares the
+  10x10 graph species metrics against the existing tabular MLP species metrics
+  in `data/ebird/baselines`, which were produced for the original 8x8
+  spatial-stratified split. The `tabular_test_prevalence` and
+  `graph_observed_rate` columns differ for many species, confirming that the
+  compared test targets are not identical.
+- The exploratory output is still useful for seeing which species are sensitive
+  to the new held-out geography, but it should not be used as the final
+  graph-vs-tabular species delta table.
+- Before interpreting 10x10 species-level gains/losses, run a matching 10x10
+  tabular MLP baseline into a separate output directory, then rerun the
+  comparison against that directory.
+
+Fair 10x10 tabular baseline command:
+
+```
+python exp/ebird_joint_tabular_baseline.py --processed-dir data/ebird/processed_nc_2020_2023 --output-dir data/ebird/baselines_10x10 --top-species 100 --feature-set both --model mlp --split spatial-stratified --spatial-blocks-per-dim 10 --test-fraction 0.2 --stratify-species-count 20 --split-seed 19 --epochs 50
+```
+
+Fair 10x10 graph-vs-tabular species comparison command:
+
+```
+python exp/compare_ebird_graph_tabular_species.py --graph-dir data/ebird/graph_top100_spatial_10x10 --baseline-dir data/ebird/baselines_10x10 --top-species 100 --tabular-model mlp --feature-set both --split spatial-stratified --graph-species-metrics data/ebird/graph_top100_spatial_10x10/spatial_gnn_baselines/spatial_gnn_spatial_gcn_residual_h128_l2_z128_cell64_cl1_wd0p0001_test_species_metrics.csv --output data/ebird/graph_top100_spatial_10x10/spatial_gnn_baselines/residual_primary_graph_vs_tabular_species_fair_10x10.csv
+```
+
+Fair 10x10 species diagnostic command:
+
+```
+python exp/diagnose_ebird_spatial_gnn_species.py --graph-dir data/ebird/graph_top100_spatial_10x10 --comparison-csv data/ebird/graph_top100_spatial_10x10/spatial_gnn_baselines/residual_primary_graph_vs_tabular_species_fair_10x10.csv --boundary data/boundaries/nc_state_boundary.gpkg
+```
+
+Fair 10x10 graph-vs-tabular result:
+
+- The matching 10x10 MLP ecology + effort baseline ran successfully:
+  macro AUROC 0.8404, macro AUPRC 0.4017, micro AUROC 0.8897, micro AUPRC
+  0.5725, ECE 0.0051, max bin error 0.0201, and species calibration MAE
+  0.0121.
+- The 10x10 residual spatial GNN on the same all-pairs target has macro AUROC
+  0.8428, macro AUPRC 0.4100, micro AUROC 0.8904, micro AUPRC 0.5763,
+  ECE 0.0014, max bin error 0.0072, and species calibration MAE 0.0129.
+- On the fair 10x10 comparison, the spatial GNN is a small but real aggregate
+  improvement over tabular: +0.0007 micro AUROC, +0.0039 micro AUPRC,
+  +0.0024 macro AUROC, and +0.0083 macro AUPRC. Calibration is better by ECE
+  and max bin error, while species calibration MAE is slightly worse
+  (+0.0008).
+- This resolves the earlier comparability issue: `tabular_test_prevalence` and
+  `graph_observed_rate` now match, so species-level AUPRC deltas are
+  interpretable.
+
+Exploratory 10x10 species diagnostic observations:
+
+- The 10x10 diagnostic script ran successfully and wrote species diagnostics
+  under
+  `data/ebird/graph_top100_spatial_10x10/spatial_gnn_baselines/diagnostics/species_diagnostics`.
+  These outputs are useful for inspecting support and map geometry.
+- The held-out species composition changed materially under 10x10. Examples:
+  Eastern Towhee test prevalence rises to 0.3306, American Robin to 0.3143,
+  Northern Mockingbird to 0.2605, while Red-headed Woodpecker drops to 0.0453.
+  This reinforces that the 10x10 split is a different validation target.
+- Some species with narrow coastal or water-associated geography have limited
+  10x10 held-out support: Brown Pelican appears in only 2 held-out spatial
+  blocks and 7 positive cells; Bufflehead and Pied-billed Grebe have only 17
+  positive cells. These are likely sensitive to block geometry.
+- The low-prevalence focus species still have enough checklists to inspect,
+  but often only a small number of held-out blocks. Examples: Green Heron has
+  3,860 positive held-out checklists across 3 blocks, 20 positive cells, and
+  13 counties; Red-headed Woodpecker has 6,205 positives across 3 blocks,
+  21 cells, and 15 counties; Brown Pelican has 7,008 positives but only
+  2 blocks, 7 cells, and 3 counties. For these species, map interpretation
+  should focus on whether failures are block-geometry artifacts, coastal
+  transfer failures, or effort/protocol effects.
+- The fair comparison shows the largest all-pairs AUPRC gains for
+  Double-crested Cormorant (+0.0980), Killdeer (+0.0849),
+  Black-and-white Warbler (+0.0830), White-eyed Vireo (+0.0828),
+  Yellow-billed Cuckoo (+0.0675), Ring-billed Gull (+0.0619),
+  Northern Parula (+0.0572), Indigo Bunting (+0.0533), Common Yellowthroat
+  (+0.0522), and Yellow-throated Warbler (+0.0511).
+- The fair comparison shows the largest all-pairs AUPRC losses for
+  Red-headed Woodpecker (-0.1566), Eastern Meadowlark (-0.0711),
+  House Sparrow (-0.0603), Bufflehead (-0.0362), Pied-billed Grebe (-0.0345),
+  Red-winged Blackbird (-0.0249), Common Grackle (-0.0242), Swamp Sparrow
+  (-0.0214), Laughing Gull (-0.0164), Tree Swallow (-0.0162), Wood Duck
+  (-0.0150), and Blue-headed Vireo (-0.0143).
+- The worst graph species calibration errors are Eastern Phoebe (0.0474),
+  European Starling (0.0399), Northern Flicker (0.0396), House Finch (0.0383),
+  Eastern Meadowlark (0.0375), Great Blue Heron (0.0346), Downy Woodpecker
+  (0.0346), American Crow (0.0332), Northern Mockingbird (0.0325), Gray
+  Catbird (0.0322), Eastern Towhee (0.0315), and American Robin (0.0310).
+- Next diagnostic focus: inspect residual maps and block-level/effort-stratum
+  behavior for the large fair losses, especially Red-headed Woodpecker,
+  Eastern Meadowlark, House Sparrow, Bufflehead, Pied-billed Grebe, Swamp
+  Sparrow, and Wood Duck. These losses matter because the aggregate GNN gain is
+  modest and could hide species where spatial message passing is overcorrecting
+  useful effort/ecology signal.
+
+10x10 residual-map diagnostic command:
+
+```
+python exp/plot_ebird_spatial_gnn_residual_maps.py --graph-dir data/ebird/graph_top100_spatial_10x10 --run-name spatial_gcn_residual_h128_l2_z128_cell64_cl1_wd0p0001 --species "Red-headed Woodpecker" "Eastern Meadowlark" "House Sparrow" "Bufflehead" "Pied-billed Grebe" "Swamp Sparrow" "Wood Duck" "Double-crested Cormorant" "Killdeer" "Black-and-white Warbler" --boundary data/boundaries/nc_state_boundary.gpkg
+```
+
+10x10 residual-map result:
+
+- The residual-map diagnostic confirms that several large species losses are
+  caused by broad negative spatial corrections, not merely small local ranking
+  changes.
+- The strongest down-corrections are for Red-headed Woodpecker, House Sparrow,
+  Bufflehead, Eastern Meadowlark, Pied-billed Grebe, and Swamp Sparrow.
+  Examples:
+  - Red-headed Woodpecker mean probability drops from 0.1281 to 0.0587, with
+    positive checklist mean delta -0.1218.
+  - House Sparrow mean probability drops from 0.1000 to 0.0295, with positive
+    checklist mean delta -0.1219.
+  - Bufflehead mean probability drops from 0.0687 to 0.0318, with positive
+    checklist mean delta -0.1769 and positive 90th-percentile absolute delta
+    0.3061.
+  - Eastern Meadowlark mean probability drops from 0.0673 to 0.0326, with
+    positive checklist mean delta -0.0627.
+- Wood Duck has a smaller mean correction than the other loss species
+  (-0.0077 overall, -0.0194 on positives), so its AUPRC loss may be more about
+  local ranking than broad suppression.
+- Gain species do not all behave the same way. Double-crested Cormorant has a
+  positive mean correction overall (+0.0142) but still a negative mean
+  correction on positive checklists (-0.0223), implying that the gain may come
+  from stronger suppression of false-positive areas rather than uniformly
+  increasing known positives. Black-and-white Warbler has only a small mean
+  correction (-0.0051), consistent with a more targeted residual.
+- Interpretation: the residual spatial GNN is useful, but the current residual
+  head can over-suppress held-out geography for some species. This points
+  toward adding constraints or diagnostics before adding richer graph
+  relations: species-specific residual shrinkage, gated residual strength,
+  calibration-aware validation, and block/species residual audits.
+
+Next 10x10 gated-residual check:
+
+- Run the same 10x10 model with a gated residual head. The goal is not just to
+  improve aggregate metrics; it is to test whether the model can keep useful
+  spatial corrections while reducing the broad negative corrections seen for
+  Red-headed Woodpecker, House Sparrow, Bufflehead, Eastern Meadowlark,
+  Pied-billed Grebe, and Swamp Sparrow.
+
+```
+python exp/ebird_spatial_gnn_baseline.py --graph-dir data/ebird/graph_top100_spatial_10x10 --run-name spatial_gcn_gated_h128_l2_z128_cell64_cl1_wd0p0001_gbm2 --gnn-mode gated --epochs 10 --batch-size 2048 --hidden-dim 128 --hidden-layers 2 --latent-dim 128 --cell-hidden-dim 64 --cell-layers 1 --dropout 0.10 --weight-decay 0.0001 --spatial-grid-size-m 25000 --gate-init-bias -2
+```
+
+```
+python exp/compare_ebird_graph_tabular_species.py --graph-dir data/ebird/graph_top100_spatial_10x10 --baseline-dir data/ebird/baselines_10x10 --top-species 100 --tabular-model mlp --feature-set both --split spatial-stratified --graph-species-metrics data/ebird/graph_top100_spatial_10x10/spatial_gnn_baselines/spatial_gnn_spatial_gcn_gated_h128_l2_z128_cell64_cl1_wd0p0001_gbm2_test_species_metrics.csv --output data/ebird/graph_top100_spatial_10x10/spatial_gnn_baselines/gated_gbm2_graph_vs_tabular_species_fair_10x10.csv
+```
+
+```
+python exp/plot_ebird_spatial_gnn_residual_maps.py --graph-dir data/ebird/graph_top100_spatial_10x10 --run-name spatial_gcn_gated_h128_l2_z128_cell64_cl1_wd0p0001_gbm2 --species "Red-headed Woodpecker" "Eastern Meadowlark" "House Sparrow" "Bufflehead" "Pied-billed Grebe" "Swamp Sparrow" "Wood Duck" "Double-crested Cormorant" "Killdeer" "Black-and-white Warbler" --boundary data/boundaries/nc_state_boundary.gpkg
+```
+
+10x10 gated-residual result:
+
+- The gated residual model did not improve the 10x10 primary residual model.
+  Aggregate metrics were slightly worse than the residual model: micro AUROC
+  0.8892 vs 0.8904, micro AUPRC 0.5755 vs 0.5763, macro AUROC 0.8421 vs
+  0.8428, macro AUPRC 0.4095 vs 0.4100. Calibration also worsened: ECE 0.0080
+  vs 0.0014 and species calibration MAE 0.0169 vs 0.0129.
+- The gate helped one key failure species: Red-headed Woodpecker changed from a
+  broad negative residual to a near-neutral/slightly positive residual
+  correction. Its all-pairs AUPRC loss improved from -0.1566 under the
+  residual model to -0.0895 under the gated model, but it remains the largest
+  species loss.
+- The gate made several other residual suppressions worse. Examples:
+  - Eastern Meadowlark mean probability delta -0.1522 and positive mean delta
+    -0.2102; AUPRC loss -0.0298.
+  - House Sparrow mean probability delta -0.1296 and positive mean delta
+    -0.1528; AUPRC loss -0.0760.
+  - Bufflehead mean probability delta -0.0810 and positive mean delta -0.2757;
+    AUPRC loss -0.0359.
+  - Pied-billed Grebe mean probability delta -0.1302 and positive mean delta
+    -0.3347; AUPRC loss -0.0608.
+  - Killdeer remains an AUPRC gain (+0.0905), but the residual map shows a
+    large negative correction on positives (-0.1725), so its gain likely comes
+    from stronger suppression of false-positive areas rather than better
+    absolute detection probabilities.
+- Interpretation: a simple global gate is not enough. It can change which
+  species are over-suppressed, but it does not reliably constrain the residual
+  to helpful spatial corrections. The next modeling change should target
+  species-specific residual shrinkage or residual calibration directly, rather
+  than adding more spatial capacity.
+
+Species-specific residual scale:
+
+- `exp/ebird_spatial_gnn_baseline.py` now supports a species-specific residual
+  scale for residual and gated spatial GNN modes.
+- The model form is:
+
+  \[
+  \operatorname{logit} P(y_{c,j}=1)
+  =
+  \text{base}_{j}(x_c)
+  +
+  \alpha_j r_j(g_c)
+  \]
+
+  where \(r_j(g_c)\) is the spatial-cell residual for species \(j\) at the
+  checklist's grid cell, and \(\alpha_j\) is a learned species-specific scale.
+- The first recommended version uses `--species-residual-scale sigmoid`, which
+  constrains each \(\alpha_j\) to `(0, 1)`, initializes it at 0.25, and adds an
+  explicit L2 penalty on the effective scale. This lets species that benefit
+  from spatial correction use it, while pushing harmful residuals toward the
+  base ecology + effort model.
+- The scale parameter is excluded from AdamW weight decay and controlled by
+  `--species-residual-scale-l2`, because weight decay on the raw sigmoid logit
+  is not equivalent to shrinking the effective residual scale.
+
+10x10 species-scaled residual command:
+
+```
+python exp/ebird_spatial_gnn_baseline.py --graph-dir data/ebird/graph_top100_spatial_10x10 --run-name spatial_gcn_residual_scaled_sigmoid025_l2_0p001 --gnn-mode residual --epochs 10 --batch-size 2048 --hidden-dim 128 --hidden-layers 2 --latent-dim 128 --cell-hidden-dim 64 --cell-layers 1 --dropout 0.10 --weight-decay 0.0001 --spatial-grid-size-m 25000 --species-residual-scale sigmoid --species-residual-scale-init 0.25 --species-residual-scale-l2 0.001
+```
+
+```
+python exp/compare_ebird_graph_tabular_species.py --graph-dir data/ebird/graph_top100_spatial_10x10 --baseline-dir data/ebird/baselines_10x10 --top-species 100 --tabular-model mlp --feature-set both --split spatial-stratified --graph-species-metrics data/ebird/graph_top100_spatial_10x10/spatial_gnn_baselines/spatial_gnn_spatial_gcn_residual_scaled_sigmoid025_l2_0p001_test_species_metrics.csv --output data/ebird/graph_top100_spatial_10x10/spatial_gnn_baselines/residual_scaled_sigmoid025_l2_0p001_graph_vs_tabular_species_fair_10x10.csv
+```
+
+```
+python exp/plot_ebird_spatial_gnn_residual_maps.py --graph-dir data/ebird/graph_top100_spatial_10x10 --run-name spatial_gcn_residual_scaled_sigmoid025_l2_0p001 --species "Red-headed Woodpecker" "Eastern Meadowlark" "House Sparrow" "Bufflehead" "Pied-billed Grebe" "Swamp Sparrow" "Wood Duck" "Double-crested Cormorant" "Killdeer" "Black-and-white Warbler" --boundary data/boundaries/nc_state_boundary.gpkg
+```
+
+10x10 species-scaled residual result:
+
+- This is the best 10x10 aggregate model so far: micro AUROC 0.8905, micro
+  AUPRC 0.5785, macro AUROC 0.8426, macro AUPRC 0.4110, ECE 0.0020, max bin
+  error 0.0073, and species calibration MAE 0.0127.
+- Relative to the unscaled residual model, the scaled residual improves micro
+  AUPRC from 0.5763 to 0.5785, macro AUPRC from 0.4100 to 0.4110, and species
+  calibration MAE from 0.0129 to 0.0127, while ECE worsens slightly from
+  0.0014 to 0.0020. It remains much better calibrated than the gated model.
+- Learned species residual scales did not behave as a simple automatic
+  fail-safe. The mean scale increased from the 0.25 initialization to 0.3289,
+  with p10 0.2816, median 0.3229, p90 0.3773, and max 0.4848. Several failure
+  species learned large scales: Red-headed Woodpecker 0.4502, Eastern
+  Meadowlark 0.4368, Pied-billed Grebe 0.3980. This means the model still
+  trusts spatial correction for some species where held-out ranking suffers.
+- The residual maps show mixed improvements:
+  - Black-and-white Warbler is close to ideal for this mechanism: mean delta
+    -0.0000, positive mean delta -0.0040, and AUPRC gain +0.0941.
+  - Swamp Sparrow and Wood Duck are now close to neutral residual corrections,
+    and their losses shrink relative to the unscaled residual.
+  - Eastern Meadowlark suppression is less severe than the gated model but
+    still harmful: positive mean delta -0.0350 and AUPRC loss -0.0491.
+  - Red-headed Woodpecker and House Sparrow remain major failures with broad
+    negative corrections: Red-headed Woodpecker positive mean delta -0.1282 and
+    AUPRC loss -0.1612; House Sparrow positive mean delta -0.1216 and AUPRC
+    loss -0.0810.
+  - Bufflehead remains strongly suppressed on positives (-0.1898) and loses
+    AUPRC (-0.0444).
+- Interpretation: species-specific scaling is useful as regularization and is
+  the best aggregate 10x10 model so far, but it is not sufficient as a safety
+  mechanism. The next constraint should penalize the residual values
+  themselves, especially on positive training examples or by species, instead
+  of only penalizing the scale parameter.
+
+10x10 stronger species-scale shrinkage result:
+
+- A stronger shrinkage run with `--species-residual-scale-init 0.10` and
+  `--species-residual-scale-l2 0.01` is now the best aggregate 10x10 model so
+  far: micro AUROC 0.8917, micro AUPRC 0.5808, macro AUROC 0.8439, macro AUPRC
+  0.4126, ECE 0.0033, max bin error 0.0127, and species calibration MAE
+  0.0118.
+- Compared with the previous scaled run, it improves micro AUPRC by +0.0023,
+  macro AUPRC by +0.0015, and species calibration MAE by -0.0009. ECE worsens
+  from 0.0020 to 0.0033 but remains better than the original tabular MLP
+  baseline ECE of 0.0051.
+- The learned scales are now much more constrained: mean 0.1338, min 0.0794,
+  p10 0.1067, median 0.1309, p90 0.1639, and max 0.2098. This is a better
+  residual-control regime than the 0.25-initialized run, where the mean scale
+  grew to 0.3289 and several failure species retained large scales.
+- This result suggests the useful spatial signal is relatively small and that
+  aggressive residual capacity was causing some of the earlier species-level
+  failures. The next check is whether the better aggregate result also improves
+  the known failure species in the fair species comparison and residual maps.
+
+10x10 stronger species-scale comparison command:
+
+```
+python exp/compare_ebird_graph_tabular_species.py --graph-dir data/ebird/graph_top100_spatial_10x10 --baseline-dir data/ebird/baselines_10x10 --top-species 100 --tabular-model mlp --feature-set both --split spatial-stratified --graph-species-metrics data/ebird/graph_top100_spatial_10x10/spatial_gnn_baselines/spatial_gnn_spatial_gcn_residual_scaled_sigmoid010_l2_0p01_test_species_metrics.csv --output data/ebird/graph_top100_spatial_10x10/spatial_gnn_baselines/residual_scaled_sigmoid010_l2_0p01_graph_vs_tabular_species_fair_10x10.csv
+```
+
+10x10 stronger species-scale residual-map command:
+
+```
+python exp/plot_ebird_spatial_gnn_residual_maps.py --graph-dir data/ebird/graph_top100_spatial_10x10 --run-name spatial_gcn_residual_scaled_sigmoid010_l2_0p01 --species "Red-headed Woodpecker" "Eastern Meadowlark" "House Sparrow" "Bufflehead" "Pied-billed Grebe" "Swamp Sparrow" "Wood Duck" "Double-crested Cormorant" "Killdeer" "Black-and-white Warbler" --boundary data/boundaries/nc_state_boundary.gpkg
+```
+
+10x10 stronger species-scale species diagnostics:
+
+- The fair species comparison confirms that tighter residual scaling improves
+  the aggregate model while reducing, but not eliminating, over-suppression.
+- Largest AUPRC gains over tabular are concentrated in species where modest
+  spatial structure is useful: White-eyed Vireo (+0.0930),
+  Black-and-white Warbler (+0.0929), Ring-billed Gull (+0.0914),
+  Double-crested Cormorant (+0.0776), Killdeer (+0.0723),
+  Yellow-billed Cuckoo (+0.0652), Yellow-throated Warbler (+0.0613),
+  Great Black-backed Gull (+0.0545), Indigo Bunting (+0.0517), Common
+  Yellowthroat (+0.0492), Northern Parula (+0.0489), and American Robin
+  (+0.0483).
+- Largest AUPRC losses remain species-specific and should not be ignored:
+  Red-headed Woodpecker (-0.1632), House Sparrow (-0.1108), Bufflehead
+  (-0.0275), Eastern Meadowlark (-0.0260), Common Grackle (-0.0252),
+  European Starling (-0.0201), Brown Pelican (-0.0191), Northern Mockingbird
+  (-0.0190), Red-winged Blackbird (-0.0188), Northern Rough-winged Swallow
+  (-0.0184), Green Heron (-0.0129), and Mourning Dove (-0.0126).
+- Residual maps show the tighter scale made several corrections more moderate:
+  - Eastern Meadowlark is nearly neutral on positives now (positive mean delta
+    -0.0021), but still loses AUPRC (-0.0260), suggesting a ranking/geography
+    issue rather than broad positive suppression.
+  - Swamp Sparrow and Wood Duck now get positive corrections on positives
+    (+0.0519 and +0.0224) and their losses are smaller.
+  - Black-and-white Warbler is almost neutral in mean probability delta
+    (+0.0005 on positives) while gaining strongly in AUPRC (+0.0929), which is
+    close to the desired behavior: graph signal improves ranking without
+    broadly changing probabilities.
+- Persistent failures:
+  - Red-headed Woodpecker is still strongly down-corrected on positives
+    (-0.0886) and remains the largest AUPRC loss (-0.1632).
+  - House Sparrow is still broadly down-corrected (-0.0888 overall, -0.1355 on
+    positives) and loses AUPRC (-0.1108).
+  - Bufflehead remains down-corrected on positives (-0.1411), though less than
+    under weaker shrinkage.
+- Interpretation: the current best model supports the main project goal: a
+  graph component can add useful spatial context beyond ecology + effort while
+  retaining good calibration. The remaining issue is not "does the graph help?"
+  but "how do we prevent graph correction from harming a subset of species?"
+  The next diagnostic should inspect whether the persistent failures are tied
+  to specific held-out blocks, effort strata, or baseline-vs-residual ranking
+  inversions.
+
+10x10 stronger species-scale effort-strata diagnostics:
+
+- The stronger scaled residual model improves almost every effort stratum
+  against the retrained tabular MLP.
+- Largest micro-AUPRC gains are in higher-effort settings: duration `121+`
+  minutes (+0.0145), distance `5+` km (+0.0135), distance `(2,5]` km
+  (+0.0128), two observers (+0.0103), traveling checklists (+0.0102), and
+  duration `61-120` minutes (+0.0088).
+- Unlike earlier variants, short/low-effort strata are no longer obvious
+  failures: stationary checklists gain +0.0028 micro AUPRC, zero-distance
+  checklists gain +0.0029, duration `1-10` minutes gains +0.0043, and distance
+  `(0,0.5]` km gains +0.0073. Their ECE deltas are also generally negative,
+  meaning calibration improves.
+- The remaining weakness is spatial-block specific. Block 65 is a clear win
+  (+0.0115 micro AUPRC, +0.0122 macro AUPRC), block 31 has a small micro gain
+  but macro loss (+0.0044 micro AUPRC, -0.0031 macro AUPRC), and block 79 is a
+  clear local failure (-0.0070 micro AUPRC, -0.0116 macro AUPRC).
+- Interpretation: the scaled residual model is no longer mainly failing by
+  protocol/duration/distance effort strata. The next validation target should
+  be block-by-species behavior, especially block 79 and the persistent species
+  losses: Red-headed Woodpecker, House Sparrow, Bufflehead, Eastern
+  Meadowlark, Common Grackle, and European Starling.
+
+Block-by-species diagnostic:
+
+- `exp/diagnose_ebird_block_species.py` compares the current spatial GNN with a
+  retrained tabular MLP within each held-out spatial block and species. This is
+  intended as a framework diagnostic rather than tuning to the NC/top-100
+  species list.
+- The goal is to classify failures into general model behaviors:
+  - spatial residual over-suppresses valid positives in a held-out geography
+  - graph signal improves false-positive suppression without broad probability
+    shifts
+  - species failures are concentrated in one held-out block
+  - species failures persist across blocks, suggesting species/process-specific
+    issues rather than local geometry
+  - losses occur in low-support block/species combinations and may reflect
+    validation granularity
+- Outputs:
+  - `block_species_metrics.csv`: one row per held-out block and species,
+    including tabular vs spatial AUROC/AUPRC/calibration deltas and residual
+    probability summaries.
+  - `block_summary.csv`: block-level counts and mean species deltas.
+  - `block_species_summary.png`: compact visual summary of block-level behavior.
+  - `block_species_metadata.json`: run configuration and spatial summary.
+
+Recommended command:
+
+```
+python exp/diagnose_ebird_block_species.py --graph-dir data/ebird/graph_top100_spatial_10x10 --spatial-run-name spatial_gcn_residual_scaled_sigmoid010_l2_0p01
+```
+
+Block-by-species diagnostic result:
+
+- The diagnostic confirms that the remaining weakness is not primarily a broad
+  effort-stratum problem. It is spatial-transfer behavior that varies by held
+  out block and species.
+- Block 65 is where the graph framework is working best: mean species AUPRC
+  delta +0.0124, median +0.0065, 68 species with AUPRC gain and 27 with loss.
+  Large gains include Black-and-white Warbler (+0.1533), White-eyed Vireo
+  (+0.1031), Bald Eagle (+0.0901), Yellow-throated Warbler (+0.0727),
+  Yellow-billed Cuckoo (+0.0718), Gray Catbird (+0.0692), Eastern Towhee
+  (+0.0637), and American Robin (+0.0629).
+- Block 79 is the clearest local transfer failure: mean species AUPRC delta
+  -0.0120, median -0.0044, 56 species with AUPRC loss and 41 with gain. The
+  largest failures are severe: House Sparrow (-0.3371), House Finch (-0.2666),
+  European Starling (-0.1457), Red-headed Woodpecker (-0.1365), Northern
+  Mockingbird (-0.1093), Mourning Dove (-0.1031), Northern Cardinal (-0.0802),
+  American Robin (-0.0689), and Red-winged Blackbird (-0.0615).
+- Block 31 is mixed: mean species AUPRC delta -0.0031, median +0.0012, 45
+  species with loss and 50 with gain. The most important losses include Eastern
+  Meadowlark (-0.1644), Ovenbird (-0.0846), and Mallard (-0.0711).
+- Several losses are true residual down-correction failures: House Sparrow in
+  block 79 has positive mean delta -0.2253, House Finch in block 79 -0.2716,
+  Red-headed Woodpecker in block 79 -0.2314, Red-headed Woodpecker in block 65
+  -0.0802, Eastern Meadowlark in block 31 -0.0959, and Bufflehead in block 65
+  -0.0588.
+- Some losses are not simple over-suppression. Mourning Dove in block 79 loses
+  AUPRC despite positive mean delta on positives (+0.0335), and Red-winged
+  Blackbird in block 79 loses AUPRC despite a large positive mean delta on
+  positives (+0.2152). These are ranking/overprediction failures, not just
+  probability suppression.
+- Framework interpretation: spatial message passing can help substantially, but
+  it is sensitive to held-out geography. The current residual-scale constraint
+  controls aggregate behavior, yet block 79 shows that a spatial graph residual
+  can still learn the wrong correction for transferred urban/generalist
+  assemblages and some woodpecker/sparrow species. The next framework step
+  should be a diagnostic or model component that distinguishes ecological
+  spatial structure from observation-geography residuals, rather than tuning
+  around individual species.
+
+Separated suitability/bias architecture:
+
+- `exp/ebird_spatial_gnn_baseline.py` now supports
+  `--component-mode separated` as a first-pass implementation of the core
+  project goal: model species suitability separately from effort/observer
+  geography bias.
+- This is still a detection model on complete checklists, but its logit is
+  decomposed into:
+
+  \[
+  \operatorname{logit} P(y_{c,j}=1)
+  =
+  \text{suitability}_{j}(x_{\text{ecology},c})
+  +
+  \text{bias}_{j}(x_{\text{effort},c}, g_c)
+  +
+  \alpha_j r_j(g_c)
+  \]
+
+  where \(g_c\) is the checklist's spatial-cell context from the GCN and
+  \(\alpha_j r_j(g_c)\) is the existing species-scaled residual correction.
+- Current feature split:
+  - Suitability/ecology path: day-of-year sine/cosine, canopy, elevation,
+    distance to waterbody, and distance to coastline.
+  - Bias/effort path: x/y location, day-of-week sine/cosine, duration, effort
+    distance, number of observers, traveling indicator, and spatial-cell GCN
+    context.
+- The point of this split is not to claim that x/y is never ecological or that
+  every covariate is perfectly assigned. It is a testable first decomposition:
+  environmental/seasonal variables carry species suitability, while protocol,
+  effort, accessibility/observer geography, and checklist-density spatial
+  context carry sampling/detectability bias.
+- The same species residual scale is retained, but now the residual is
+  evaluated against a model that already has an explicit bias path. If the
+  residual still causes block-specific failures, that is stronger evidence that
+  the residual is learning non-transferable geography rather than useful
+  suitability.
+
+10x10 separated suitability/bias command:
+
+```
+python exp/ebird_spatial_gnn_baseline.py --graph-dir data/ebird/graph_top100_spatial_10x10 --run-name spatial_gcn_separated_scaled_sigmoid010_l2_0p01 --gnn-mode residual --component-mode separated --epochs 10 --batch-size 2048 --hidden-dim 128 --hidden-layers 2 --latent-dim 128 --cell-hidden-dim 64 --cell-layers 1 --dropout 0.10 --weight-decay 0.0001 --spatial-grid-size-m 25000 --species-residual-scale sigmoid --species-residual-scale-init 0.10 --species-residual-scale-l2 0.01
+```
+
+Initial separated suitability/bias result:
+
+- The first separated architecture underperforms both the tabular MLP and the
+  joint scaled spatial GNN: micro AUROC 0.8845, micro AUPRC 0.5631, macro AUROC
+  0.8354, macro AUPRC 0.3984, ECE 0.0061, max bin error 0.0246, and species
+  calibration MAE 0.0157.
+- Compared with the joint scaled model, this is a large drop: micro AUPRC
+  0.5808 to 0.5631 and macro AUPRC 0.4126 to 0.3984.
+- Interpretation: separating suitability and bias is still the correct
+  framework goal, but this naive split is too rigid. It removes useful
+  interactions between environmental, spatial, seasonal, and effort variables
+  that the joint model was using. The current feature assignment is also only a
+  first approximation; x/y can carry ecological range structure as well as
+  observer geography, and season can affect both availability and detectability.
+- Do not treat this as evidence against the decomposition. Treat it as evidence
+  that the decomposition needs a shared trunk, interaction terms, or weakly
+  constrained components rather than a hard split into two independent MLPs.
+
+Shared-trunk suitability/bias architecture:
+
+- `exp/ebird_spatial_gnn_baseline.py` now supports
+  `--component-mode shared`.
+- This keeps the original full-covariate checklist encoder as a shared trunk,
+  then adds a separate effort/bias head conditioned on:
+  - the shared checklist latent representation
+  - effort/access features: x/y, day of week, duration, distance, observers,
+    and traveling indicator
+  - spatial-cell GCN context
+- The suitability path remains the original species-embedding/direct species
+  head from the shared latent representation. The effort/bias path adds a
+  second checklist/species contribution. The scaled spatial residual remains
+  available as a constrained correction.
+- This is the better framework test than the hard split because it still allows
+  interactions among ecology, season, space, and effort while making the
+  bias/detectability contribution explicit.
+
+10x10 shared-trunk suitability/bias command:
+
+```
+python exp/ebird_spatial_gnn_baseline.py --graph-dir data/ebird/graph_top100_spatial_10x10 --run-name spatial_gcn_shared_scaled_sigmoid010_l2_0p01 --gnn-mode residual --component-mode shared --epochs 10 --batch-size 2048 --hidden-dim 128 --hidden-layers 2 --latent-dim 128 --cell-hidden-dim 64 --cell-layers 1 --dropout 0.10 --weight-decay 0.0001 --spatial-grid-size-m 25000 --species-residual-scale sigmoid --species-residual-scale-init 0.10 --species-residual-scale-l2 0.01
+```
+
+Initial shared-trunk suitability/bias result:
+
+- The shared-trunk decomposition also underperforms the joint scaled model:
+  micro AUROC 0.8849, micro AUPRC 0.5606, macro AUROC 0.8376, macro AUPRC
+  0.3988, ECE 0.0103, max bin error 0.0506, and species calibration MAE
+  0.0195.
+- It is slightly worse than the hard separated model on micro AUPRC and
+  calibration, though slightly better on macro AUROC/AUPRC. Both are clearly
+  worse than the joint scaled residual model.
+- Interpretation: simply adding an explicit effort/bias head is not enough.
+  In this form, the bias head adds unconstrained capacity and worsens
+  calibration/transfer instead of cleanly separating detectability from
+  suitability.
+- Current framework conclusion: keep the joint scaled residual as the working
+  baseline. The suitability/bias decomposition remains the right goal, but it
+  likely needs identification constraints rather than just architectural
+  separation. Candidate constraints include:
+  - bias head predicts checklist-level detection propensity shared across
+    species, with only low-rank species deviations
+  - ecological/suitability head is evaluated under standardized effort
+    scenarios
+  - effort/bias head is regularized by protocol/duration/distance calibration
+    targets
+  - spatial graph context is split into environmental-neighbor context and
+    observer/accessibility context
+  - observer/locality/checklist-density terms are isolated from species
+    suitability terms and stress-tested under blocked validation
+
+Constrained effort/access bias component:
+
+- `exp/ebird_spatial_gnn_baseline.py` now supports `--effort-bias-mode` as a
+  more constrained way to model observation geography separately from the
+  species suitability path.
+- This keeps `--component-mode joint` as the working baseline and adds a
+  zero-initialized effort/access bias component using:
+  - x/y location
+  - day of week
+  - duration
+  - effort distance
+  - number of observers
+  - traveling indicator
+  - spatial-cell GCN context
+- Two versions are available:
+  - `--effort-bias-mode shared`: one checklist-level logit adjustment shared by
+    all species. This is the strongest identification constraint and tests
+    whether effort/access geography mostly acts as checklist-level detection
+    propensity.
+  - `--effort-bias-mode lowrank`: a shared checklist propensity plus low-rank
+    species deviations. This allows species-specific detectability differences
+    without giving every species a fully independent free bias head.
+- Both versions are initialized as no-ops, so they start from the joint scaled
+  residual model and only learn bias structure if it improves the training
+  objective. In the low-rank version, the checklist-side low-rank head is
+  zero-initialized while the species low-rank embeddings are initialized with
+  small nonzero values; this keeps the initial low-rank output at zero while
+  still allowing gradients to move the species-specific bias directions.
+  `--effort-bias-l2` penalizes the effort/access bias logits directly in each
+  training batch.
+- This is a better test of the overall framework goal than the hard split or
+  unconstrained shared head: it separates effort/access bias while limiting how
+  much that component can absorb species suitability.
+
+10x10 shared effort-bias command:
+
+```
+python exp/ebird_spatial_gnn_baseline.py --graph-dir data/ebird/graph_top100_spatial_10x10 --run-name spatial_gcn_joint_scaled_effort_shared_l2_0p001 --gnn-mode residual --component-mode joint --epochs 10 --batch-size 2048 --hidden-dim 128 --hidden-layers 2 --latent-dim 128 --cell-hidden-dim 64 --cell-layers 1 --dropout 0.10 --weight-decay 0.0001 --spatial-grid-size-m 25000 --species-residual-scale sigmoid --species-residual-scale-init 0.10 --species-residual-scale-l2 0.01 --effort-bias-mode shared --effort-bias-l2 0.001
+```
+
+10x10 low-rank effort-bias command:
+
+```
+python exp/ebird_spatial_gnn_baseline.py --graph-dir data/ebird/graph_top100_spatial_10x10 --run-name spatial_gcn_joint_scaled_effort_lowrank8_l2_0p001 --gnn-mode residual --component-mode joint --epochs 10 --batch-size 2048 --hidden-dim 128 --hidden-layers 2 --latent-dim 128 --cell-hidden-dim 64 --cell-layers 1 --dropout 0.10 --weight-decay 0.0001 --spatial-grid-size-m 25000 --species-residual-scale sigmoid --species-residual-scale-init 0.10 --species-residual-scale-l2 0.01 --effort-bias-mode lowrank --effort-bias-rank 8 --effort-bias-l2 0.001
+```
+
+Initial 10x10 constrained effort-bias results:
+
+- Shared effort-bias:
+  - micro AUROC 0.8903
+  - micro AUPRC 0.5783
+  - macro AUROC 0.8439
+  - macro AUPRC 0.4109
+  - ECE 0.0044
+  - max bin error 0.0228
+  - species calibration MAE 0.0157
+- Low-rank effort-bias:
+  - micro AUROC 0.8890
+  - micro AUPRC 0.5709
+  - macro AUROC 0.8416
+  - macro AUPRC 0.4054
+  - ECE 0.0031
+  - max bin error 0.0128
+  - species calibration MAE 0.0142
+- Interpretation:
+  - Neither constrained effort-bias run beats the current joint scaled residual
+    model on AUPRC. The current reference remains
+    `spatial_gcn_residual_scaled_sigmoid010_l2_0p01`, with micro AUPRC 0.5808,
+    macro AUPRC 0.4126, ECE 0.0033, and species calibration MAE 0.0118.
+  - The shared effort-bias run is close to the reference in ranking but has
+    weaker calibration. This suggests the added shared bias component is not
+    clearly buying enough separation yet.
+  - The low-rank effort-bias run has the lowest ECE and max-bin calibration
+    error of these three, but its AUPRC drop is larger. That looks like a
+    regularization/calibration tradeoff rather than an immediate model upgrade.
+  - The constrained-bias idea remains aligned with the framework goal, but this
+    first implementation should be treated as a diagnostic branch. The next
+    check is whether either run improves effort-strata behavior or block-level
+    failure modes enough to justify further refinement.
+
+Fair species comparison and shared effort-bias diagnostics:
+
+- Shared effort-bias vs 10x10 tabular MLP:
+  - Clear species-level AUPRC gains include White-eyed Vireo (+0.0754),
+    Killdeer (+0.0669), Ring-billed Gull (+0.0639), Double-crested Cormorant
+    (+0.0595), Yellow-throated Warbler (+0.0570), Great Black-backed Gull
+    (+0.0519), American Robin (+0.0502), Indigo Bunting (+0.0487), Common
+    Yellowthroat (+0.0480), and Field Sparrow (+0.0478).
+  - The largest losses remain the same basic failure species: Red-headed
+    Woodpecker (-0.1206 AUPRC), House Sparrow (-0.1001), Bufflehead (-0.0345),
+    Red-winged Blackbird (-0.0320), and several water/edge or urban-associated
+    species.
+  - Species calibration errors are still nontrivial for common/widespread
+    species including American Crow (0.0638), Blue Jay (0.0492), European
+    Starling (0.0465), Eastern Phoebe (0.0445), and House Finch (0.0421).
+- Low-rank effort-bias vs 10x10 tabular MLP:
+  - It improves some species that likely benefit from species-specific
+    detectability/bias flexibility, including Black-and-white Warbler (+0.0874
+    AUPRC), Ring-billed Gull (+0.0850), American Robin (+0.0632), American
+    Herring Gull (+0.0587), Double-crested Cormorant (+0.0585), White-eyed
+    Vireo (+0.0568), and Great Black-backed Gull (+0.0550).
+  - The same hard failures remain, and some worsen: Red-headed Woodpecker
+    (-0.1681), House Sparrow (-0.0827), Tree Swallow (-0.0687), Canada Goose
+    (-0.0450), Bufflehead (-0.0426), Great Egret (-0.0356), and Pied-billed
+    Grebe (-0.0339).
+  - Interpretation: low-rank bias is not simply better than shared bias. It can
+    improve some guilds/species but appears to amplify the same local/species
+    failure modes that already motivated this diagnostic branch.
+- Shared effort-bias effort-strata diagnostics:
+  - It continues to improve longer and higher-effort traveling checklists:
+    distance 5+ (+0.0139 micro AUPRC), distance (2,5] (+0.0131), duration 121+
+    (+0.0114), observers 3+ (+0.0092), and traveling protocol (+0.0088).
+  - It is weak or negative in the low-effort/stationary strata: stationary
+    protocol (-0.0021), zero-distance (-0.0021), and short duration only
+    slightly positive (+0.0015).
+  - Block 79 remains the main spatial failure and is worse than in the current
+    reference model: -0.0157 micro AUPRC and -0.0095 macro AUPRC vs tabular.
+    Block 65 remains positive (+0.0082 micro), and block 31 is mildly positive
+    (+0.0072 micro) but less convincing by macro AUPRC.
+- Shared effort-bias block/species diagnostics:
+  - Block 65 is still where the graph correction works best on average:
+    mean delta AUPRC +0.0097, median +0.0066, 66 species with gains and 29
+    with losses.
+  - Block 79 remains a broad local transfer problem: mean delta AUPRC -0.0098,
+    48 losses and 49 gains, with large losses for House Sparrow (-0.3134),
+    House Finch (-0.2682), Northern Mockingbird (-0.1276), European Starling
+    (-0.1173), Mourning Dove (-0.1056), and Red-winged Blackbird (-0.0968).
+  - Block 31 is mixed but no longer broadly bad under shared effort-bias:
+    mean delta AUPRC +0.0022, median +0.0039, 62 gains and 33 losses. Important
+    losses still include Eastern Meadowlark (-0.0907), Mallard (-0.0718), and
+    Ovenbird (-0.0593).
+- Decision:
+  - The shared effort-bias component does not solve the core block 79 failure
+    and slightly weakens aggregate performance. It should not replace the
+    current joint scaled residual reference.
+  - The constrained effort-bias branch is still useful because it clarifies that
+    naive effort/access separation is not enough. The next framework change
+    should focus on *where* the bias/suitability distinction is identified:
+    spatial block transfer, local urban/coastal effort structure, and species
+    whose positives are concentrated in the problematic held-out blocks.
+- Low-rank effort-bias effort-strata diagnostics:
+  - The low-rank model is much less useful by effort stratum than the shared
+    effort-bias model or the current joint scaled residual reference.
+  - It has only small gains in high-effort strata: distance 5+ (+0.0066 micro
+    AUPRC), duration 121+ (+0.0042), observers 3+ (+0.0040), distance (2,5]
+    (+0.0032), and traveling protocol (+0.0009).
+  - It loses performance in zero-distance/stationary strata: zero-distance
+    (-0.0055), stationary protocol (-0.0055), and duration 31-60 (-0.0056).
+  - Spatial block deltas are effectively flattened rather than improved:
+    block 79 is only +0.0004 micro AUPRC but -0.0036 macro AUPRC; block 65 is
+    -0.0002 micro but +0.0057 macro; block 31 is -0.0027 micro and -0.0063
+    macro.
+- Low-rank effort-bias block/species diagnostics:
+  - Block 65 remains the only clearly positive block on average: mean delta
+    AUPRC +0.0058, median +0.0046, 58 species gains and 37 losses.
+  - Block 79 is less negative on average than the shared effort-bias model
+    (mean -0.0040 vs -0.0098), but the hard urban/generalist failures remain:
+    House Finch (-0.2673), House Sparrow (-0.2555), Mourning Dove (-0.0928),
+    European Starling (-0.0899), and Northern Mockingbird (-0.0884).
+  - Block 31 becomes worse than under shared effort-bias: mean delta AUPRC
+    -0.0064, with important losses for Mallard (-0.1183), Eastern Meadowlark
+    (-0.1066), Tree Swallow (-0.1039), Pied-billed Grebe (-0.0920), Canada
+    Goose (-0.0831), Belted Kingfisher (-0.0785), and Ovenbird (-0.0698).
+  - Interpretation: the low-rank bias component mostly smooths/regularizes the
+    predictions. It improves some calibration summaries, but it does not create
+    a better bias/suitability separation and does not solve the local transfer
+    failures.
+- Updated decision:
+  - Stop treating `--effort-bias-mode shared` or `lowrank` as candidate lead
+    architectures for now.
+  - Keep the current lead model as the joint scaled residual spatial GNN:
+    `spatial_gcn_residual_scaled_sigmoid010_l2_0p01`.
+  - Use the constrained-bias results as evidence that the next framework step
+    should not simply add another effort head. It should make the spatial
+    correction more identifiable by validating or constraining *local transfer*:
+    when a spatial correction helps in observed effort-heavy areas but fails in
+    held-out blocks, the model needs a way to distinguish ecological spatial
+    signal from observer/access geography.
+
+Cell-level residual-vs-effort diagnostic:
+
+- Added `exp/diagnose_ebird_cell_residual_effort.py` to test whether the
+  spatial GNN residual correction is behaving more like ecological suitability
+  or observer/access bias.
+- The script evaluates a saved residual/gated spatial GNN on held-out
+  checklists, aggregates by spatial GNN cell, and writes:
+  - `*_cell_summary.csv`: cell-level correction, effort/access, ecology, and
+    observed-prevalence summaries.
+  - `*_cell_correlations.csv`: Pearson and Spearman correlations between
+    residual-correction summaries and predictors such as checklist density,
+    observed rate, protocol mix, duration, distance, observer/locality
+    concentration, canopy, elevation, and water/coast distance.
+  - `cell_residual_effort_scatter.png`: quick scatter diagnostics for residual
+    magnitude/direction vs effort/access variables.
+  - `cell_residual_effort_maps.png`: maps of mean residual correction, mean
+    absolute residual correction, and held-out checklist density.
+- Interpretation:
+  - If `probability_delta_abs_mean` or `probability_delta_mean` is strongly
+    associated with `log_checklists`, `traveling_rate`, `stationary_rate`,
+    `observer_per_checklist`, or `locality_per_checklist`, then the residual
+    correction is likely absorbing observation/access geography.
+  - If residual corrections are more associated with observed prevalence,
+    canopy/elevation/water/coast gradients, and are not concentrated only in
+    high-effort cells, that is more consistent with ecological spatial signal.
+  - If high residual magnitudes align with the known failed blocks/species, the
+    next architecture should constrain spatial residuals by transfer reliability
+    rather than by adding another free effort head.
+
+Current lead-model command:
+
+```
+python exp/diagnose_ebird_cell_residual_effort.py --graph-dir data/ebird/graph_top100_spatial_10x10 --spatial-run-name spatial_gcn_residual_scaled_sigmoid010_l2_0p01
+```
+
+Initial lead-model cell residual/effort diagnostic result:
+
+- The diagnostic summarized 26 held-out spatial cells using the default
+  `--min-cell-checklists 25` threshold.
+- The largest mean absolute residual corrections are concentrated in held-out
+  cells from blocks 79 and 31, which are also the blocks that have driven many
+  of the block/species failures.
+- The strongest associations show that the spatial residual correction is not
+  purely ecological:
+  - `probability_delta_abs_mean` is strongly positively associated with
+    `traveling_rate` (Spearman 0.6609), `effort_distance_km_mean` (0.5822),
+    `effort_distance_km_p90` (0.5325), `number_observers_mean` (0.4947), and
+    `observer_per_checklist` (0.4701).
+  - The same residual magnitude is strongly negatively associated with
+    `stationary_rate` (-0.6609).
+  - This means the spatial GNN correction is largest in cells dominated by
+    traveling, higher-effort, higher-observer activity. That is a warning sign
+    for observer/access bias absorption.
+- The residual is not only effort/access bias:
+  - `probability_delta_mean` is associated with `canopy_median_mean` (0.6554),
+    `distance_to_waterbody_m_mean` (0.5419), observed rate (0.4667), and
+    distance to coastline (0.4503).
+  - Positive-only residual corrections are associated with distance to
+    coastline (0.6609), distance to waterbody (0.6062), and elevation (0.5009).
+  - Negative-only residual corrections are associated with canopy (0.6643) and
+    distance to waterbody (0.5084).
+- Interpretation:
+  - The current lead residual GNN is learning a mixture of ecological spatial
+    signal and effort/access geography.
+  - The spatial correction is probably useful because it picks up real
+    environmental/geographic structure, but it is not yet an identifiable
+    suitability-only correction.
+  - This explains why aggregate metrics improve while specific held-out blocks
+    and species fail: the residual can transfer poorly where observer/access
+    geography differs from training cells.
+- Next diagnostic refinement:
+  - Re-run this diagnostic with a lower cell threshold to test whether the
+    correlation pattern is robust beyond the 26 best-supported cells.
+  - Compare the lead residual model against the constrained effort-bias runs in
+    the same cell-level diagnostic. If the constrained-bias models reduce the
+    residual/effort correlations but also reduce AUPRC, then we have confirmed a
+    bias-suitability tradeoff rather than just random noise.
+
+Robustness command with smaller cells:
+
+```
+python exp/diagnose_ebird_cell_residual_effort.py --graph-dir data/ebird/graph_top100_spatial_10x10 --spatial-run-name spatial_gcn_residual_scaled_sigmoid010_l2_0p01 --min-cell-checklists 10
+```
+
+Shared effort-bias cell diagnostic:
+
+```
+python exp/diagnose_ebird_cell_residual_effort.py --graph-dir data/ebird/graph_top100_spatial_10x10 --spatial-run-name spatial_gcn_joint_scaled_effort_shared_l2_0p001 --min-cell-checklists 10
+```
+
+Low-rank effort-bias cell diagnostic:
+
+```
+python exp/diagnose_ebird_cell_residual_effort.py --graph-dir data/ebird/graph_top100_spatial_10x10 --spatial-run-name spatial_gcn_joint_scaled_effort_lowrank8_l2_0p001 --min-cell-checklists 10
+```
+
+Cell diagnostic robustness at `--min-cell-checklists 10`:
+
+- The robustness run summarized 28 held-out cells, only two more than the
+  default threshold, so the previous 26-cell pattern was not driven by the
+  threshold.
+- Current lead residual model:
+  - Residual magnitude remains strongly tied to effort/access: traveling rate
+    Spearman 0.7066, stationary rate -0.7066, effort distance mean 0.6141,
+    effort distance p90 0.5524, and number of observers 0.4302.
+  - Residual direction remains tied to environmental/geographic gradients:
+    canopy 0.5484, distance to waterbody 0.4975, observed rate/species per
+    checklist 0.4362.
+  - This confirms that the current spatial residual is a useful but mixed
+    correction: part ecological signal, part effort/access geography.
+- Shared effort-bias model:
+  - Mean absolute residual corrections shrink substantially, but the largest
+    residual cells remain in blocks 79 and 31.
+  - Residual magnitude is still associated with traveling rate (0.6415),
+    stationary rate (-0.6415), effort distance p90 (0.5319), and effort
+    distance mean (0.5282).
+  - Residual direction becomes very strongly geographic/environmental:
+    elevation 0.8500, distance to coastline 0.8413, and distance to waterbody
+    0.7460.
+  - Interpretation: the shared bias component reduces some residual amplitude,
+    but it does not remove effort/access dependence; it shifts more of the
+    residual direction into broad geography.
+- Low-rank effort-bias model:
+  - Residual corrections shrink compared with the lead residual model, but
+    high-magnitude residual cells remain concentrated in block 79 and block 31.
+  - Residual magnitude is still tied to traveling rate (0.6623), stationary
+    rate (-0.6623), and effort distance mean (0.4811).
+  - Residual direction is even more strongly geographic: distance to coastline
+    0.8336, elevation 0.8041, distance to waterbody 0.7143.
+  - Interpretation: low-rank effort bias smooths the spatial residual but does
+    not disentangle suitability from effort/access geography.
+- Updated framework implication:
+  - The problem is not that the model lacks an effort covariate head. The
+    problem is that spatial correction is under-identified: broad geographic
+    gradients, observer/access structure, and real habitat gradients are
+    entangled in the same residual channel.
+  - The next architecture should explicitly regularize or validate spatial
+    residual transfer, for example by penalizing residual magnitude where held-
+    out block transfer is unstable, adding residual dropout/noise at the cell
+    level, or learning separate ecological-neighbor and access-neighbor spatial
+    channels with constraints.
+
+Residual regularization/dropout experiment:
+
+- `exp/ebird_spatial_gnn_baseline.py` now supports training-time constraints on
+  the spatial residual channel:
+  - `--spatial-residual-logit-l2`: L2 penalty on spatial residual logits in
+    each training batch. This discourages large residual corrections unless
+    they clearly improve the objective.
+  - `--spatial-residual-dropout`: training-only dropout on residual logits
+    before adding them to the base prediction. This tests whether the model can
+    avoid over-relying on cell-specific residual corrections.
+  - `--spatial-residual-noise-std`: training-only Gaussian noise on residual
+    logits. This tests whether small perturbations improve transfer robustness.
+- Evaluation remains deterministic; dropout/noise are only active during
+  training.
+- This is the next small architecture step because it directly targets the
+  under-identified residual channel without adding another free effort/bias
+  head.
+- Success criteria:
+  - Keep micro/macro AUPRC close to the current lead model:
+    `spatial_gcn_residual_scaled_sigmoid010_l2_0p01`.
+  - Reduce residual magnitude correlations with traveling rate, effort
+    distance, observer count, and stationary rate in
+    `diagnose_ebird_cell_residual_effort.py`.
+  - Improve or at least not worsen block 79 and block 31 block/species
+    diagnostics.
+- Smoke test passed with capped data; full runs still need to be executed.
+
+Recommended first full residual-regularized run:
+
+```
+python exp/ebird_spatial_gnn_baseline.py --graph-dir data/ebird/graph_top100_spatial_10x10 --run-name spatial_gcn_residual_scaled_l2resid_0p001_drop010_noise001 --gnn-mode residual --component-mode joint --epochs 10 --batch-size 2048 --hidden-dim 128 --hidden-layers 2 --latent-dim 128 --cell-hidden-dim 64 --cell-layers 1 --dropout 0.10 --weight-decay 0.0001 --spatial-grid-size-m 25000 --species-residual-scale sigmoid --species-residual-scale-init 0.10 --species-residual-scale-l2 0.01 --spatial-residual-logit-l2 0.001 --spatial-residual-dropout 0.10 --spatial-residual-noise-std 0.01
+```
+
+Initial residual-regularized result:
+
+- `spatial_gcn_residual_scaled_l2resid_0p001_drop010_noise001`
+  - micro AUROC 0.8911
+  - micro AUPRC 0.5794
+  - macro AUROC 0.8439
+  - macro AUPRC 0.4122
+  - ECE 0.0175
+  - max bin error 0.0555
+  - species calibration MAE 0.0209
+- Interpretation:
+  - This kept most of the current lead model's ranking performance
+    (`0.5808` micro AUPRC and `0.4126` macro AUPRC for the lead model), so the
+    residual channel is not extremely fragile.
+  - Calibration degraded sharply: ECE increased from 0.0033 to 0.0175, max-bin
+    error from 0.0127 to 0.0555, and species calibration MAE from 0.0118 to
+    0.0209.
+  - This is not a better model as-is. It is only worth continuing if the cell
+    residual/effort diagnostic shows a meaningful reduction in effort-correlated
+    residual magnitude or better block transfer.
+
+Residual-regularized cell diagnostic:
+
+- `spatial_gcn_residual_scaled_l2resid_0p001_drop010_noise001` substantially
+  reduced residual magnitude:
+  - The largest cell-level mean absolute residual corrections dropped from
+    about 0.050 in the current lead model to about 0.0245.
+  - High-magnitude residual cells are still concentrated mostly in block 79,
+    with additional cells from blocks 65 and 31.
+- The effort/access signal weakened but did not disappear:
+  - `probability_delta_abs_mean` vs traveling rate dropped from Spearman 0.7066
+    in the lead model to 0.6097.
+  - `probability_delta_abs_mean` vs stationary rate changed from -0.7066 to
+    -0.6097.
+  - This is a real reduction, but the residual magnitude is still materially
+    associated with protocol/effort geography.
+- The geographic/environmental signal became more dominant:
+  - `probability_delta_mean` vs distance to coastline: 0.7531.
+  - `probability_delta_mean` vs distance to waterbody: 0.7050.
+  - `probability_delta_mean` vs elevation: 0.6710.
+  - `negative_probability_delta_mean` vs distance to coastline: 0.8002.
+  - `probability_delta_abs_mean` vs elevation: -0.7526.
+- Interpretation:
+  - Residual regularization did what it was supposed to do mechanically: it
+    made the spatial correction smaller.
+  - It did not make the residual clearly more identifiable as ecological
+    suitability. Instead, it traded large effort-correlated residuals for
+    smaller but still effort-associated residuals that are even more aligned
+    with broad coastal/elevation/water gradients.
+  - Because calibration degraded sharply while AUPRC stayed close, the first
+    regularized run is not a lead model. It is evidence that amplitude control
+    alone is not enough.
+- Next decision:
+  - Run the lighter residual-regularized model once. If the lighter run keeps
+    calibration closer to the lead while reducing residual/effort correlation,
+    this branch is worth tuning.
+  - If the lighter run shows the same pattern, stop residual amplitude
+    regularization as a primary approach and move to a more structural
+    constraint: separate environmental-neighbor spatial message passing from
+    access/checklist-density message passing, then evaluate whether the
+    ecological channel transfers better across held-out blocks.
+
+If this over-regularizes, try a lighter version:
+
+```
+python exp/ebird_spatial_gnn_baseline.py --graph-dir data/ebird/graph_top100_spatial_10x10 --run-name spatial_gcn_residual_scaled_l2resid_0p0001_drop005 --gnn-mode residual --component-mode joint --epochs 10 --batch-size 2048 --hidden-dim 128 --hidden-layers 2 --latent-dim 128 --cell-hidden-dim 64 --cell-layers 1 --dropout 0.10 --weight-decay 0.0001 --spatial-grid-size-m 25000 --species-residual-scale sigmoid --species-residual-scale-init 0.10 --species-residual-scale-l2 0.01 --spatial-residual-logit-l2 0.0001 --spatial-residual-dropout 0.05
+```
+
+Lighter residual-regularized result:
+
+- `spatial_gcn_residual_scaled_l2resid_0p0001_drop005`
+  - micro AUROC 0.8911
+  - micro AUPRC 0.5797
+  - macro AUROC 0.8439
+  - macro AUPRC 0.4118
+  - ECE 0.0079
+  - max bin error 0.0270
+  - species calibration MAE 0.0151
+- Compared with the current lead:
+  - Ranking is still close: micro AUPRC 0.5797 vs 0.5808, macro AUPRC 0.4118
+    vs 0.4126.
+  - Calibration is worse than the lead but much less damaged than the stronger
+    regularized run: ECE 0.0079 vs 0.0175 for the stronger run and 0.0033 for
+    the lead.
+- Cell residual diagnostic:
+  - Residual magnitude is materially reduced. The largest cell-level mean
+    absolute residual correction is 0.0315, compared with about 0.050 in the
+    lead and 0.0245 in the stronger regularized run.
+  - The effort/protocol association is reduced but remains substantial:
+    residual magnitude vs traveling rate Spearman 0.6032, stationary rate
+    -0.6032.
+  - Residual magnitude remains associated with broad geography/environment:
+    elevation -0.6492, distance to coastline -0.6152, distance to waterbody
+    -0.5304, canopy -0.4773.
+  - Residual direction remains tied to habitat/geography: distance to waterbody
+    0.5621, canopy 0.5260, coastline 0.4800.
+- Interpretation:
+  - The lighter regularization is a better tradeoff than the stronger version.
+    It reduces residual amplitude and softens effort correlation while keeping
+    most ranking performance and only moderately hurting calibration.
+  - It still does not solve identifiability. The residual channel remains
+    entangled with effort/protocol and broad geography.
+- Decision:
+  - Keep this as a useful ablation, not as a new lead architecture.
+  - Run effort-strata and block/species diagnostics once to see whether the
+    reduced residual amplitude improves the known failure blocks without
+    erasing useful graph gains.
+  - Unless those diagnostics show a clear block-transfer improvement, pivot to a
+    structural split between ecological-neighbor and access/checklist-density
+    spatial channels.
+
+Lighter residual-regularized effort/block diagnostics:
+
+- Effort-strata results:
+  - High-effort/traveling strata still improve: duration 121+ (+0.0142 micro
+    AUPRC), distance (2,5] (+0.0121), distance 5+ (+0.0108), traveling protocol
+    (+0.0091), and observers 2 (+0.0086).
+  - Low-effort/stationary strata are only mildly positive: stationary (+0.0018),
+    zero distance (+0.0018), and duration 1-10 (+0.0018).
+  - Block 65 remains strong (+0.0118 micro AUPRC), but block 79 remains a clear
+    failure (-0.0120 micro, -0.0107 macro), and block 31 is weak/mixed (+0.0018
+    micro, -0.0040 macro).
+- Block/species results:
+  - Block 65 is again where graph structure helps most: mean delta AUPRC
+    +0.0130, median +0.0061, 69 species with gains and 26 losses.
+  - Block 79 remains the core local transfer failure: mean delta AUPRC -0.0114,
+    median -0.0005, 50 species with losses and 47 with gains. Largest losses
+    include House Sparrow (-0.3393), House Finch (-0.2445), European Starling
+    (-0.1267), Red-headed Woodpecker (-0.1178 in block 79), Northern
+    Mockingbird (-0.1018), Mourning Dove (-0.0934), and Northern Cardinal
+    (-0.0813).
+  - Block 31 remains mixed/negative: mean delta AUPRC -0.0041, with important
+    losses for Eastern Meadowlark (-0.1581), Mallard (-0.0765), Ovenbird
+    (-0.0756), Belted Kingfisher (-0.0576), and Pied-billed Grebe (-0.0550).
+  - Red-headed Woodpecker remains a severe failure in block 65 (-0.1456) and
+    block 79 (-0.1178), reinforcing that reduced residual magnitude does not
+    solve species-specific transfer.
+- Decision:
+  - Stop residual amplitude regularization as the primary route. It reduces
+    residual size and preserves aggregate ranking, but it does not fix the
+    block/species transfer failures and still leaves effort/geography
+    entanglement.
+  - Keep `spatial_gcn_residual_scaled_l2resid_0p0001_drop005` as a useful
+    ablation showing that the residual can be shrunk without destroying AUPRC,
+    but do not treat it as the lead.
+  - Proceed to structural separation: build separate spatial message-passing
+    channels for ecological/environmental neighborhood structure and
+    access/checklist-density neighborhood structure, then constrain the access
+    channel so it cannot freely become species-specific suitability.
+
+Separated ecological/access spatial channels:
+
+- `exp/ebird_spatial_gnn_baseline.py` now supports
+  `--spatial-channel-mode separated`.
+- This is different from the earlier `--component-mode separated` experiment.
+  The checklist/species scoring path remains `--component-mode joint`; only the
+  spatial message-passing context is split.
+- In separated spatial-channel mode:
+  - The ecological channel receives cell-level environmental/seasonal features:
+    day-of-year sine/cosine, canopy, elevation, distance to waterbody, and
+    distance to coastline.
+  - The access channel receives spatial/access/effort features: cell centroid,
+    train-checklist density, day-of-week sine/cosine, duration, effort distance,
+    observer count, and traveling indicator.
+  - The species-specific spatial residual head uses only the ecological channel.
+  - The access channel can only contribute a shared checklist-level spatial
+    bias through a single logit adjustment applied to all species. This prevents
+    the access channel from freely becoming a species-specific suitability
+    surface.
+  - `--spatial-access-bias-l2` optionally penalizes the shared access spatial
+    bias logits during training.
+- This directly tests the framework question: can a GNN preserve useful
+  ecological spatial transfer while keeping observation/access geography in a
+  constrained, non-species-specific component?
+- Smoke test passed with capped data.
+- First full separated-channel run completed:
+  - `spatial_gcn_separated_channels_shared_access_l2_0p001`
+  - Metrics: micro AUROC 0.8917, micro AUPRC 0.5792, macro AUROC 0.8447,
+    macro AUPRC 0.4136, ECE 0.0052, max bin error 0.0216, and species
+    calibration MAE 0.0131.
+  - Compared with the current lead model
+    `spatial_gcn_residual_scaled_sigmoid010_l2_0p01`, this is broadly
+    competitive: micro AUPRC is slightly lower, macro AUPRC is slightly higher,
+    and calibration is worse but still reasonable.
+  - This means the split-channel architecture is viable enough to keep testing,
+    but it is not yet a clean replacement for the lead model.
+- First separated-channel cell residual/effort diagnostic:
+  - Summarized 28 held-out cells with at least 10 checklists.
+  - Mean absolute species-specific residual deltas remain largest in cells from
+    blocks 31, 65, and 79.
+  - Residual magnitude is still associated with traveling protocol, but less
+    strongly than the earlier single-channel lead model: Spearman correlation
+    between mean absolute residual delta and traveling rate is 0.5161, with
+    stationary rate -0.5161.
+  - The strongest residual-direction correlations are now ecological/geographic:
+    coastline distance, elevation, and waterbody distance dominate the
+    correlation table. For example, mean residual delta has Spearman 0.8834
+    with coastline distance and 0.8429 with elevation.
+  - Interpretation: the split-channel design appears to reduce direct
+    effort/protocol entanglement in the species-specific residual, but the
+    residual is still strongly geographic. That may be ecological signal, coastal
+    sampling structure, or remaining bias aligned with geography. Treat this as
+    a promising framework direction, not a solved decomposition.
+- Diagnostic update:
+  - `exp/diagnose_ebird_cell_residual_effort.py` now reports shared access-bias
+    terms for separated-channel runs:
+    `access_bias_logit_mean`, `access_bias_logit_abs_mean`,
+    `access_probability_delta_mean`, and
+    `access_probability_delta_abs_mean`.
+  - The updated diagnostic shows partial, not clean, separation:
+    - Species-specific residual summaries are now dominated by
+      ecological/geographic gradients. The strongest correlations are
+      negative residual direction with coastline distance (Spearman 0.9031),
+      negative residual direction with elevation (0.8949), mean residual
+      direction with coastline distance (0.8834), mean residual direction with
+      elevation (0.8429), and mean residual direction with waterbody distance
+      (0.7603).
+    - Residual magnitude still correlates with protocol geography, but less
+      strongly than the earlier lead model: mean absolute residual delta vs
+      stationary rate is -0.5161 and vs traveling rate is 0.5161.
+    - The shared access-bias probability delta does appear in the effort/access
+      correlation table, especially mean absolute access delta vs observer
+      count (0.5320). It also correlates with observed rate and species per
+      checklist (about +/-0.527), meaning it is not a purely effort-only term.
+  - Interpretation: the split-channel architecture is moving in the intended
+    direction. It pushes the species-specific residual away from direct
+    protocol/effort dominance and toward ecological/geographic gradients, while
+    a constrained shared access term picks up some observer/access structure.
+    However, this is not yet a fully identifiable bias/suitability
+    decomposition because access, ecology, and observed richness remain
+    geographically aligned in the NC data.
+  - Decision: continue validating this branch, but judge it by held-out
+    strata/block behavior rather than by the cell-correlation table alone.
+- Separated-channel effort-strata diagnostics:
+  - The high-effort pattern remains, but the separated-channel model is more
+    balanced across effort strata than the earlier lead residual model.
+  - Largest micro-AUPRC gains are still in higher-effort contexts: distance
+    `5+` km (+0.0126), duration `121+` minutes (+0.0116), distance `(2,5]`
+    km (+0.0109), traveling checklists (+0.0089), 2 observers (+0.0085), and
+    3+ observers (+0.0083).
+  - Importantly, low-distance strata are no longer losses: distance `(0,0.5]`
+    km improves by +0.0064 and zero-distance/stationary checklists are nearly
+    neutral rather than strongly negative (+0.0005 micro AUPRC for both).
+  - Calibration changes are mixed but mostly modest. Some high-effort strata
+    gain ranking with worse ECE, while several low-effort/low-distance strata
+    improve ECE.
+  - Interpretation: the separated-channel model preserves the useful graph
+    signal in high-effort contexts while reducing the earlier weakness in
+    short-distance/near-stationary strata. That is consistent with the goal of
+    constraining observer/access effects rather than letting them dominate the
+    species-specific spatial residual.
+- Separated-channel block/species diagnostics:
+  - Block 65 remains the strongest transfer success: mean delta AUPRC +0.0095,
+    median +0.0056, 70 species with gains and 25 with losses.
+  - Block 31 is close to neutral/slightly positive: mean delta AUPRC +0.0018,
+    median +0.0011, 53 species with gains and 42 with losses.
+  - Block 79 remains the core failure: mean delta AUPRC -0.0079, median
+    -0.0009, 51 species with losses and 46 with gains.
+  - Largest block/species gains include Black-and-white Warbler in block 65
+    (+0.1128), Bald Eagle in block 65 (+0.0851), Eastern Towhee in block 65
+    (+0.0677), Red-tailed Hawk in block 79 (+0.0657), and White-eyed Vireo in
+    block 65 (+0.0611).
+  - Largest losses remain concentrated in block 79 and selected species:
+    House Finch in block 79 (-0.2573), House Sparrow in block 79 (-0.1605),
+    Bufflehead in block 65 (-0.1109), Red-headed Woodpecker in block 65
+    (-0.1081), Northern Cardinal in block 79 (-0.0976), Mourning Dove in block
+    79 (-0.0968), and European Starling in block 79 (-0.0844).
+  - Interpretation: separated spatial channels improve effort-stratum behavior
+    but do not eliminate species/block transfer failures. This supports keeping
+    the separated-channel architecture as the current framework direction, while
+    focusing next on why block 79 and a few species are harmed.
+- Decision after separated-channel diagnostics:
+  - Treat `spatial_gcn_separated_channels_shared_access_l2_0p001` as the best
+    current framework branch for bias/suitability separation, but not as a
+    final model.
+  - Do not add more architecture complexity yet. First inspect maps for the
+    major separated-channel losses and compare them against the earlier lead
+    residual maps.
+  - If the maps show broad suppression of true positives, the next model change
+    should be a softer ecological residual gate or a residual prior that limits
+    negative correction on sparse/localized species.
+  - If the maps show localized coastal/block artifacts, the next change should
+    target spatial cell graph construction or held-out block design, not the
+    species scoring head.
+- Separated-channel residual-map observations:
+  - The species residual maps are still visually block/cell-shaped corrections,
+    not smooth fine-scale ecological surfaces. This is expected from the
+    current spatial-cell graph, but it means interpretation should focus on
+    transfer behavior between held-out spatial blocks rather than on continuous
+    range-map realism.
+  - Several losses are broad negative corrections rather than subtle local
+    ranking changes:
+    - Mallard is strongly suppressed overall: mean probability drops from
+      0.2025 to 0.1318, with positive checklist mean delta -0.1070 and
+      all-checklist mean delta -0.0707.
+    - Bufflehead is suppressed especially on positives: mean probability drops
+      from 0.0517 to 0.0315, with positive mean delta -0.0901.
+    - House Sparrow, Red-headed Woodpecker, European Starling, and Belted
+      Kingfisher also receive negative mean corrections, including negative
+      corrections on positive checklists.
+  - Some apparent block/species losses are more nuanced:
+    - House Finch has a small overall negative mean delta (-0.0186) and similar
+      positive/negative deltas, so its large block-79 AUPRC loss is probably a
+      local ranking problem rather than just statewide suppression.
+    - Northern Cardinal and Mourning Dove receive positive overall corrections
+      but still show block-79 losses, implying that over-boosting negatives in
+      the wrong block can hurt ranking even when positives are boosted on
+      average.
+    - Eastern Towhee is spatially mixed: western positives are boosted while
+      central/coastal positive clusters are suppressed.
+    - Black-and-white Warbler has almost no mean residual change, consistent
+      with a gain that likely comes from small ranking adjustments rather than
+      broad probability movement.
+  - Interpretation: the separated-channel residual is less effort-dominated
+    than the original residual, but species-specific corrections can still be
+    too blunt at the held-out-block scale. The next diagnostic should inspect
+    the shared access-bias map side-by-side with the species residual. If the
+    access-bias panel is absorbing broad observer/access geography, then the
+    remaining species residual can be refined with a softer gate. If the access
+    panel is weak or environmentally patterned, the separation is still not
+    doing enough.
+- Diagnostic update:
+  - `exp/plot_ebird_spatial_gnn_residual_maps.py` now adds a third panel for
+    separated-channel runs: shared access probability delta
+    (`base - no-access probability`). Older single-channel runs still produce
+    the original residual/positives two-panel maps.
+- Shared access-panel result:
+  - The shared access probability delta is present but small relative to the
+    species-specific residual. It is also negative on average for every mapped
+    species, which means the learned access term is mostly acting as a
+    species-shared downward adjustment rather than a rich access surface.
+  - Examples:
+    - Mallard: species residual mean delta -0.0707, access mean delta -0.0119.
+    - Bufflehead: species residual mean delta -0.0202, access mean delta
+      -0.0041, but positive access delta is -0.0224.
+    - House Finch: species residual mean delta -0.0186, access mean delta
+      -0.0141.
+    - Northern Cardinal: species residual mean delta +0.0656, access mean
+      delta -0.0154.
+  - Interpretation: this confirms the conceptual issue. The access channel is
+    not sufficiently identified by detection BCE alone. It can become a generic
+    offset, while the species residual still carries most block-scale
+    correction. The next model should give the access channel an explicit
+    observation-process target instead of relying only on all-species detection
+    loss.
+- Access-density auxiliary experiment:
+  - `exp/ebird_spatial_gnn_baseline.py` now supports
+    `--access-density-loss-weight`.
+  - This is only valid with `--spatial-channel-mode separated`.
+  - When enabled, the access-cell embedding gets an auxiliary MSE loss to
+    predict standardized log train-checklist density for each spatial cell.
+    This makes the access channel explicitly encode an observation-effort
+    surface, while the species-specific residual still uses the ecological cell
+    channel.
+  - This does not make the access component a true detection probability or
+    true sampling process by itself. It is a practical identifiability aid:
+    access geography now has a direct target, rather than being learned only
+    through detection BCE.
+  - Smoke test passed with capped data.
+  - First full run completed:
+    - `spatial_gcn_separated_channels_access_density_w0p01`
+    - Metrics: micro AUROC 0.8915, micro AUPRC 0.5799, macro AUROC 0.8447,
+      macro AUPRC 0.4147, ECE 0.0057, max bin error 0.0189, and species
+      calibration MAE 0.0135.
+    - Compared with the previous separated-channel run
+      `spatial_gcn_separated_channels_shared_access_l2_0p001`, this is a small
+      ranking improvement: micro AUPRC rises from 0.5792 to 0.5799 and macro
+      AUPRC rises from 0.4136 to 0.4147. Calibration is slightly worse by ECE
+      and species calibration MAE, but max bin error is slightly better.
+    - Compared with the current lead residual model
+      `spatial_gcn_residual_scaled_sigmoid010_l2_0p01`, aggregate performance
+      is still very close: slightly lower micro AUPRC, slightly higher macro
+      AUPRC, and somewhat worse calibration.
+    - Interpretation: the auxiliary access-density target did not disrupt the
+      detector and may modestly help species-level ranking. The key question is
+      now decomposition, not aggregate metrics: did the access channel become a
+      more meaningful access/effort surface, and did the species residual become
+      less responsible for broad block-scale corrections?
+  - Access-density cell diagnostic:
+    - The largest residual magnitudes remain concentrated in the same problem
+      cells/blocks, especially block 79 and block 31.
+    - The species residual remains geographically structured. The strongest
+      species-residual correlations include negative residual direction with
+      elevation (Spearman 0.8697), negative residual direction with coastline
+      distance (0.8533), mean residual direction with waterbody distance
+      (0.8270), mean residual direction with coastline distance (0.8008), and
+      mean residual direction with elevation (0.7674).
+    - The access channel became more active, but it mostly learned broad
+      geographic/access gradients rather than a clearly effort-only component:
+      access probability delta correlates with elevation (0.8741), coastline
+      distance (0.8462), and waterbody distance (0.7165); access-bias logit
+      mean also correlates with elevation (0.8560), coastline distance
+      (0.8369), and waterbody distance (0.6957).
+    - This is not surprising because train-checklist density is itself
+      geographically structured in NC. Explicitly predicting checklist density
+      teaches the access channel an observation geography surface, but that
+      surface is still entangled with coast/elevation/water gradients.
+    - Interpretation: the auxiliary target is useful but insufficient. It gives
+      the access channel a real target and does not hurt aggregate performance,
+      but it does not cleanly separate access from ecological geography. The
+      next criterion is whether it improves held-out effort strata and the
+      block/species failures. If it does not, the next architecture change
+      should use richer access-process supervision, not just checklist density.
+  - Access-density effort-strata diagnostics:
+    - The high-effort gains remain and are slightly stronger than the previous
+      separated-channel run in several strata: duration `121+` minutes improves
+      by +0.0132 micro AUPRC, distance `(2,5]` km by +0.0118, traveling
+      checklists by +0.0099, and 2-observer checklists by +0.0091.
+    - Low-distance strata also remain positive: distance `(0,0.5]` km improves
+      by +0.0086, distance `(0.5,2]` by +0.0076, zero-distance checklists by
+      +0.0008, and stationary checklists by +0.0007.
+    - The major problem is spatial block 79. Its micro-AUPRC delta worsens to
+      -0.0184, compared with -0.0047 for the previous separated-channel run.
+      Block 31 improves to +0.0046 and block 65 improves to +0.0116.
+    - Interpretation: access-density supervision improves effort-stratum
+      balance and the two better held-out blocks, but it makes the hardest
+      held-out block substantially worse in aggregate. This suggests the
+      auxiliary target is helping the access channel encode broad effort
+      geography, but may also be amplifying a block-79 mismatch.
+  - Access-density block/species diagnostics:
+    - Block 65 remains strong: mean delta AUPRC +0.0099, median +0.0080, 69
+      species with gains and 26 with losses.
+    - Block 31 improves relative to the previous separated-channel run: mean
+      delta AUPRC +0.0029, median +0.0021, 55 species with gains and 40 with
+      losses.
+    - Block 79 remains negative but the species-level mean is less bad than the
+      previous separated-channel run: mean delta AUPRC -0.0053 versus -0.0079.
+      However, micro-AUPRC in block 79 is much worse, so the losses are likely
+      concentrated in influential/common species or ranking structure.
+    - Some major block-79 losses improved:
+      - House Sparrow improves from -0.1605 to -0.0718.
+      - Northern Cardinal improves from -0.0976 to -0.0729.
+      - Mourning Dove improves from -0.0968 to -0.0606.
+      - House Finch improves slightly from -0.2573 to -0.2409.
+    - Some losses worsened or persisted:
+      - European Starling worsens from -0.0844 to -0.1002.
+      - Bufflehead in block 65 worsens slightly from -0.1109 to -0.1165.
+      - Red-headed Woodpecker in block 65 worsens slightly from -0.1081 to
+        -0.1142.
+    - Interpretation: access-density supervision redistributes the failures
+      rather than solving them. It improves several species-specific failures
+      and the median block behavior, but the harder block-79 aggregate ranking
+      problem remains.
+  - Decision after access-density diagnostics:
+    - Keep `spatial_gcn_separated_channels_access_density_w0p01` as a serious
+      branch because it modestly improves aggregate AUPRC and improves some
+      effort/block behavior.
+    - Do not declare it the lead framework model yet because block 79
+      aggregate micro-AUPRC worsened sharply.
+    - Next inspect residual/access maps for the access-density run. The key
+      question is whether the access-density target moved broad block-level
+      correction into the shared access panel or whether species residuals still
+      carry most of the harmful block-79 correction.
+  - Access-density residual/access map result:
+    - The shared access panel remains small relative to the species-specific
+      residual and is still mostly a downward adjustment across the mapped
+      species.
+    - The auxiliary density target did not move the broad correction into the
+      shared access panel. For several species, the species residual became
+      more negative than in the previous separated-channel run:
+      - House Finch mean residual delta moved from -0.0186 to -0.0358.
+      - House Sparrow moved from -0.0202 to -0.0269.
+      - Red-headed Woodpecker moved from -0.0161 to -0.0227.
+      - European Starling moved from -0.0156 to -0.0203.
+    - Some broad suppressions improved but remained species-residual driven:
+      - Mallard mean residual delta improved from -0.0707 to -0.0606.
+      - Bufflehead improved from -0.0202 to -0.0187.
+    - The access delta stayed small:
+      - House Finch access delta -0.0126 versus species residual -0.0358.
+      - Mallard access delta -0.0091 versus species residual -0.0606.
+      - Bufflehead access delta -0.0030 versus species residual -0.0187.
+      - Northern Cardinal access delta -0.0119 while species residual is
+        strongly positive (+0.0647).
+    - Interpretation: checklist-density supervision alone is not enough. It
+      creates a more active access channel but does not make that channel absorb
+      the problematic block-scale correction. The species residual still carries
+      most of the model's broad spatial adjustment.
+  - Decision after residual/access maps:
+    - Treat `spatial_gcn_separated_channels_access_density_w0p01` as an
+      informative ablation, not the lead.
+    - The better framework direction is still separated ecological/access
+      channels, but the access component needs richer observation-process
+      structure than checklist density alone.
+    - Avoid another one-parameter density-loss sweep unless needed as an
+      appendix. The next model change should either:
+      - explicitly predict multiple access/effort summaries from the access
+        channel, such as checklist density, traveling rate, mean duration,
+        effort distance, observer count, and locality/observer turnover; or
+      - use a two-stage access encoder trained/frozen on effort/access targets,
+        then let the species detector use that fixed access representation.
+    - The two-stage route is preferable for framework clarity because it makes
+      the observation-process representation less able to drift into a generic
+      species-loss correction.
+
+Two-stage access encoder:
+
+- `exp/train_ebird_access_encoder.py` trains the access/effort spatial-cell
+  encoder as a separate first-stage observation-process model.
+- This is different from `--access-density-loss-weight`, which added one
+  auxiliary density target while still training the whole species detector
+  jointly.
+- The two-stage access encoder predicts multiple train-only cell-level
+  access/effort summaries:
+  - log train checklist count
+  - traveling rate
+  - stationary rate
+  - mean log duration
+  - mean log effort distance
+  - mean log observer count
+  - log unique observers
+  - log unique localities
+  - observers per checklist
+  - localities per checklist
+- The model uses the existing spatial-cell graph and access-channel inputs
+  (centroid, train-checklist density, day-of-week, duration, distance,
+  observers, traveling indicator). It saves:
+  - cell embeddings
+  - standardized predictions
+  - cell target table
+  - per-target train/validation metrics
+  - model state and JSON metadata
+- This is intended as an identifiability step, not an endpoint. If the access
+  encoder learns useful held-out access summaries, the next species model can
+  use its frozen access embeddings as an observation-process representation
+  while keeping species-specific residuals on the ecological channel.
+- Smoke test passed with a two-epoch capped run.
+- First full access-encoder run completed:
+  - `access_gcn_h64_l2_z64`
+  - Validation MSE improved from 1.204 at epoch 1 to about 0.576 by epoch 500,
+    with the best validation loss around epoch 200. The slight later drift is
+    mild and acceptable for this first representation test.
+  - Validation Pearson correlations are nontrivial for most access summaries:
+    observer count 0.5549, locality per checklist 0.4742, checklist density
+    0.4576, observer per checklist 0.4523, unique localities 0.3877, unique
+    observers 0.3745, effort distance 0.3543, duration 0.3082, traveling rate
+    0.1998, and stationary rate 0.1990.
+  - Interpretation: the access encoder is not perfect, but it learned a real
+    observation-process representation. It is good enough to test as a frozen
+    access channel in the species detector.
+- `exp/ebird_spatial_gnn_baseline.py` now supports
+  `--frozen-access-embeddings`. In separated spatial-channel mode, this replaces
+  the learned access-cell channel with a pretrained access embedding while the
+  ecological cell channel and species residual remain trainable.
+- Diagnostics and residual maps now reload frozen-access runs correctly.
+- Frozen-access species-model smoke test passed with capped data.
+
+First full access-encoder command:
+
+```
+python exp/train_ebird_access_encoder.py --graph-dir data/ebird/graph_top100_spatial_10x10 --run-name access_gcn_h64_l2_z64 --epochs 500 --hidden-dim 64 --layers 2 --embedding-dim 64 --dropout 0.10 --spatial-grid-size-m 25000
+```
+
+Readout:
+
+- Look first at validation Pearson and MSE in
+  `data/ebird/graph_top100_spatial_10x10/access_encoder/access_gcn_h64_l2_z64_target_metrics.csv`.
+- Good enough for the next step means the encoder learns checklist density and
+  at least several effort/access summaries with nontrivial validation
+  correlation. It does not need to predict every target perfectly.
+- If validation correlations are near zero across most targets, the access
+  summaries are either too sparse/noisy at this cell scale or the access
+  encoder needs different inputs/cell resolution before being used in the
+  species detector.
+
+First frozen-access species-model command:
+
+```
+python exp/ebird_spatial_gnn_baseline.py --graph-dir data/ebird/graph_top100_spatial_10x10 --run-name spatial_gcn_frozen_access_h64_l2_z64 --gnn-mode residual --component-mode joint --spatial-channel-mode separated --epochs 10 --batch-size 2048 --hidden-dim 128 --hidden-layers 2 --latent-dim 128 --cell-hidden-dim 64 --cell-layers 1 --dropout 0.10 --weight-decay 0.0001 --spatial-grid-size-m 25000 --species-residual-scale sigmoid --species-residual-scale-init 0.10 --species-residual-scale-l2 0.01 --spatial-access-bias-l2 0.001 --frozen-access-embeddings data/ebird/graph_top100_spatial_10x10/access_encoder/access_gcn_h64_l2_z64_cell_embeddings.npy
+```
+
+Readout goal:
+
+- If frozen access improves or preserves aggregate AUPRC while reducing
+  residual/access entanglement, this becomes the preferred framework direction.
+- If aggregate performance drops modestly but block/species transfer improves,
+  it may still be worthwhile because the framework goal is better
+  bias/suitability separation, not only maximizing NC/top-100 AUPRC.
+- If both performance and diagnostics worsen, the access encoder should remain
+  an ablation and the next step should revisit access targets/cell resolution.
+
+First frozen-access species-model result:
+
+- `spatial_gcn_frozen_access_h64_l2_z64`
+  - micro AUROC 0.8919
+  - micro AUPRC 0.5800
+  - macro AUROC 0.8450
+  - macro AUPRC 0.4151
+  - ECE 0.0056
+  - max bin error 0.0193
+  - species calibration MAE 0.0133
+- This is the best separated-channel branch so far by macro AUPRC, and it
+  matches or slightly improves the access-density branch on micro AUPRC.
+- Compared with the current lead residual model
+  `spatial_gcn_residual_scaled_sigmoid010_l2_0p01`, frozen access is still a
+  little lower on micro AUPRC but higher on macro AUPRC. Calibration remains
+  worse than the lead but acceptable.
+- Interpretation: using a pretrained/frozen access representation did not hurt
+  the species detector. That is encouraging for the framework goal because it
+  means access-process structure can be separated more explicitly without
+  sacrificing much aggregate detection performance. The next question is
+  whether the diagnostics show better decomposition and block/species transfer.
+
+Frozen-access diagnostics:
+
+```
+python exp/diagnose_ebird_cell_residual_effort.py --graph-dir data/ebird/graph_top100_spatial_10x10 --spatial-run-name spatial_gcn_frozen_access_h64_l2_z64 --min-cell-checklists 10
+```
+
+```
+python exp/compare_ebird_effort_strata.py --graph-dir data/ebird/graph_top100_spatial_10x10 --spatial-run-name spatial_gcn_frozen_access_h64_l2_z64
+```
+
+```
+python exp/diagnose_ebird_block_species.py --graph-dir data/ebird/graph_top100_spatial_10x10 --spatial-run-name spatial_gcn_frozen_access_h64_l2_z64
+```
+
+Frozen-access cell residual/effort diagnostic:
+
+- The frozen-access branch still does not produce a clean access/ecology
+  decomposition at the cell-correlation level. Species residual direction
+  remains strongly tied to broad geography:
+  - negative residual direction vs coastline distance: Spearman 0.8402
+  - negative residual direction vs elevation: 0.8342
+  - mean residual direction vs waterbody distance: 0.8221
+  - negative residual direction vs waterbody distance: 0.8183
+  - mean residual direction vs coastline distance: 0.7750
+- The access component is still geographically structured, but less extreme
+  than the joint access-density branch:
+  - access probability delta vs elevation: 0.6814
+  - access probability delta vs coastline distance: 0.6798
+  - access probability delta vs waterbody distance: 0.5720
+  - access-bias logit mean vs coastline distance: 0.6070
+  - access-bias logit mean vs elevation: 0.5868
+- Residual magnitudes are somewhat moderated compared with the joint
+  access-density branch. The largest mean absolute residual delta is 0.0344,
+  compared with 0.0388 for the joint access-density model.
+- Interpretation: freezing the pretrained access representation improves
+  identifiability relative to the joint access-density auxiliary model, but it
+  does not solve the fundamental geography/access/ecology confounding. The
+  practical question is therefore whether frozen access improves held-out
+  transfer enough to justify carrying this branch forward.
+
+Frozen-access effort-strata diagnostic:
+
+- The effort-strata pattern is stronger and more balanced than the joint
+  access-density branch:
+  - duration `121+`: +0.0134 micro AUPRC
+  - distance `(2,5]`: +0.0130
+  - 3+ observers: +0.0116
+  - distance `5+`: +0.0106
+  - traveling: +0.0095
+  - 2 observers: +0.0098
+- Low-effort/low-distance strata remain positive rather than harmful:
+  stationary +0.0019, zero-distance +0.0019, duration `1-10` +0.0045,
+  distance `(0,0.5]` +0.0065.
+- Block behavior is much better than the joint access-density branch:
+  - block 65: +0.0101 micro AUPRC
+  - block 31: +0.0036
+  - block 79: -0.0057
+- Compared with the joint access-density branch, block 79 improves sharply
+  from -0.0184 to -0.0057. Compared with the previous separated-channel model
+  without frozen access, block 79 is slightly worse than -0.0047 but still in
+  the same range.
+- Interpretation: frozen access is now the most credible separated-access
+  framework branch. It preserves the effort-strata improvements, avoids the
+  block-79 collapse from joint access-density supervision, and has the cleanest
+  conceptual separation so far. It still needs block/species diagnostics before
+  being treated as the preferred branch.
+
+Frozen-access block/species diagnostic:
+
+- Block 65 remains the strongest success:
+  - mean delta AUPRC +0.0102
+  - median delta AUPRC +0.0059
+  - 67 species with gains and 28 with losses
+  - largest gains include Black-and-white Warbler (+0.0927), White-eyed Vireo
+    (+0.0630), Bald Eagle (+0.0603), Eastern Towhee (+0.0569), and Killdeer
+    (+0.0536).
+- Block 31 is modestly positive and better balanced than the original
+  separated-channel run:
+  - mean delta AUPRC +0.0025
+  - median delta AUPRC +0.0018
+  - 59 species with gains and 36 with losses
+  - the main reported loss is Mallard (-0.0470), which is smaller than the
+    earlier block-31 Mallard loss under the non-frozen separated-channel run.
+- Block 79 remains the core failure:
+  - mean delta AUPRC -0.0079
+  - median delta AUPRC -0.0010
+  - 53 species with losses and 44 with gains
+  - largest losses include House Finch (-0.2491), House Sparrow (-0.2183),
+    European Starling (-0.1115), Mourning Dove (-0.0797), Northern Mockingbird
+    (-0.0733), Northern Cardinal (-0.0728), and Yellow-throated Warbler
+    (-0.0665).
+- Compared with the previous separated-channel run without frozen access:
+  - block 65 is slightly better on mean AUPRC (+0.0102 vs +0.0095).
+  - block 31 is better (+0.0025 vs +0.0018), with fewer species losses.
+  - block 79 is essentially unchanged on mean AUPRC (-0.0079 in both), though
+    individual species losses shift.
+- Compared with the joint access-density auxiliary branch:
+  - frozen access avoids the block-79 aggregate micro-AUPRC collapse seen in
+    effort-strata diagnostics.
+  - block/species mean in block 79 is worse than the joint branch
+    (-0.0079 vs -0.0053), but the joint branch had much worse block-79 micro
+    behavior, so it is not preferable overall.
+- Decision:
+  - Treat `spatial_gcn_frozen_access_h64_l2_z64` as the preferred
+    separated-access framework branch so far.
+  - Do not claim it solves the central problem. The recurring block-79 failures
+    show that broad held-out geographic transfer is still the limiting issue.
+  - The next diagnostic should move from model architecture to validation
+    geometry: characterize block 79 versus blocks 31 and 65 in terms of
+    geography, effort/access summaries, ecological covariates, species
+    composition, and access-encoder targets. If block 79 is an outlier in those
+    summaries, the failure is likely a spatial-transfer/support problem rather
+    than just an architecture problem.
+
+Held-out spatial block profile:
+
+- `exp/diagnose_ebird_spatial_blocks.py` profiles train/test spatial blocks by
+  effort/access, ecological covariates, species composition, and optional
+  access-encoder target/prediction summaries.
+- Initial command:
+
+```
+python exp/diagnose_ebird_spatial_blocks.py --graph-dir data/ebird/graph_top100_spatial_10x10 --access-run-name access_gcn_h64_l2_z64
+```
+
+- Outputs are written to
+  `data/ebird/graph_top100_spatial_10x10/spatial_gnn_baselines/diagnostics/block_profile`:
+  - `block_profile_summary.csv`
+  - `block_species_prevalence.csv`
+  - `test_block_species_distance.csv`
+  - `access_encoder_target_metrics.csv`
+  - `block_profile_metadata.json`
+- Initial block-profile result:
+  - Block 79 is a qualitatively different held-out geography from blocks 31 and
+    65. It is coastal/island/ocean-adjacent rather than inland or mixed.
+  - Block 79 has very low elevation (mean 0.93), extremely low distance to
+    waterbody (mean 1.36 km), and extremely low distance to coastline
+    (mean 1.03 km). By contrast, block 31 is high-elevation/inland
+    (mean elevation 767.24, coastline distance 497.69 km) and block 65 is
+    lower-elevation but still much farther from the coast (mean elevation
+    135.29, coastline distance 230.27 km).
+  - Block 79 is also effort-distinct: traveling rate 0.7678, mean effort
+    distance 1.388 km, and mean observers 1.7396. Its z-scores versus train
+    blocks include high observer count (+2.77), high traveling rate (+2.13),
+    low stationary rate (-2.13), high x/eastern location (+1.61), and high
+    effort distance (+1.59).
+  - Block 79 has lower species-per-checklist mean (10.11) than block 31
+    (11.77) and block 65 (15.54), but its species composition is more
+    distinctive. Its nearest-train-block species-prevalence L2 distance is
+    0.6380, and its distance to the train mean is 1.4735, much larger than
+    block 31 (0.6365 to train mean) or block 65 (0.7432).
+  - Top block-79 species are coastal/water-associated: Double-crested
+    Cormorant, Red-winged Blackbird, Boat-tailed Grackle, Laughing Gull, and
+    American Herring Gull. Blocks 31 and 65 are dominated by more inland/common
+    woodland or generalist species such as American Crow, Carolina Chickadee,
+    Tufted Titmouse, Northern Cardinal, and Carolina Wren.
+- Interpretation:
+  - The persistent block-79 failure is not just an architecture bug. It is a
+    spatial-transfer/support problem: block 79 is a distinct coastal assemblage
+    with effort/access and ecological values that differ materially from the
+    training block distribution.
+  - This explains why architecture changes redistribute errors but do not solve
+    the block-79 issue. The model is being asked to transfer into a held-out
+    coastal regime that has limited analogs in training.
+  - Next model changes should therefore focus on better support/graph structure
+    for coastal or environmentally similar cells, not only stronger residual
+    regularization. Candidate directions:
+    - add environmental-neighbor edges so coastal/water-associated cells can
+      borrow information from ecologically similar cells even if not adjacent;
+    - use block-aware validation summaries as a required diagnostic for every
+      future architecture;
+    - consider split designs that explicitly hold out multiple coastal and
+      inland blocks so coastal transfer is tested with better replication.
+  - Current validation decision:
+    - Keep the current 10x10 spatial holdout as a stress test for now. Block 79
+      is difficult because it is coastal and partly out-of-support, but that is
+      useful for diagnosing whether the framework can transfer beyond the most
+      common inland observer geography.
+    - Do not tune the split away from block 79 yet. First test whether graph
+      structure can improve transfer by connecting spatial cells that are
+      environmentally similar, even when they are not adjacent.
+    - After this architecture test, add a second split family with explicit
+      coastal/inland and effort stratification. That future split should be used
+      as a balanced benchmark, while the current block-79 holdout remains a hard
+      coastal stress test.
+  - Next implementation step:
+    - Add optional spatial-cell edge modes:
+      - `spatial`: existing queen adjacency, used as the default and for all
+        existing runs.
+      - `environmental`: k-nearest cells using standardized ecological cell
+        summaries.
+      - `hybrid`: union of queen spatial adjacency and environmental nearest
+        neighbors.
+    - Start with `hybrid` edges and the frozen access encoder. This keeps local
+      spatial smoothing, preserves the explicit access/bias channel, and gives
+      coastal/water-associated cells a path to borrow signal from similar cells
+      elsewhere in the state.
+
+Hybrid environmental-neighbor edge command:
+
+```
+python exp/ebird_spatial_gnn_baseline.py --graph-dir data/ebird/graph_top100_spatial_10x10 --run-name spatial_gcn_frozen_access_env_edges_k6 --gnn-mode residual --component-mode joint --spatial-channel-mode separated --cell-edge-mode hybrid --environmental-neighbors 6 --epochs 10 --batch-size 2048 --hidden-dim 128 --hidden-layers 2 --latent-dim 128 --cell-hidden-dim 64 --cell-layers 1 --dropout 0.10 --weight-decay 0.0001 --spatial-grid-size-m 25000 --species-residual-scale sigmoid --species-residual-scale-init 0.10 --species-residual-scale-l2 0.01 --spatial-access-bias-l2 0.001 --frozen-access-embeddings data/ebird/graph_top100_spatial_10x10/access_encoder/access_gcn_h64_l2_z64_cell_embeddings.npy
+```
+
+After running it, repeat the same diagnostics:
+
+```
+python exp/compare_ebird_effort_strata.py --graph-dir data/ebird/graph_top100_spatial_10x10 --spatial-run-name spatial_gcn_frozen_access_env_edges_k6
+```
+
+```
+python exp/diagnose_ebird_block_species.py --graph-dir data/ebird/graph_top100_spatial_10x10 --spatial-run-name spatial_gcn_frozen_access_env_edges_k6
+```
+
+```
+python exp/diagnose_ebird_cell_residual_effort.py --graph-dir data/ebird/graph_top100_spatial_10x10 --spatial-run-name spatial_gcn_frozen_access_env_edges_k6 --min-cell-checklists 10
+```
+
+Hybrid environmental-neighbor edge result:
+
+- `spatial_gcn_frozen_access_env_edges_k6`
+  - micro AUROC 0.8920
+  - micro AUPRC 0.5792
+  - macro AUROC 0.8449
+  - macro AUPRC 0.4152
+  - ECE 0.0048
+  - max bin error 0.0202
+  - species calibration MAE 0.0125
+- Compared with the spatial-only frozen-access model
+  `spatial_gcn_frozen_access_h64_l2_z64`, hybrid environmental-neighbor edges
+  do not materially improve aggregate ranking:
+  - micro AUPRC moves from 0.5800 to 0.5792.
+  - macro AUPRC moves from 0.4151 to 0.4152.
+  - micro AUROC moves from 0.8919 to 0.8920.
+  - macro AUROC moves from 0.8450 to 0.8449.
+- Calibration is modestly better:
+  - ECE improves from 0.0056 to 0.0048.
+  - species calibration MAE improves from 0.0133 to 0.0125.
+  - max bin error is slightly worse, from 0.0193 to 0.0202.
+- Interpretation:
+  - Adding environmental-neighbor edges is not a broad aggregate win at k=6,
+    but it also does not destabilize the frozen-access framework. The main
+    reason to continue evaluating it is whether it improves block-79/coastal
+    transfer or species-specific behavior in ways that aggregate metrics hide.
+  - If block/species diagnostics do not improve, the next framework direction
+    should probably shift from changing cell adjacency to stronger ecological
+    representation: richer environmental covariates, explicit coastal/water
+    context, species traits/groups, or a larger geographic training domain.
+
+Hybrid environmental-neighbor diagnostics:
+
+- Effort-strata diagnostics:
+  - The high-effort pattern remains. Largest micro-AUPRC gains are still in
+    long-duration, higher-distance, multi-observer, and traveling strata:
+    duration `121+` minutes (+0.0135), distance `(2,5]` km (+0.0123),
+    distance `5+` km (+0.0118), 3+ observers (+0.0106), and traveling
+    checklists (+0.0094).
+  - Block 79 improves materially relative to the frozen-access spatial-only
+    model: block-79 micro-AUPRC delta improves from about -0.0057 to -0.0020.
+    This is the main positive signal from hybrid environmental-neighbor edges.
+  - Stationary/zero-distance checklists become the weakest effort strata:
+    stationary (-0.0009) and zero distance (-0.0008). This suggests the hybrid
+    graph is helping transfer among higher-effort/coastal cells more than it is
+    helping stationary low-distance checklists.
+- Block/species diagnostics:
+  - Block 79 improves from the prior frozen-access block/species mean AUPRC
+    delta of about -0.0079 to -0.0046. It also shifts from more losses than
+    gains to 43 species losses and 54 gains.
+  - Block 65 remains clearly positive: mean block/species AUPRC delta +0.0113,
+    with 63 gains and 32 losses.
+  - Block 31 is essentially neutral: mean block/species AUPRC delta +0.0008,
+    with 54 gains and 41 losses.
+  - The largest block-79 gains are water/coastal-associated species, including
+    Pied-billed Grebe (+0.0753), Canada Goose (+0.0634), Ring-billed Gull
+    (+0.0523), Bufflehead (+0.0521), and Yellow-rumped Warbler (+0.0512).
+    This is consistent with the purpose of environmental-neighbor edges.
+  - The largest block-79 losses remain common/generalist or human-associated
+    species: House Finch (-0.2905), House Sparrow (-0.2808), European Starling
+    (-0.1361), Northern Cardinal (-0.0799), Mourning Dove (-0.0764), and
+    Northern Mockingbird (-0.0747). This means the hybrid graph helps some
+    coastal/water assemblage transfer while still misranking several common
+    species in the coastal holdout.
+- Cell residual/effort diagnostics:
+  - The residual remains strongly aligned with broad geography: Spearman
+    correlations are high with elevation (+0.9349 for mean probability delta)
+    and distance to coastline (+0.8894). Access probability deltas and access
+    bias logits also correlate with coastline/elevation.
+  - This is not necessarily wrong for a coastal transfer test, but it means the
+    framework still has not cleanly separated access geography from ecological
+    geography. Hybrid edges improve block-79 transfer, but they do not solve
+    the identifiability problem.
+- Decision:
+  - Keep `spatial_gcn_frozen_access_env_edges_k6` as a useful comparison branch,
+    not as a clear replacement for the spatial-only frozen-access branch.
+  - The next check should test whether the hybrid-edge benefit is robust to the
+    environmental-neighbor count. Try smaller and larger k values before adding
+    new architecture. If k changes only trade common-species losses against
+    water/coastal gains, then the next framework step should be richer
+    ecological/coastal covariates or a broader training domain.
+
+Hybrid environmental-neighbor k-sensitivity:
+
+- `spatial_gcn_frozen_access_env_edges_k3`
+  - micro AUROC 0.8921
+  - micro AUPRC 0.5797
+  - macro AUROC 0.8451
+  - macro AUPRC 0.4156
+  - ECE 0.0062
+  - max bin error 0.0212
+  - species calibration MAE 0.0131
+- `spatial_gcn_frozen_access_env_edges_k12`
+  - micro AUROC 0.8916
+  - micro AUPRC 0.5780
+  - macro AUROC 0.8444
+  - macro AUPRC 0.4123
+  - ECE 0.0037
+  - max bin error 0.0190
+  - species calibration MAE 0.0117
+- Interpretation:
+  - Smaller k is better for aggregate ranking. k=3 is the best hybrid-edge
+    ranking result so far, though it is still only close to the spatial-only
+    frozen-access branch rather than clearly better.
+  - Larger k is better for calibration but worse for ranking. k=12 likely
+    smooths too broadly across environmental neighbors, which dampens
+    species-specific ranking signal while stabilizing probabilities.
+  - The ranking/calibration tradeoff is coherent: adding more environmental
+    neighbors increases smoothing. The useful range appears to be low-to-moderate
+    k, with k=3 and k=6 worth diagnostics and k=12 mainly a calibration
+    reference.
+- Decision:
+  - Use `spatial_gcn_frozen_access_env_edges_k3` as the next primary
+    k-sensitivity diagnostic run because it gives the best aggregate ranking
+    among hybrid-edge variants.
+  - Compare k=3 against k=6 specifically on block 79 and common-species losses.
+    If k=3 preserves the block-79 improvement while reducing common-species
+    losses, it becomes the preferred hybrid branch. If k=6 is better for block
+    79/coastal species, keep k=6 as a targeted coastal-transfer branch.
+
+k=3 hybrid environmental-neighbor diagnostics:
+
+- Effort-strata diagnostics:
+  - The same high-effort pattern remains: strongest gains are duration `121+`
+    minutes (+0.0133 micro AUPRC), distance `(2,5]` km (+0.0126), distance
+    `5+` km (+0.0113), 3+ observers (+0.0106), and traveling checklists
+    (+0.0098).
+  - Block 79 is still the weakest spatial block: -0.0031 micro AUPRC and
+    -0.0060 macro AUPRC. This is better than the spatial-only frozen-access
+    branch, but worse than the k=6 hybrid result for block 79 (-0.0020).
+  - Stationary/zero-distance strata are essentially neutral rather than
+    meaningfully improved. This again suggests the environmental-neighbor graph
+    mostly helps higher-effort/traveling contexts.
+- Block/species diagnostics:
+  - Block 79 is worse under k=3 than k=6 on mean block/species AUPRC:
+    -0.0077 for k=3 versus -0.0046 for k=6.
+  - Block 79 also shifts back to more losses than gains: 50 species losses and
+    47 gains for k=3, versus 43 losses and 54 gains for k=6.
+  - Block 65 remains positive under k=3 (+0.0106 mean AUPRC, 66 gains and
+    29 losses), and block 31 remains near neutral (+0.0020).
+  - The same common/coastal-block failures persist: House Finch (-0.2899),
+    House Sparrow (-0.2552), European Starling (-0.1371), Mourning Dove
+    (-0.0896), Northern Cardinal (-0.0815), and Northern Mockingbird
+    (-0.0760) in block 79.
+  - k=3 does not solve the common-species loss problem. It slightly improves
+    House Sparrow relative to k=6 but leaves House Finch and European Starling
+    essentially unchanged and worsens several other common species.
+- Decision:
+  - Do not continue tuning environmental-neighbor k as the main research path.
+    k=3 gives slightly better aggregate ranking; k=6 gives better block-79
+    transfer; k=12 gives better calibration. These are small, coherent
+    smoothing tradeoffs, not a breakthrough.
+  - Keep k=6 as the most useful targeted coastal-transfer hybrid branch, and
+    keep the spatial-only frozen-access model as the cleaner baseline branch.
+  - The next meaningful framework step should address the source of the
+    remaining ceiling: limited ecological/access support and missing relational
+    structure, not another small cell-edge tweak.
+
+Species relational structure next step:
+
+- Rationale:
+  - Aggregate AUPRC has barely moved across spatial residual, frozen access,
+    and environmental-neighbor variants. This suggests the checklist covariates
+    already capture most easy ranking signal, and the spatial-cell GNN is mostly
+    redistributing residual corrections across blocks/species.
+  - The next GNN-specific signal should come from the species side of the graph:
+    species that co-occur under similar checklist/ecological contexts may share
+    useful information, especially for lower-prevalence or geographically
+    concentrated species.
+  - This is closer to the original heterogeneous-graph goal than another
+    spatial smoothing tweak: the model should learn from relationships among
+    checklists, places, effort/access, and species, not only from cell adjacency.
+- Initial implementation target:
+  - Add an optional train-only species co-detection graph.
+  - Build species-species edges from the training label matrix only, using
+    normalized co-detection similarity.
+  - Apply a small GCN over the learnable species embeddings before checklist x
+    species scoring.
+  - Keep the default off so all prior runs remain reproducible.
+- First test should combine the cleaner spatial branch with species relational
+  message passing:
+  - frozen access
+  - separated spatial channels
+  - spatial-only cell graph first, not hybrid environmental edges
+  - species co-detection graph with a small neighbor count
+- Readout:
+  - If species GCN improves macro AUPRC more than micro AUPRC, it is likely
+    helping less-common species.
+  - If it improves block/species failures without changing aggregate AUPRC much,
+    it may still be useful for the framework.
+  - If it mostly boosts common/generalist co-detection shortcuts and worsens
+    block transfer, it should not be treated as a bias-correction component.
+- Implementation notes:
+  - `exp/ebird_spatial_gnn_baseline.py` now supports `--species-edge-mode
+    codetection`, `--species-neighbors`, `--species-gcn-layers`, and
+    `--species-gcn-dropout`.
+  - Co-detection edges are built only from the training label matrix for the
+    active split.
+  - Saved run metadata records species graph mode, neighbor count, GCN layers,
+    and species graph edge count so diagnostics can reconstruct the same graph.
+  - Smoke test passed with a capped one-epoch run.
+
+First species co-detection GCN command:
+
+```
+python exp/ebird_spatial_gnn_baseline.py --graph-dir data/ebird/graph_top100_spatial_10x10 --run-name spatial_gcn_frozen_access_species_codetect_k10_l1 --gnn-mode residual --component-mode joint --spatial-channel-mode separated --species-edge-mode codetection --species-neighbors 10 --species-gcn-layers 1 --species-gcn-dropout 0.05 --epochs 10 --batch-size 2048 --hidden-dim 128 --hidden-layers 2 --latent-dim 128 --cell-hidden-dim 64 --cell-layers 1 --dropout 0.10 --weight-decay 0.0001 --spatial-grid-size-m 25000 --species-residual-scale sigmoid --species-residual-scale-init 0.10 --species-residual-scale-l2 0.01 --spatial-access-bias-l2 0.001 --frozen-access-embeddings data/ebird/graph_top100_spatial_10x10/access_encoder/access_gcn_h64_l2_z64_cell_embeddings.npy
+```
+
+Then run:
+
+```
+python exp/compare_ebird_effort_strata.py --graph-dir data/ebird/graph_top100_spatial_10x10 --spatial-run-name spatial_gcn_frozen_access_species_codetect_k10_l1
+```
+
+```
+python exp/diagnose_ebird_block_species.py --graph-dir data/ebird/graph_top100_spatial_10x10 --spatial-run-name spatial_gcn_frozen_access_species_codetect_k10_l1
+```
+
+First species co-detection GCN result:
+
+- `spatial_gcn_frozen_access_species_codetect_k10_l1`
+  - micro AUROC 0.8918
+  - micro AUPRC 0.5807
+  - macro AUROC 0.8451
+  - macro AUPRC 0.4155
+  - ECE 0.0073
+  - max bin error 0.0260
+  - species calibration MAE 0.0142
+- Compared with the spatial-only frozen-access branch:
+  - micro AUPRC improves slightly from 0.5800 to 0.5807.
+  - macro AUPRC improves slightly from 0.4151 to 0.4155.
+  - calibration worsens: ECE 0.0056 to 0.0073 and species calibration MAE
+    0.0133 to 0.0142.
+- Effort-strata diagnostics:
+  - High-effort gains remain and are slightly stronger in some strata:
+    duration `121+` minutes (+0.0137), distance `(2,5]` km (+0.0134),
+    distance `5+` km (+0.0125), traveling (+0.0105), and 2 observers
+    (+0.0105).
+  - Block 65 improves strongly (+0.0121 micro AUPRC).
+  - Block 79 worsens sharply (-0.0090 micro AUPRC), worse than spatial-only,
+    k=3 hybrid, and k=6 hybrid.
+- Block/species diagnostics:
+  - Block 65 improves substantially: mean block/species AUPRC +0.0163 with
+    75 gains and 20 losses.
+  - Block 31 remains near neutral: mean +0.0013.
+  - Block 79 worsens: mean -0.0092 with 49 losses and 48 gains.
+  - The species GCN helps some water/coastal species in block 79
+    (Yellow-rumped Warbler, Great Black-backed Gull, Ring-billed Gull,
+    Hooded Merganser, Double-crested Cormorant), but the largest block-79
+    losses remain common/generalist or human-associated species: House Finch,
+    House Sparrow, European Starling, Northern Mockingbird, Northern Cardinal,
+    Mourning Dove, Carolina Wren, and Red-winged Blackbird.
+- Interpretation:
+  - The co-detection species graph adds real species-side signal, but the first
+    k=10/layer-1 implementation appears to favor the large inland/mixed block
+    65 more than the hard coastal block 79.
+  - This is a plausible failure mode for train-only co-detection: the learned
+    species graph can encode dominant checklist assemblages and common-species
+    shortcuts rather than improving transfer to out-of-support coastal
+    assemblages.
+  - The result supports species relational structure as a useful comparison
+    branch, but not yet as a bias-correction improvement.
+- Decision:
+  - Do not combine species co-detection GCN with hybrid environmental cell edges
+    yet. That would mix two smoothing mechanisms before understanding either.
+  - Run one conservative species-graph sensitivity test with fewer species
+    neighbors. If smaller k reduces block-79 damage while preserving macro
+    AUPRC, keep the species graph branch. If not, pause species co-detection
+    and consider richer species metadata/traits or broader geography instead.
+
+Conservative species co-detection sensitivity command:
+
+```
+python exp/ebird_spatial_gnn_baseline.py --graph-dir data/ebird/graph_top100_spatial_10x10 --run-name spatial_gcn_frozen_access_species_codetect_k3_l1 --gnn-mode residual --component-mode joint --spatial-channel-mode separated --species-edge-mode codetection --species-neighbors 3 --species-gcn-layers 1 --species-gcn-dropout 0.05 --epochs 10 --batch-size 2048 --hidden-dim 128 --hidden-layers 2 --latent-dim 128 --cell-hidden-dim 64 --cell-layers 1 --dropout 0.10 --weight-decay 0.0001 --spatial-grid-size-m 25000 --species-residual-scale sigmoid --species-residual-scale-init 0.10 --species-residual-scale-l2 0.01 --spatial-access-bias-l2 0.001 --frozen-access-embeddings data/ebird/graph_top100_spatial_10x10/access_encoder/access_gcn_h64_l2_z64_cell_embeddings.npy
+```
+
+Conservative species co-detection k=3 result:
+
+- `spatial_gcn_frozen_access_species_codetect_k3_l1`
+  - micro AUROC 0.8918
+  - micro AUPRC 0.5809
+  - macro AUROC 0.8450
+  - macro AUPRC 0.4157
+  - ECE 0.0067
+  - max bin error 0.0254
+  - species calibration MAE 0.0134
+- Compared with k=10:
+  - micro AUPRC improves slightly from 0.5807 to 0.5809.
+  - macro AUPRC improves slightly from 0.4155 to 0.4157.
+  - ECE improves from 0.0073 to 0.0067.
+  - species calibration MAE improves from 0.0142 to 0.0134.
+- Compared with spatial-only frozen access:
+  - micro AUPRC improves from 0.5800 to 0.5809.
+  - macro AUPRC improves from 0.4151 to 0.4157.
+  - calibration is still worse than spatial-only frozen access.
+- Interpretation:
+  - Reducing species neighbors helps slightly. This is consistent with the
+    concern that broader co-detection smoothing can over-emphasize dominant
+    common assemblages.
+  - The aggregate gain remains small, so the decision depends on effort-strata
+    and block/species diagnostics. In particular, block 79 must not collapse the
+    way it did under k=10.
+
+Conservative species co-detection k=3 diagnostics:
+
+- Effort-strata diagnostics:
+  - High-effort gains remain and are slightly stronger than k=10 in some
+    contexts: duration `121+` minutes (+0.0147 micro AUPRC), distance `(2,5]`
+    km (+0.0141), traveling checklists (+0.0110), and 2 observers (+0.0111).
+  - Block 65 remains strongly positive (+0.0119 micro AUPRC).
+  - Block 31 remains mildly positive (+0.0042 micro AUPRC).
+  - Block 79 worsens further: -0.0131 micro AUPRC and -0.0104 macro AUPRC.
+    This is worse than k=10 co-detection, hybrid environmental-neighbor k=3/k=6,
+    and spatial-only frozen access.
+- Block/species diagnostics:
+  - Block 65 remains positive: mean block/species AUPRC +0.0150 with 70 gains
+    and 25 losses.
+  - Block 31 remains near neutral to mildly positive: mean +0.0014 with
+    58 gains and 37 losses.
+  - Block 79 worsens materially: mean -0.0112, median -0.0047, with
+    59 species losses and 38 gains.
+  - Some coastal/water-associated block-79 species still benefit
+    (Yellow-rumped Warbler, Ring-billed Gull, Great Black-backed Gull,
+    Hooded Warbler, Red-breasted Nuthatch), but the common/generalist losses
+    dominate the block-level result: House Finch, House Sparrow, European
+    Starling, Mourning Dove, Northern Cardinal, Great Egret, Red-winged
+    Blackbird, Carolina Wren, and Red-bellied Woodpecker.
+- Decision:
+  - Pause the simple co-detection species-GCN branch. It adds a small aggregate
+    ranking gain, but it consistently worsens the hardest coastal block.
+  - The failure mode is informative: train-only co-detection seems to encode
+    dominant inland/common assemblage structure more than transferable
+    ecological relationship structure.
+  - Do not combine this branch with environmental cell edges yet. That would
+    likely stack two smoothing mechanisms that both have block-specific
+    tradeoffs.
+  - If species relational structure is revisited, it should use a more
+    ecologically constrained graph: taxonomy/traits, habitat guilds, migratory
+    strategy, or species embeddings learned from a broader geographic dataset,
+    rather than raw NC train co-detection alone.
+
+Access-density auxiliary separated-channel command:
+
+```
+python exp/ebird_spatial_gnn_baseline.py --graph-dir data/ebird/graph_top100_spatial_10x10 --run-name spatial_gcn_separated_channels_access_density_w0p01 --gnn-mode residual --component-mode joint --spatial-channel-mode separated --epochs 10 --batch-size 2048 --hidden-dim 128 --hidden-layers 2 --latent-dim 128 --cell-hidden-dim 64 --cell-layers 1 --dropout 0.10 --weight-decay 0.0001 --spatial-grid-size-m 25000 --species-residual-scale sigmoid --species-residual-scale-init 0.10 --species-residual-scale-l2 0.01 --spatial-access-bias-l2 0.001 --access-density-loss-weight 0.01
+```
+
+Then repeat the same diagnostics:
+
+```
+python exp/diagnose_ebird_cell_residual_effort.py --graph-dir data/ebird/graph_top100_spatial_10x10 --spatial-run-name spatial_gcn_separated_channels_access_density_w0p01 --min-cell-checklists 10
+```
+
+```
+python exp/compare_ebird_effort_strata.py --graph-dir data/ebird/graph_top100_spatial_10x10 --spatial-run-name spatial_gcn_separated_channels_access_density_w0p01
+```
+
+```
+python exp/diagnose_ebird_block_species.py --graph-dir data/ebird/graph_top100_spatial_10x10 --spatial-run-name spatial_gcn_separated_channels_access_density_w0p01
+```
+
+First separated-channel command:
+
+```
+python exp/ebird_spatial_gnn_baseline.py --graph-dir data/ebird/graph_top100_spatial_10x10 --run-name spatial_gcn_separated_channels_shared_access_l2_0p001 --gnn-mode residual --component-mode joint --spatial-channel-mode separated --epochs 10 --batch-size 2048 --hidden-dim 128 --hidden-layers 2 --latent-dim 128 --cell-hidden-dim 64 --cell-layers 1 --dropout 0.10 --weight-decay 0.0001 --spatial-grid-size-m 25000 --species-residual-scale sigmoid --species-residual-scale-init 0.10 --species-residual-scale-l2 0.01 --spatial-access-bias-l2 0.001
+```
+
+Diagnostics after the separated-channel run:
+
+```
+python exp/diagnose_ebird_cell_residual_effort.py --graph-dir data/ebird/graph_top100_spatial_10x10 --spatial-run-name spatial_gcn_separated_channels_shared_access_l2_0p001 --min-cell-checklists 10
+```
+
+Readout goal:
+
+- Desired pattern: access-bias summaries correlate most strongly with effort and
+  access predictors, while species-specific residual summaries correlate more
+  with ecological/environmental gradients and observed species composition.
+- Concerning pattern: species-specific residuals still dominate effort/access
+  correlations, or access-bias terms mostly track environmental gradients. That
+  would mean the architecture is still not separating bias and suitability in a
+  useful way.
+
+Next validation for the separated-channel branch:
+
+```
+python exp/compare_ebird_effort_strata.py --graph-dir data/ebird/graph_top100_spatial_10x10 --spatial-run-name spatial_gcn_separated_channels_shared_access_l2_0p001
+```
+
+```
+python exp/diagnose_ebird_block_species.py --graph-dir data/ebird/graph_top100_spatial_10x10 --spatial-run-name spatial_gcn_separated_channels_shared_access_l2_0p001
+```
+
+Diagnostics after a residual-regularized run:
+
+```
+python exp/diagnose_ebird_cell_residual_effort.py --graph-dir data/ebird/graph_top100_spatial_10x10 --spatial-run-name RUN_NAME --min-cell-checklists 10
+```
+
+```
+python exp/compare_ebird_effort_strata.py --graph-dir data/ebird/graph_top100_spatial_10x10 --spatial-run-name RUN_NAME
+```
+
+```
+python exp/diagnose_ebird_block_species.py --graph-dir data/ebird/graph_top100_spatial_10x10 --spatial-run-name RUN_NAME
+```
+
+After each run, compare to the 10x10 tabular MLP baseline using the matching
+species metrics file.
+
+Shared effort-bias comparison:
+
+```
+python exp/compare_ebird_graph_tabular_species.py --graph-dir data/ebird/graph_top100_spatial_10x10 --baseline-dir data/ebird/baselines_10x10 --top-species 100 --tabular-model mlp --feature-set both --split spatial-stratified --graph-species-metrics data/ebird/graph_top100_spatial_10x10/spatial_gnn_baselines/spatial_gnn_spatial_gcn_joint_scaled_effort_shared_l2_0p001_test_species_metrics.csv --output data/ebird/graph_top100_spatial_10x10/spatial_gnn_baselines/joint_scaled_effort_shared_l2_0p001_graph_vs_tabular_species_fair_10x10.csv
+```
+
+Low-rank effort-bias comparison:
+
+```
+python exp/compare_ebird_graph_tabular_species.py --graph-dir data/ebird/graph_top100_spatial_10x10 --baseline-dir data/ebird/baselines_10x10 --top-species 100 --tabular-model mlp --feature-set both --split spatial-stratified --graph-species-metrics data/ebird/graph_top100_spatial_10x10/spatial_gnn_baselines/spatial_gnn_spatial_gcn_joint_scaled_effort_lowrank8_l2_0p001_test_species_metrics.csv --output data/ebird/graph_top100_spatial_10x10/spatial_gnn_baselines/joint_scaled_effort_lowrank8_l2_0p001_graph_vs_tabular_species_fair_10x10.csv
+```
+
+Then run effort-strata and block-by-species diagnostics.
+
+Shared effort-bias diagnostics:
+
+```
+python exp/compare_ebird_effort_strata.py --graph-dir data/ebird/graph_top100_spatial_10x10 --spatial-run-name spatial_gcn_joint_scaled_effort_shared_l2_0p001
+```
+
+```
+python exp/diagnose_ebird_block_species.py --graph-dir data/ebird/graph_top100_spatial_10x10 --spatial-run-name spatial_gcn_joint_scaled_effort_shared_l2_0p001
+```
+
+Low-rank effort-bias diagnostics:
+
+```
+python exp/compare_ebird_effort_strata.py --graph-dir data/ebird/graph_top100_spatial_10x10 --spatial-run-name spatial_gcn_joint_scaled_effort_lowrank8_l2_0p001
+```
+
+```
+python exp/diagnose_ebird_block_species.py --graph-dir data/ebird/graph_top100_spatial_10x10 --spatial-run-name spatial_gcn_joint_scaled_effort_lowrank8_l2_0p001
+```
+
+Residual maps for whichever effort-bias run looks most promising:
+
+```
+python exp/plot_ebird_spatial_gnn_residual_maps.py --graph-dir data/ebird/graph_top100_spatial_10x10 --run-name RUN_NAME --species "Red-headed Woodpecker" "Eastern Meadowlark" "House Sparrow" "Bufflehead" "Pied-billed Grebe" "Swamp Sparrow" "Wood Duck" "Double-crested Cormorant" "Killdeer" "Black-and-white Warbler" --boundary data/boundaries/nc_state_boundary.gpkg
+```
+
+Step 4 placeholder, richer graph structure:
+
+- If the residual GNN gain is stable, add graph structure incrementally and
+  compare against the same diagnostics:
+  - species co-detection edges or species-similarity edges
+  - environmental-neighbor cell edges, not only queen spatial adjacency
+  - protocol/effort context nodes or edge attributes
+  - locality nodes with train-only/leave-one-out safeguards
+  - observer nodes only later, with privacy, leakage, and transfer constraints
+- Each new relation type should be evaluated against the same all-pairs target,
+  species-level deltas, residual maps, and effort-strata calibration checks.
+
 Residual/gated grid search:
 
 - `exp/run_ebird_spatial_gnn_grid.py` wraps
@@ -1524,6 +3877,21 @@ Residual map outputs:
 - `spatial_gcn_residual_h128_l2_z128_cell64_cl1_wd0p0001_residual_probability_summary.csv`
   with mean base probability, full probability, residual delta, and
   positive-vs-negative delta summaries.
+
+Effort-strata diagnostic command:
+
+```
+python exp/compare_ebird_effort_strata.py --graph-dir data/ebird/graph_top100_spatial --spatial-run-name spatial_gcn_residual_h128_l2_z128_cell64_cl1_wd0p0001
+```
+
+Effort-strata diagnostic outputs:
+
+- `effort_strata_metrics.csv`: tabular MLP and spatial GNN metrics within each
+  protocol, duration, distance, observer-count, and spatial-block stratum.
+- one `*_strata_deltas.png` plot per stratum type under
+  `data/ebird/graph_top100_spatial/spatial_gnn_baselines/diagnostics/effort_strata`
+- `effort_strata_metadata.json` with the spatial run and retrained tabular MLP
+  settings.
 
 Then rerun:
 

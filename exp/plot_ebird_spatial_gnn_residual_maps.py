@@ -25,8 +25,14 @@ import numpy as np
 import pandas as pd
 import torch
 
-from ebird_graph_all_species_baseline import load_split_checklists
-from ebird_spatial_gnn_baseline import SpatialGCNHybrid, build_spatial_cell_graph
+from ebird_graph_all_species_baseline import build_label_matrix, load_split_checklists
+from ebird_spatial_gnn_baseline import (
+    SpatialGCNHybrid,
+    build_species_adjacency_for_run,
+    build_spatial_cell_graph_for_run,
+    inject_frozen_access_embeddings,
+    load_frozen_access_embeddings,
+)
 from ebird_joint_tabular_baseline import SEED
 
 
@@ -129,24 +135,13 @@ def base_and_full_logits(
     checklist_features: torch.Tensor,
     cell_embeddings: torch.Tensor,
     checklist_cells: torch.Tensor,
+    species_adjacency: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    cell_context = cell_embeddings[checklist_cells]
     if model.gnn_mode == "concat":
         raise ValueError("Residual maps require a residual or gated spatial GNN.")
-    latent = model.checklist_encoder(checklist_features)
-    base_logits = latent @ model.species_embedding.weight.T / model.scale
-    base_logits = base_logits + model.species_bias + model.checklist_bias(latent)
-    base_logits = base_logits + model.direct_head(latent)
-
-    if model.cell_residual_head is None:
-        raise RuntimeError("Spatial residual head is not initialized.")
-    residual_logits = model.cell_residual_head(cell_context)
-    if model.gnn_mode == "gated":
-        if model.gate_head is None:
-            raise RuntimeError("Gate head is not initialized.")
-        gate_input = torch.cat([latent, cell_context], dim=1)
-        residual_logits = torch.sigmoid(model.gate_head(gate_input)) * residual_logits
-    return base_logits, base_logits + residual_logits
+    return model.base_and_full_logits(
+        checklist_features, cell_embeddings, checklist_cells, species_adjacency
+    )
 
 
 def predict_selected_species(
@@ -154,17 +149,23 @@ def predict_selected_species(
     features: torch.Tensor,
     cell_features: torch.Tensor,
     adjacency: torch.Tensor,
+    frozen_access_embeddings: torch.Tensor | None,
+    species_adjacency: torch.Tensor | None,
     checklist_cells: torch.Tensor,
     checklist_indices: np.ndarray,
     species_indices: list[int],
     batch_size: int,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
     model.eval()
     base_parts = []
     full_parts = []
+    access_delta_parts = []
     species_tensor = torch.tensor(species_indices, dtype=torch.int64)
     with torch.no_grad():
         cell_embeddings = model.encode_cells(cell_features, adjacency)
+        cell_embeddings = inject_frozen_access_embeddings(
+            model, cell_embeddings, frozen_access_embeddings
+        )
         for start in range(0, len(checklist_indices), batch_size):
             batch = checklist_indices[start : start + batch_size]
             batch_tensor = torch.from_numpy(batch.astype(np.int64))
@@ -173,10 +174,27 @@ def predict_selected_species(
                 features[batch_tensor],
                 cell_embeddings,
                 checklist_cells[batch_tensor],
+                species_adjacency,
             )
-            base_parts.append(torch.sigmoid(base_logits[:, species_tensor]).cpu().numpy())
+            base_scores = torch.sigmoid(base_logits[:, species_tensor])
+            base_parts.append(base_scores.cpu().numpy())
             full_parts.append(torch.sigmoid(full_logits[:, species_tensor]).cpu().numpy())
-    return np.vstack(base_parts).astype(np.float32), np.vstack(full_parts).astype(np.float32)
+            if model.last_spatial_access_bias_logits is not None:
+                access_logits = model.last_spatial_access_bias_logits
+                no_access_scores = torch.sigmoid(
+                    (base_logits - access_logits)[:, species_tensor]
+                )
+                access_delta_parts.append((base_scores - no_access_scores).cpu().numpy())
+    access_delta = (
+        np.vstack(access_delta_parts).astype(np.float32)
+        if access_delta_parts
+        else None
+    )
+    return (
+        np.vstack(base_parts).astype(np.float32),
+        np.vstack(full_parts).astype(np.float32),
+        access_delta,
+    )
 
 
 def load_positive_labels(
@@ -213,6 +231,7 @@ def plot_species_delta(
     common_name: str,
     base_prob: np.ndarray,
     full_prob: np.ndarray,
+    access_delta: np.ndarray | None,
     labels: np.ndarray,
     output: Path,
     boundary: gpd.GeoDataFrame | None,
@@ -223,7 +242,14 @@ def plot_species_delta(
         limit = float(np.max(np.abs(delta))) if len(delta) else 0.01
     limit = max(limit, 0.01)
 
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5.5), sharex=True, sharey=True)
+    panel_count = 3 if access_delta is not None else 2
+    fig, axes = plt.subplots(
+        1,
+        panel_count,
+        figsize=(5.8 * panel_count, 5.5),
+        sharex=True,
+        sharey=True,
+    )
     scatter = axes[0].scatter(
         nodes["x"],
         nodes["y"],
@@ -235,10 +261,30 @@ def plot_species_delta(
         linewidths=0,
     )
     axes[0].set_title("Spatial residual probability delta")
+    if access_delta is not None:
+        access_limit = float(np.nanpercentile(np.abs(access_delta), 98))
+        if not np.isfinite(access_limit) or access_limit <= 0:
+            access_limit = float(np.max(np.abs(access_delta))) if len(access_delta) else 0.01
+        access_limit = max(access_limit, 0.01)
+        access_scatter = axes[1].scatter(
+            nodes["x"],
+            nodes["y"],
+            c=access_delta,
+            s=3,
+            cmap="RdBu_r",
+            vmin=-access_limit,
+            vmax=access_limit,
+            linewidths=0,
+        )
+        axes[1].set_title("Shared access probability delta")
+        positive_axis = axes[2]
+    else:
+        access_scatter = None
+        positive_axis = axes[1]
     positives = nodes.loc[labels]
-    axes[1].scatter(nodes["x"], nodes["y"], s=1, c="#D0D0D0", alpha=0.25, linewidths=0)
-    axes[1].scatter(positives["x"], positives["y"], s=4, c="#D62728", alpha=0.7, linewidths=0)
-    axes[1].set_title("Held-out positives")
+    positive_axis.scatter(nodes["x"], nodes["y"], s=1, c="#D0D0D0", alpha=0.25, linewidths=0)
+    positive_axis.scatter(positives["x"], positives["y"], s=4, c="#D62728", alpha=0.7, linewidths=0)
+    positive_axis.set_title("Held-out positives")
     for ax in axes:
         draw_boundary(ax, boundary)
         ax.set_aspect("equal", adjustable="box")
@@ -246,11 +292,19 @@ def plot_species_delta(
         ax.set_yticks([])
     fig.suptitle(common_name)
     fig.colorbar(scatter, ax=axes[0], fraction=0.046, pad=0.04, label="full - base probability")
+    if access_scatter is not None:
+        fig.colorbar(
+            access_scatter,
+            ax=axes[1],
+            fraction=0.046,
+            pad=0.04,
+            label="base - no-access probability",
+        )
     plt.tight_layout()
     plt.savefig(output, dpi=180)
     plt.close(fig)
 
-    return {
+    row = {
         "common_name": common_name,
         "test_checklists": int(len(nodes)),
         "positive_checklists": int(labels.sum()),
@@ -265,6 +319,20 @@ def plot_species_delta(
         else np.nan,
         "all_p90_abs_delta": float(np.percentile(np.abs(delta), 90)),
     }
+    if access_delta is not None:
+        row.update(
+            {
+                "mean_access_probability_delta": float(access_delta.mean()),
+                "mean_abs_access_probability_delta": float(np.abs(access_delta).mean()),
+                "positive_mean_access_delta": float(access_delta[labels].mean())
+                if labels.any()
+                else np.nan,
+                "negative_mean_access_delta": float(access_delta[~labels].mean())
+                if (~labels).any()
+                else np.nan,
+            }
+        )
+    return row
 
 
 def main() -> None:
@@ -300,11 +368,21 @@ def main() -> None:
     if not species_indices:
         raise ValueError("No valid species selected.")
 
-    cell_features, adjacency, checklist_cell, cell_metadata = build_spatial_cell_graph(
+    cell_features, adjacency, checklist_cell, cell_metadata = build_spatial_cell_graph_for_run(
         graph_dir,
         features_np,
         train_checklists,
-        float(model_info["spatial_grid_size_m"]),
+        model_info,
+    )
+    frozen_access_embeddings = load_frozen_access_embeddings(
+        model_info.get("frozen_access_embeddings"),
+        cell_features.shape[0],
+    )
+    train_labels = build_label_matrix(
+        graph_dir, train_checklists, len(species), "train"
+    )
+    species_adjacency, _species_graph_metadata = build_species_adjacency_for_run(
+        train_labels, model_info
     )
     model = SpatialGCNHybrid(
         checklist_feature_dim=features_np.shape[1],
@@ -318,15 +396,32 @@ def main() -> None:
         dropout=float(model_info["dropout"]),
         gnn_mode=model_info["gnn_mode"],
         gate_init_bias=float(model_info["gate_init_bias"]),
+        species_residual_scale=model_info.get("species_residual_scale", "none"),
+        species_residual_scale_init=float(
+            model_info.get("species_residual_scale_init", 0.25)
+        ),
+        component_mode=model_info.get("component_mode", "joint"),
+        ecology_feature_indices=model_info.get("ecology_feature_indices", []),
+        bias_feature_indices=model_info.get("bias_feature_indices", []),
+        effort_bias_mode=model_info.get("effort_bias_mode", "none"),
+        effort_bias_rank=int(model_info.get("effort_bias_rank", 8)),
+        spatial_channel_mode=model_info.get("spatial_channel_mode", "single"),
+        ecology_cell_feature_indices=model_info.get("ecology_cell_feature_indices", []),
+        access_cell_feature_indices=model_info.get("access_cell_feature_indices", []),
+        access_density_auxiliary=bool(model_info.get("access_density_auxiliary", False)),
+        species_gcn_layers=int(model_info.get("species_gcn_layers", 0)),
+        species_gcn_dropout=float(model_info.get("species_gcn_dropout", 0.0)),
     )
     state = torch.load(model_path, map_location="cpu")
     model.load_state_dict(state)
 
-    base_prob, full_prob = predict_selected_species(
+    base_prob, full_prob, access_delta = predict_selected_species(
         model,
         features,
         cell_features,
         adjacency,
+        frozen_access_embeddings,
+        species_adjacency,
         torch.from_numpy(checklist_cell.astype(np.int64)),
         test_checklists,
         species_indices,
@@ -347,6 +442,7 @@ def main() -> None:
                 common_name,
                 base_prob[:, position],
                 full_prob[:, position],
+                access_delta[:, position] if access_delta is not None else None,
                 labels[:, position],
                 output_dir / f"{safe_name(common_name)}_residual_probability_delta.png",
                 boundary,
