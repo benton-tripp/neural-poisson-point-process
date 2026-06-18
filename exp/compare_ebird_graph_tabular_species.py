@@ -49,7 +49,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--feature-set",
-        choices=["effort", "ecology", "both"],
+        choices=["effort", "ecology", "both", "both-regime"],
         default="both",
         help="Tabular feature set to compare. Defaults to both.",
     )

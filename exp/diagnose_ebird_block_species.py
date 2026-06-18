@@ -328,6 +328,11 @@ def plot_block_summary(summary: pd.DataFrame, output_dir: Path) -> None:
     plt.close(fig)
 
 
+def safe_name(value: str) -> str:
+    safe = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in value)
+    return safe.strip("_") or "run"
+
+
 def main() -> None:
     args = parse_args()
     graph_dir = Path(args.graph_dir)
@@ -337,6 +342,8 @@ def main() -> None:
         else graph_dir / "spatial_gnn_baselines" / "diagnostics" / "block_species"
     )
     output_dir.mkdir(parents=True, exist_ok=True)
+    run_output_dir = output_dir / safe_name(args.spatial_run_name)
+    run_output_dir.mkdir(parents=True, exist_ok=True)
 
     metadata = json.loads((graph_dir / "metadata.json").read_text(encoding="utf-8"))
     species = pd.read_csv(graph_dir / "species_nodes.csv")
@@ -392,32 +399,37 @@ def main() -> None:
         args.min_negative_checklists,
     )
     summary = block_summary_rows(metrics)
-    metrics.to_csv(output_dir / "block_species_metrics.csv", index=False)
-    summary.to_csv(output_dir / "block_summary.csv", index=False)
-    plot_block_summary(summary, output_dir)
-    (output_dir / "block_species_metadata.json").write_text(
-        json.dumps(
-            {
-                "graph_dir": str(graph_dir),
-                "spatial_run_name": args.spatial_run_name,
-                "min_positive_checklists": args.min_positive_checklists,
-                "min_negative_checklists": args.min_negative_checklists,
-                "spatial_summary": spatial_summary,
-                "tabular_mlp": {
-                    "epochs": args.epochs,
-                    "hidden_dim": args.hidden_dim,
-                    "hidden_layers": args.hidden_layers,
-                    "dropout": args.dropout,
-                    "learning_rate": args.learning_rate,
-                    "weight_decay": args.weight_decay,
-                },
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
+    metadata_payload = {
+        "graph_dir": str(graph_dir),
+        "spatial_run_name": args.spatial_run_name,
+        "min_positive_checklists": args.min_positive_checklists,
+        "min_negative_checklists": args.min_negative_checklists,
+        "spatial_summary": spatial_summary,
+        "tabular_mlp": {
+            "epochs": args.epochs,
+            "hidden_dim": args.hidden_dim,
+            "hidden_layers": args.hidden_layers,
+            "dropout": args.dropout,
+            "learning_rate": args.learning_rate,
+            "weight_decay": args.weight_decay,
+        },
+        "run_output_dir": str(run_output_dir),
+        "compatibility_output_dir": str(output_dir),
+    }
+    for target_dir in (output_dir, run_output_dir):
+        metrics.to_csv(target_dir / "block_species_metrics.csv", index=False)
+        summary.to_csv(target_dir / "block_summary.csv", index=False)
+        plot_block_summary(summary, target_dir)
+        (target_dir / "block_species_metadata.json").write_text(
+            json.dumps(
+                metadata_payload,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
 
-    print(f"Wrote block/species diagnostics to {output_dir}")
+    print(f"Wrote block/species diagnostics to {run_output_dir}")
+    print(f"Updated compatibility copy at {output_dir}")
     if metrics.empty:
         print("No block/species rows met the minimum support thresholds.")
         return

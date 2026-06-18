@@ -70,7 +70,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--feature-set",
-        choices=["effort", "ecology", "both"],
+        choices=["effort", "ecology", "both", "both-regime"],
         default="both",
         help="Checklist feature set to export. Defaults to both.",
     )
@@ -109,6 +109,14 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=SEED,
         help="Random seed used to break ties in spatial split selection. Defaults to 19.",
+    )
+    parser.add_argument(
+        "--test-block-ids",
+        default=None,
+        help=(
+            "Optional space/comma-separated spatial block ids to hold out for "
+            "spatial-stratified validation. Overrides greedy block selection."
+        ),
     )
     parser.add_argument(
         "--negative-ratio",

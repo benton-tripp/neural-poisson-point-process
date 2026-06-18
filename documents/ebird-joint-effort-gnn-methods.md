@@ -4171,6 +4171,659 @@ Next step:
   the tabular model does not improve but the GNN does, the graph structure is
   adding useful transfer beyond explicit covariates.
 
+Implementation note:
+
+- `exp/ebird_joint_tabular_baseline.py` now supports
+  `--feature-set both-regime`.
+- `both-regime` keeps the current `both` features and adds:
+  - `is_coastal_25km`
+  - `is_near_water_2p5km`
+  - `coastal_x_traveling`
+  - `coastal_x_duration_log1p`
+  - `coastal_x_effort_distance_log1p`
+  - `near_water_x_traveling`
+  - `near_water_x_duration_log1p`
+- The waterbody and coastline distance columns were already log-transformed in
+  the modeling feature builder despite retaining their original column names.
+  The new feature set therefore tests regime indicators and effort interactions,
+  not new source data.
+- `exp/build_ebird_graph_dataset.py` also supports `--feature-set both-regime`,
+  so we can build a separate graph dataset without changing the existing
+  `both` graph outputs.
+- Spatial GNN component/channel inference treats coastal and near-water
+  indicators as ecological cell features and the coastal/near-water effort
+  interactions as access/bias features.
+
+First `both-regime` tabular comparison commands:
+
+```
+python exp/ebird_joint_tabular_baseline.py --processed-dir data/ebird/processed_nc_2020_2023 --top-species 100 --feature-set both-regime --model mlp --split spatial-stratified --spatial-blocks-per-dim 10 --test-fraction 0.2 --epochs 50 --hidden-dim 64 --hidden-layers 1 --dropout 0.10
+python exp/compare_ebird_tabular_baselines.py --top-species 100 --split spatial-stratified --model mlp
+python exp/compare_ebird_calibration.py --top-species 100 --split spatial-stratified --model mlp
+```
+
+`both-regime` tabular result:
+
+- Same 10x10 spatial-stratified split as the current graph sandbox:
+  - held-out blocks 65, 79, and 31
+  - 137,020 test checklists
+  - 524,959 train checklists
+- Current `both` MLP:
+  - macro AUROC 0.8404
+  - macro AUPRC 0.4017
+  - micro AUROC 0.8897
+  - micro AUPRC 0.5725
+  - ECE 0.0051
+  - max bin error 0.0201
+- `both-regime` MLP:
+  - macro AUROC 0.8416
+  - macro AUPRC 0.4056
+  - micro AUROC 0.8897
+  - micro AUPRC 0.5739
+  - ECE 0.0062
+  - max bin error 0.0207
+- Interpretation:
+  - `both-regime` gives a small aggregate ranking lift: +0.0039 macro AUPRC
+    and +0.0014 micro AUPRC.
+  - Calibration is slightly worse: ECE increases from 0.0051 to 0.0062.
+  - The strongest species gains are concentrated in coastal/water-associated
+    species: Double-crested Cormorant (+0.0917 AUPRC), Great Egret (+0.0770),
+    Ring-billed Gull (+0.0562), Killdeer (+0.0552), Bald Eagle (+0.0536),
+    Osprey (+0.0399), Royal Tern (+0.0354), Boat-tailed Grackle (+0.0337),
+    Pied-billed Grebe (+0.0253), Bufflehead (+0.0225), and Brown Pelican
+    (+0.0197).
+  - The largest losses include House Sparrow (-0.0435), Eastern Meadowlark
+    (-0.0300), Hooded Warbler (-0.0263), Green Heron (-0.0184), Field Sparrow
+    (-0.0184), Northern Mockingbird (-0.0178), and Blue Grosbeak (-0.0178).
+- Comparison-script note:
+  - The comparison scripts now skip incompatible split configurations. This was
+    needed because old 8x8 and new 10x10 spatial-stratified outputs share the
+    same historical filename pattern.
+  - In this run, effort and ecology MLP outputs were skipped because they did
+    not match the current 10x10 split signature.
+
+Decision:
+
+- Carry `both-regime` into one clean graph/GNN run as a targeted coastal-regime
+  test, because it improves exactly the species group that motivated the
+  feature change.
+- Do not treat it as the new default yet because the aggregate gain is small and
+  calibration is slightly worse.
+
+If `both-regime` improves the tabular MLP, build a regime-feature graph dataset:
+
+```
+python exp/build_ebird_graph_dataset.py --processed-dir data/ebird/processed_nc_2020_2023 --output-dir data/ebird/graph_top100_spatial_10x10_regime --top-species 100 --feature-set both-regime --split spatial-stratified --spatial-blocks-per-dim 10 --test-fraction 0.2 --negative-ratio 5 --overwrite
+python exp/validate_ebird_graph_dataset.py --graph-dir data/ebird/graph_top100_spatial_10x10_regime
+```
+
+Then train the clean frozen-access spatial GNN equivalent on the regime graph:
+
+```
+python exp/train_ebird_access_encoder.py --graph-dir data/ebird/graph_top100_spatial_10x10_regime --run-name access_gcn_h64_l2_z64 --epochs 500 --hidden-dim 64 --layers 2 --embedding-dim 64 --dropout 0.10 --spatial-grid-size-m 25000
+python exp/ebird_spatial_gnn_baseline.py --graph-dir data/ebird/graph_top100_spatial_10x10_regime --run-name spatial_gcn_frozen_access_h64_l2_z64 --gnn-mode residual --component-mode joint --spatial-channel-mode separated --epochs 10 --batch-size 2048 --hidden-dim 128 --hidden-layers 2 --latent-dim 128 --cell-hidden-dim 64 --cell-layers 1 --dropout 0.10 --weight-decay 0.0001 --spatial-grid-size-m 25000 --species-residual-scale sigmoid --species-residual-scale-init 0.10 --species-residual-scale-l2 0.01 --spatial-access-bias-l2 0.001 --frozen-access-embeddings data/ebird/graph_top100_spatial_10x10_regime/access_encoder/access_gcn_h64_l2_z64_cell_embeddings.npy
+python exp/compare_ebird_effort_strata.py --graph-dir data/ebird/graph_top100_spatial_10x10_regime --spatial-run-name spatial_gcn_frozen_access_h64_l2_z64
+python exp/diagnose_ebird_block_species.py --graph-dir data/ebird/graph_top100_spatial_10x10_regime --spatial-run-name spatial_gcn_frozen_access_h64_l2_z64
+```
+
+`both-regime` graph build and access encoder:
+
+- `data/ebird/graph_top100_spatial_10x10_regime` was built and validated.
+- Counts match the current 10x10 graph sandbox:
+  - 661,979 checklists
+  - 100 species
+  - 524,959 train checklists
+  - 137,020 test checklists
+  - 9,017,501 positive edges
+  - 35,150,161 sampled negative edges
+  - 7,149,369 train positive edges
+  - 1,868,132 test positive edges
+  - 27,797,825 train negative edges
+  - 7,352,336 test negative edges
+- Feature matrix is 661,979 x 21, as expected for the seven added regime
+  features.
+- Access encoder `access_gcn_h64_l2_z64` completed 500 epochs.
+- Validation MSE reached its best value around epoch 150 and ended at 0.5936.
+- Target-wise validation performance:
+  - number observers: Pearson 0.5563
+  - duration: Pearson 0.2911
+  - effort distance: Pearson 0.3275
+  - locality per checklist: Pearson 0.4731
+  - observer per checklist: Pearson 0.4325
+  - stationary/traveling rates: Pearson about 0.14
+  - log train checklists: Pearson 0.4794
+  - log unique localities: Pearson 0.4056
+- Compared with the previous non-regime access encoder, this is similar but
+  slightly weaker for several access targets. Treat it as adequate for the
+  targeted regime-feature GNN test, not evidence that the regime features
+  improved the access encoder itself.
+
+Command used for the targeted regime GNN test:
+
+```
+python exp/ebird_spatial_gnn_baseline.py --graph-dir data/ebird/graph_top100_spatial_10x10_regime --run-name spatial_gcn_frozen_access_h64_l2_z64 --gnn-mode residual --component-mode joint --spatial-channel-mode separated --epochs 10 --batch-size 2048 --hidden-dim 128 --hidden-layers 2 --latent-dim 128 --cell-hidden-dim 64 --cell-layers 1 --dropout 0.10 --weight-decay 0.0001 --spatial-grid-size-m 25000 --species-residual-scale sigmoid --species-residual-scale-init 0.10 --species-residual-scale-l2 0.01 --spatial-access-bias-l2 0.001 --frozen-access-embeddings data/ebird/graph_top100_spatial_10x10_regime/access_encoder/access_gcn_h64_l2_z64_cell_embeddings.npy
+```
+
+`both-regime` frozen-access spatial GNN result:
+
+- `spatial_gcn_frozen_access_h64_l2_z64` on
+  `data/ebird/graph_top100_spatial_10x10_regime`
+- Training BCE:
+  - epoch 1: 0.31310
+  - epoch 5: 0.26089
+  - epoch 10: 0.25507
+- Test metrics:
+  - micro AUROC 0.8906
+  - micro AUPRC 0.5762
+  - macro AUROC 0.8441
+  - macro AUPRC 0.4118
+  - ECE 0.0114
+  - max bin error 0.0409
+  - species calibration MAE 0.0165
+
+Interpretation:
+
+- This is worse than the clean non-regime frozen-access GNN on the current
+  10x10 split:
+  - previous clean GNN: micro AUPRC about 0.5800, macro AUPRC about 0.4151,
+    ECE about 0.0056, species calibration MAE about 0.0133
+  - regime GNN: micro AUPRC 0.5762, macro AUPRC 0.4118, ECE 0.0114, species
+    calibration MAE 0.0165
+- The tabular MLP gained from explicit regime features, especially for
+  coastal/water-associated species, but the frozen-access spatial GNN did not
+  benefit in aggregate and calibration worsened materially.
+- Do not promote `both-regime` to the default GNN feature set based on this run.
+
+`both-regime` frozen-access GNN diagnostics:
+
+- Effort-strata comparison against the regime tabular MLP:
+  - block 65 gains: +0.0085 micro AUPRC, +0.0103 macro AUPRC, but ECE worsens
+    by 0.0056.
+  - longer or higher-distance effort still benefits modestly, e.g. duration
+    121+ (+0.0055 micro AUPRC), distance `(2,5]` (+0.0065), and traveling
+    (+0.0033).
+  - block 79 loses badly: -0.0308 micro AUPRC, -0.0091 macro AUPRC, and ECE
+    worsens by 0.0092.
+  - block 31 is mixed: -0.0030 micro AUPRC but +0.0034 macro AUPRC.
+- Block/species diagnostics:
+  - block 79 has mean delta AUPRC -0.0096, median -0.0051, 59 losses and 38
+    gains.
+  - block 65 has mean delta AUPRC +0.0105, median +0.0057, 26 losses and 69
+    gains.
+  - block 31 has mean delta AUPRC +0.0035, median +0.0008, 43 losses and 52
+    gains.
+  - block 79 gains include Northern Parula, Turkey Vulture,
+    Double-crested Cormorant, American Herring Gull, and Great Black-backed
+    Gull.
+  - block 79 losses include House Sparrow, Great Egret, Red-bellied Woodpecker,
+    European Starling, Purple Martin, Downy Woodpecker, Eastern Phoebe,
+    Carolina Chickadee, Northern Cardinal, and Red-winged Blackbird.
+
+Decision:
+
+- Keep `both-regime` as a useful tabular diagnostic feature set because it
+  exposes coastal/water regime effects and helped several coastal species in the
+  MLP baseline.
+- Do not carry `both-regime` forward as the main GNN feature set for the current
+  NC top-100 sandbox. The regime frozen-access GNN worsens aggregate ranking,
+  calibration, and the already problematic coastal held-out block.
+- Treat the block 79 issue as a validation-design and transfer-support issue,
+  not a reason to keep adding handcrafted coastal interaction features. The
+  current split has only one fully coastal held-out block, and that block has a
+  distinct access/observer regime.
+
+Diagnostic-output note:
+
+- `compare_ebird_effort_strata.py` and `diagnose_ebird_block_species.py` now
+  write run-specific copies under a subfolder named after `--spatial-run-name`
+  while also refreshing the previous compatibility files. This avoids confusing
+  a clean frozen-access diagnostic with a later species-GCN or regime diagnostic
+  that reused the same generic output directory.
+
+Recommended next step:
+
+- Return to the clean non-regime frozen-access GNN as the primary branch.
+- Re-run clean non-regime diagnostics once with the updated run-specific output
+  behavior so future comparisons have unambiguous files.
+- Then improve validation geometry before adding more model variants: create
+  either a multi-fold spatial blocked evaluation or a split that explicitly
+  balances coastal/near-water/inland blocks, effort/access strata, and common
+  species prevalence.
+
+Clean diagnostic refresh commands:
+
+```
+python exp/compare_ebird_effort_strata.py --graph-dir data/ebird/graph_top100_spatial_10x10 --spatial-run-name spatial_gcn_frozen_access_h64_l2_z64
+python exp/diagnose_ebird_block_species.py --graph-dir data/ebird/graph_top100_spatial_10x10 --spatial-run-name spatial_gcn_frozen_access_h64_l2_z64
+```
+
+Clean non-regime frozen-access diagnostic refresh:
+
+- Diagnostics now wrote run-specific outputs to:
+  - `data/ebird/graph_top100_spatial_10x10/spatial_gnn_baselines/diagnostics/effort_strata/spatial_gcn_frozen_access_h64_l2_z64`
+  - `data/ebird/graph_top100_spatial_10x10/spatial_gnn_baselines/diagnostics/block_species/spatial_gcn_frozen_access_h64_l2_z64`
+- Effort-strata result:
+  - The clean frozen-access GNN improves over the tabular MLP in most effort
+    strata.
+  - Largest micro-AUPRC gains are for long/high-effort checklists: duration
+    121+ (+0.0134), distance `(2,5]` (+0.0130), 3+ observers (+0.0116),
+    distance 5+ (+0.0106), traveling (+0.0095).
+  - Spatial block 65 improves by +0.0101 micro AUPRC and +0.0101 macro AUPRC.
+  - Spatial block 31 has a smaller positive result: +0.0036 micro AUPRC and
+    +0.0024 macro AUPRC.
+  - Spatial block 79 remains the only block-level loss: -0.0057 micro AUPRC and
+    -0.0070 macro AUPRC. Its ECE is slightly better than tabular (-0.0023), so
+    the issue is primarily ranking/transfer, not just probability calibration.
+- Block/species result:
+  - block 65: mean delta AUPRC +0.0102, median +0.0059, 67 species gains and
+    28 losses.
+  - block 31: mean delta AUPRC +0.0025, median +0.0018, 59 species gains and
+    36 losses.
+  - block 79: mean delta AUPRC -0.0079, median -0.0010, 44 species gains and
+    53 losses.
+  - block 79 still has meaningful coastal/water species gains, including
+    Ring-billed Gull (+0.0655), Yellow-rumped Warbler (+0.0604), Canada Goose
+    (+0.0521), Mallard (+0.0484), Great Black-backed Gull (+0.0474), and
+    Bufflehead (+0.0468).
+  - The largest block 79 losses are mostly common/developed-area or generalist
+    species: House Finch (-0.2491), House Sparrow (-0.2183), European Starling
+    (-0.1115), Mourning Dove (-0.0797), Northern Mockingbird (-0.0733),
+    Northern Cardinal (-0.0728), Downy Woodpecker (-0.0597), and Carolina Wren
+    (-0.0495).
+
+Current interpretation:
+
+- The clean frozen-access GNN is still the best current branch. It is not
+  universally better, but its failures are geographically concentrated rather
+  than spread across all effort strata.
+- The repeated issue is not that temporal/environmental/effort covariates are
+  missing; they are in the model. The weakness is that the current single
+  spatial split asks the model to transfer into one distinctive coastal/access
+  regime represented by block 79.
+- The next framework-level step should be better validation geometry, not more
+  hand-tuned coastal features. We need to know whether the GNN fails generally
+  on coastal transfer or whether this specific held-out block is unusually hard.
+
+Split-candidate diagnostic:
+
+- `exp/diagnose_ebird_split_candidates.py` scores candidate spatial split seeds
+  and grid sizes before rebuilding graph datasets.
+- It uses the same existing spatial-stratified split machinery, then reports
+  balance error, species-prevalence balance, coastal/near-water test coverage,
+  effort/access balance, and selected block IDs.
+- The score is only a screening heuristic. The goal is to find candidate splits
+  with more representative coastal/near-water holdouts before doing expensive
+  graph builds and model runs.
+
+Next command:
+
+```
+python exp/diagnose_ebird_split_candidates.py --processed-dir data/ebird/processed_nc_2020_2023 --top-species 100 --spatial-blocks-per-dim 10 --seeds 1-100 --test-fraction 0.2 --stratify-species-count 20 --output data/ebird/split_diagnostics/top100_10x10_split_candidates.csv
+```
+
+Initial split-candidate result:
+
+- The seed sweep selected the same 10x10 held-out blocks for every seed:
+  blocks 65, 79, and 31.
+- This means the current greedy selector has a stable best solution under its
+  present objective; the random seed is not giving meaningfully different
+  spatial validation scenarios.
+- The selected test set has:
+  - 20.7% of checklists
+  - balance error 0.0525
+  - species-prevalence MAE 0.0238
+  - one coastal held-out block and one near-water held-out block
+  - test coastal rate 0.1712 vs train coastal rate 0.2150
+- Interpretation: the current split is not obviously bad by aggregate balance,
+  but it does not give enough independent coastal validation blocks to diagnose
+  whether block 79 is a one-off failure or a general coastal-transfer weakness.
+
+The split diagnostic now supports `--mode exhaustive`, which searches candidate
+block combinations directly instead of only replaying the greedy seed-dependent
+selector. The first exhaustive version was too slow because it rescanned all
+checklists for many candidate block sets. The script now scores exhaustive
+candidates from precomputed block-level summaries and includes a hard
+`--max-combinations` cap.
+
+Next split-search command:
+
+```
+python exp/diagnose_ebird_split_candidates.py --processed-dir data/ebird/processed_nc_2020_2023 --top-species 100 --spatial-blocks-per-dim 10 --mode exhaustive --min-test-blocks 3 --max-test-blocks 5 --max-combinations 500000 --max-candidates 50000 --size-tolerance 0.08 --test-fraction 0.2 --stratify-species-count 20 --output data/ebird/split_diagnostics/top100_10x10_exhaustive_split_candidates.csv
+```
+
+Exhaustive split-search result:
+
+- The best coastal-coverage alternatives all include block 79 plus additional
+  coastal or near-coastal blocks. The top candidate is blocks 17, 48, 65, and
+  79.
+- Top candidate:
+  - test fraction 0.1985
+  - balance error 0.0992
+  - species-prevalence MAE 0.0368
+  - three coastal test blocks
+  - two near-water test blocks
+  - test coastal rate 0.4023 vs train coastal rate 0.1573
+- This is not a better balanced replacement for the primary split. It is a
+  coastal-transfer stress split. It intentionally holds out much more coastal
+  effort than the training set, so aggregate metrics will likely drop.
+- Use this to ask a specific framework question: does the clean frozen-access
+  GNN fail generally when transferring into coastal/near-water regimes, or was
+  the original block 79 result partly a single-block artifact?
+
+Implementation note:
+
+- `exp/ebird_joint_tabular_baseline.py` and `exp/build_ebird_graph_dataset.py`
+  now support `--test-block-ids` for fixed spatial-block holdouts. This keeps
+  the split definition explicit and reproducible for stress tests.
+
+Recommended coastal stress-test graph:
+
+```
+python exp/build_ebird_graph_dataset.py --processed-dir data/ebird/processed_nc_2020_2023 --output-dir data/ebird/graph_top100_spatial_10x10_coastalstress --top-species 100 --feature-set both --split spatial-stratified --spatial-blocks-per-dim 10 --test-block-ids "17 48 65 79" --negative-ratio 5 --overwrite
+python exp/validate_ebird_graph_dataset.py --graph-dir data/ebird/graph_top100_spatial_10x10_coastalstress
+```
+
+Coastal stress graph build result:
+
+- `data/ebird/graph_top100_spatial_10x10_coastalstress` was built and
+  validated.
+- Fixed held-out blocks: 17, 48, 65, and 79.
+- Feature set: `both`.
+- Feature matrix: 661,979 x 14.
+- Counts:
+  - 661,979 checklists
+  - 100 species
+  - 530,558 train checklists
+  - 131,421 test checklists
+  - 9,017,501 positive edges
+  - 35,150,161 sampled negative edges
+  - 7,183,089 train positive edges
+  - 1,834,412 test positive edges
+  - 28,047,863 train negative edges
+  - 7,102,298 test negative edges
+- Validation passed. This graph is ready for matched access-encoder and clean
+  frozen-access GNN training.
+
+Train the same clean frozen-access branch on the coastal stress split:
+
+```
+python exp/train_ebird_access_encoder.py --graph-dir data/ebird/graph_top100_spatial_10x10_coastalstress --run-name access_gcn_h64_l2_z64 --epochs 500 --hidden-dim 64 --layers 2 --embedding-dim 64 --dropout 0.10 --spatial-grid-size-m 25000
+python exp/ebird_spatial_gnn_baseline.py --graph-dir data/ebird/graph_top100_spatial_10x10_coastalstress --run-name spatial_gcn_frozen_access_h64_l2_z64 --gnn-mode residual --component-mode joint --spatial-channel-mode separated --epochs 10 --batch-size 2048 --hidden-dim 128 --hidden-layers 2 --latent-dim 128 --cell-hidden-dim 64 --cell-layers 1 --dropout 0.10 --weight-decay 0.0001 --spatial-grid-size-m 25000 --species-residual-scale sigmoid --species-residual-scale-init 0.10 --species-residual-scale-l2 0.01 --spatial-access-bias-l2 0.001 --frozen-access-embeddings data/ebird/graph_top100_spatial_10x10_coastalstress/access_encoder/access_gcn_h64_l2_z64_cell_embeddings.npy
+python exp/compare_ebird_effort_strata.py --graph-dir data/ebird/graph_top100_spatial_10x10_coastalstress --spatial-run-name spatial_gcn_frozen_access_h64_l2_z64
+python exp/diagnose_ebird_block_species.py --graph-dir data/ebird/graph_top100_spatial_10x10_coastalstress --spatial-run-name spatial_gcn_frozen_access_h64_l2_z64
+```
+
+Coastal stress frozen-access result:
+
+- Access encoder:
+  - final train MSE: 0.3112
+  - final validation MSE: 0.5317
+  - strongest validation correlations were observer/checklist density,
+    duration, and checklist density; stationary/traveling rates remained weak.
+- Spatial-cell GNN:
+  - micro AUROC: 0.8868
+  - micro AUPRC: 0.5767
+  - macro AUROC: 0.8399
+  - macro AUPRC: 0.4092
+  - ECE: 0.0012
+  - max bin error: 0.0086
+  - species calibration MAE: 0.0109
+- Interpretation:
+  - Ranking metrics are lower than the primary 10x10 frozen-access run, which
+    is expected because the fixed held-out blocks deliberately stress coastal
+    transfer.
+  - Calibration is very strong, so the main question is not whether predicted
+    probabilities are globally sane. The next diagnostic question is whether
+    rank losses concentrate in coastal blocks/species, or whether the stress
+    split exposes broader transfer weaknesses.
+
+Coastal stress diagnostics:
+
+- Effort-strata comparison:
+  - Most effort strata still improved over the tabular baseline.
+  - Largest micro-AUPRC gains were in block 17 (+0.0227), 3+ observers
+    (+0.0171), long-distance checklists (+0.0159), 2 observers (+0.0132),
+    2-5 km traveling effort (+0.0130), and long-duration checklists.
+  - Block 79 improved in aggregate under this stress split (+0.0097
+    micro-AUPRC, +0.0077 macro-AUPRC), unlike the primary 10x10 split where it
+    was the main weak block.
+  - Block 65 remained positive (+0.0093 micro-AUPRC).
+  - Block 48 was the only block-level loss (-0.0078 micro-AUPRC,
+    -0.0028 macro-AUPRC).
+- Block/species comparison:
+  - Mean block AUPRC deltas:
+    - block 17: +0.0199, 73 species gained and 27 lost
+    - block 79: +0.0079, 59 species gained and 38 lost
+    - block 65: +0.0063, 62 species gained and 33 lost
+    - block 48: -0.0028, 45 species gained and 54 lost
+  - The largest gains included Pied-billed Grebe in block 17, Brown-headed
+    Nuthatch in block 79, Black-and-white Warbler in block 65, Green Heron in
+    block 48, and several water/edge-associated species in block 17.
+  - The largest losses were species/block specific, especially House Finch in
+    block 79 (-0.2393 AUPRC), Red-headed Woodpecker in block 65 (-0.1019),
+    House Sparrow in block 79 (-0.0963), and several block-48 species.
+- Interpretation:
+  - The original block-79 weakness does not generalize cleanly to every
+    coastal-stress split. With additional coastal blocks held out, block 79
+    improves in aggregate.
+  - This points away from a simple "coastal species fail" diagnosis and toward
+    split-specific transfer behavior: some species/block combinations remain
+    brittle, but the framework is not uniformly worse in coastal regimes.
+  - Next step: diagnose block 48 directly and compare the coastal-stress split
+    against the primary split at the species level. The goal is to distinguish
+    framework limitations from single-split artifacts before changing model
+    architecture again.
+- Regime/support diagnostic:
+  - Held-out blocks 48, 79, and 17 are all coastal-dominated:
+    - block 48: coastal rate 0.9999, near-water rate 0.4053
+    - block 79: coastal rate 1.0000, near-water rate 0.7611
+    - block 17: coastal rate 0.9734, near-water rate 0.6423
+  - Block 65 is inland and low near-water:
+    - block 65: coastal rate 0.0000, near-water rate 0.0331
+  - Nearest-train ecological distances for coastal held-out blocks were similar
+    enough that block 48 does not look uniquely unsupported on ecology alone:
+    - block 48: 0.4524
+    - block 79: 0.4426
+    - block 17: 0.4268
+    - block 65: 0.3425
+  - Block 79 had much higher nearest-train access distance (1.0318) than block
+    48 (0.4421) or block 17 (0.4715), but block 79 still improved in aggregate.
+    This reinforces that access support alone is not explaining the remaining
+    block/species failures.
+- Residual-map summary:
+  - For the mapped focus species, access-channel probability deltas were small
+    relative to the full spatial residual deltas.
+  - Several species were shifted downward overall, including Red-headed
+    Woodpecker, House Sparrow, American Redstart, Green Heron, Pied-billed
+    Grebe, Belted Kingfisher, and Mallard.
+  - House Finch and Brown-headed Nuthatch had positive full probability deltas
+    on average, even though House Finch remains a major block-79 ranking loss.
+  - This suggests the remaining failures are mostly species-specific spatial
+    ranking issues rather than simple global over/under-calibration or a
+    dominant access-bias error.
+- Matched coastal-stress tabular comparison:
+  - A matching MLP tabular baseline was run with the same fixed held-out blocks
+    `17 48 65 79`, so the graph-vs-tabular comparison is now on the same
+    split.
+  - Matched tabular MLP:
+    - macro AUROC: 0.8346
+    - macro AUPRC: 0.3966
+    - micro AUROC: 0.8834
+    - micro AUPRC: 0.5676
+    - ECE: 0.0021
+  - Frozen-access spatial GNN on the same split:
+    - macro AUROC: 0.8399
+    - macro AUPRC: 0.4092
+    - micro AUROC: 0.8868
+    - micro AUPRC: 0.5767
+    - ECE: 0.0012
+  - Interpretation:
+    - The spatial GNN is only modestly better in aggregate, but the gain is
+      consistent across AUROC, AUPRC, and calibration.
+    - Because the comparison uses all held-out checklist/species pairs for both
+      models, the AUPRC differences are comparable.
+  - Largest species-level graph gains over tabular included:
+    - Double-crested Cormorant: +0.1225 AUPRC
+    - Black-and-white Warbler: +0.0987 AUPRC
+    - Ring-billed Gull: +0.0606 AUPRC
+    - Bald Eagle: +0.0568 AUPRC
+    - Yellow-throated Warbler: +0.0546 AUPRC
+    - Belted Kingfisher: +0.0452 AUPRC
+    - Osprey: +0.0437 AUPRC
+  - Largest species-level graph losses versus tabular included:
+    - Red-headed Woodpecker: -0.0621 AUPRC
+    - European Starling: -0.0222 AUPRC
+    - Green Heron: -0.0197 AUPRC
+    - Northern Rough-winged Swallow: -0.0180 AUPRC
+    - Dark-eyed Junco: -0.0089 AUPRC
+  - Current reading:
+    - The GNN is adding useful spatial/species structure, especially for some
+      coastal, aquatic, and warbler species.
+    - The persistent losses are a smaller set of species where the spatial
+      residual appears to hurt ranking despite generally good calibration.
+    - This argues for species-level stability diagnostics and residual
+      regularization/inspection before adding more architecture.
+- Species-stability diagnostic:
+  - Use `exp/compare_ebird_species_stability.py` to compare graph-minus-tabular
+    species deltas across the primary 10x10 split and the coastal-stress split.
+  - This labels species as consistently helped, consistently hurt, or
+    split-sensitive, using a default absolute delta threshold of 0.005 AUPRC.
+  - Command:
+
+```
+python exp/compare_ebird_species_stability.py --primary data/ebird/graph_top100_spatial_10x10/spatial_gnn_baselines/residual_primary_graph_vs_tabular_species.csv --comparison data/ebird/graph_top100_spatial_10x10_coastalstress/spatial_gnn_baselines/spatial_gcn_frozen_access_h64_l2_z64_graph_vs_tabular_species.csv --primary-label primary --comparison-label coastalstress --metric auprc --threshold 0.005 --output data/ebird/graph_top100_spatial_10x10_coastalstress/spatial_gnn_baselines/diagnostics/species_stability/primary_vs_coastalstress_species_stability.csv
+```
+
+Species-stability result:
+
+- Joined 100 species across the primary and coastal-stress graph-vs-tabular
+  comparisons.
+- Mean graph-minus-tabular AUPRC:
+  - primary split: -0.0093
+  - coastal-stress split: +0.0125
+- Median graph-minus-tabular AUPRC:
+  - primary split: -0.0096
+  - coastal-stress split: +0.0096
+- Stability classes:
+  - consistently helped: 26 species
+  - consistently hurt: 8 species
+  - primary hurt, coastal-stress helped: 29 species
+  - primary helped, coastal-stress hurt: 3 species
+  - primary-only helped: 6 species
+  - primary-only hurt: 22 species
+  - comparison-only helped: 4 species
+  - neutral/small: 2 species
+- Consistently helped examples:
+  - Black-and-white Warbler: +0.0981 primary, +0.0987 coastal-stress
+  - Northern Mockingbird: +0.0856 primary, +0.0341 coastal-stress
+  - Hooded Warbler: +0.0311 primary, +0.0313 coastal-stress
+  - American Robin: +0.0711 primary, +0.0235 coastal-stress
+  - Eastern Towhee: +0.0776 primary, +0.0230 coastal-stress
+  - Great Egret, Indigo Bunting, Pine Warbler, Brown-headed Nuthatch, Blue
+    Grosbeak, Osprey, and Boat-tailed Grackle were also consistently helped.
+- Consistently hurt examples:
+  - Red-headed Woodpecker: -0.1489 primary, -0.0621 coastal-stress
+  - Northern Rough-winged Swallow: -0.0387 primary, -0.0180 coastal-stress
+  - Green Heron: -0.0116 primary, -0.0197 coastal-stress
+  - Dark-eyed Junco: -0.0108 primary, -0.0089 coastal-stress
+  - Scarlet Tanager, Swamp Sparrow, Hairy Woodpecker, and Common Grackle were
+    also consistently hurt.
+- Split-sensitive species:
+  - Several coastal/water species flipped from primary losses to coastal-stress
+    gains: Double-crested Cormorant, Bufflehead, Pied-billed Grebe,
+    Ring-billed Gull, Brown Pelican, Hooded Merganser, Belted Kingfisher, Bald
+    Eagle, and Great Blue Heron.
+  - European Starling flipped the other way: primary helped, coastal-stress
+    hurt.
+- Current interpretation:
+  - The framework is not merely failing on coastal or water species; many of
+    those species are helped under the coastal-stress split.
+  - The primary split was likely too dependent on one difficult coastal holdout
+    and understated graph value for several coastal/water species.
+  - The most useful next model-development target is the consistently hurt
+    group, especially Red-headed Woodpecker. Those species may indicate where
+    the spatial residual over-regularizes, borrows misleading neighbor signal,
+    or fails to preserve local ecological specificity.
+  - Before adding more architecture, use the stability classes to drive focused
+    residual maps and species-specific diagnostics.
+- Consistently hurt species residual maps:
+  - Focus species: Red-headed Woodpecker, Northern Rough-winged Swallow, Green
+    Heron, Dark-eyed Junco, Scarlet Tanager, Swamp Sparrow, Hairy Woodpecker,
+    and Common Grackle.
+  - Access-channel deltas were small for all focus species, so these losses do
+    not look like access-bias domination.
+  - Several consistently hurt species had strong negative full spatial deltas:
+    - Red-headed Woodpecker: mean delta -0.0331, positive mean delta -0.0697
+    - Green Heron: mean delta -0.0216, positive mean delta -0.0638
+    - Scarlet Tanager: mean delta -0.0263, positive mean delta -0.1326
+    - Hairy Woodpecker: mean delta -0.0384, positive mean delta -0.0750
+  - Northern Rough-winged Swallow also shifted downward, but less strongly:
+    mean delta -0.0109, positive mean delta -0.0211.
+  - Dark-eyed Junco and Common Grackle were different:
+    - Dark-eyed Junco had a negative mean delta overall but a positive mean
+      delta on positives, suggesting ranking degradation may come from the
+      relative treatment of negatives rather than blanket suppression.
+    - Common Grackle had a positive mean full delta and positive mean delta on
+      positives, suggesting its AUPRC loss is likely a ranking/spread issue
+      rather than underprediction.
+  - Current interpretation:
+    - The main recurring failure mode is not the access component. It is the
+      species-specific spatial residual suppressing positives too much for some
+      species, especially forest/edge or locally structured species.
+    - The next diagnostic should separate residual behavior by block for these
+      species, because the all-heldout summary can hide whether one block is
+      driving the species-level loss.
+- Block-specific residual diagnostic:
+  - `exp/diagnose_ebird_species_block_residuals.py` summarizes the GNN's own
+    residual correction by held-out block and species.
+  - It reports base and full probabilities, full-minus-base deltas, access
+    deltas when available, AUROC/AUPRC changes, and calibration-error changes.
+  - Note: the first implementation recomputed block IDs using only the test
+    subset extent, which produced invalid block IDs for the coastal-stress
+    split. The script now assigns blocks from the full graph extent, matching
+    the split definition. Discard earlier output with block IDs outside
+    `17, 48, 65, 79` for this graph.
+  - Command:
+
+```
+python exp/diagnose_ebird_species_block_residuals.py --graph-dir data/ebird/graph_top100_spatial_10x10_coastalstress --run-name spatial_gcn_frozen_access_h64_l2_z64 --species "Red-headed Woodpecker" "Northern Rough-winged Swallow" "Green Heron" "Dark-eyed Junco" "Scarlet Tanager" "Swamp Sparrow" "Hairy Woodpecker" "Common Grackle"
+```
+  - Corrected result:
+    - The valid held-out blocks were `17`, `48`, `65`, and `79`.
+    - The largest full-vs-base AUPRC loss was Red-headed Woodpecker in block
+      65: -0.0490 AUPRC, with positive mean delta -0.0449.
+    - Green Heron losses were concentrated in blocks 17 and 65:
+      - block 17: -0.0211 AUPRC, positive mean delta -0.0932
+      - block 65: -0.0108 AUPRC, positive mean delta -0.0471
+    - Red-headed Woodpecker also showed strong positive suppression in blocks
+      17, 48, and 79, but those blocks did not all translate into AUPRC losses:
+      - block 17: positive mean delta -0.1504, AUPRC +0.0123
+      - block 48: positive mean delta -0.1021, AUPRC -0.0131
+      - block 79: positive mean delta -0.1412, AUPRC +0.0334
+    - Scarlet Tanager had severe positive suppression in blocks 17 and 65, but
+      block 65 still gained AUPRC:
+      - block 17: positive mean delta -0.1178, AUPRC -0.0072
+      - block 65: positive mean delta -0.1338, AUPRC +0.0118
+    - Hairy Woodpecker losses were small and concentrated in blocks 65, 79, and
+      48.
+    - Dark-eyed Junco, Northern Rough-winged Swallow, Green Heron, and Common
+      Grackle all show cases where calibration improves or mean probabilities
+      move in a plausible direction but ranking can still worsen.
+  - Current interpretation:
+    - Positive suppression alone is not sufficient to explain AUPRC loss. Some
+      blocks show strong downward residual shifts on positives but improved
+      AUPRC, meaning the residual may also be suppressing negatives enough to
+      improve ranking.
+    - The more actionable failure mode is block/species ranking distortion:
+      Red-headed Woodpecker in block 65 and Green Heron in blocks 17/65 are the
+      clearest examples where the residual hurts ranking and suppresses
+      positives.
+    - This argues for residual regularization or gating that is species- and
+      support-aware, rather than simply shrinking all spatial residuals.
+    - A useful next model change would be to penalize residuals more strongly
+      where local species support is weak, or to add a species-specific residual
+      gate that can learn to trust the base tabular path for sensitive species.
+
 ## Training Objective Options
 
 For graph link prediction:

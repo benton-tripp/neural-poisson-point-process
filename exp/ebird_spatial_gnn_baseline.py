@@ -353,6 +353,8 @@ def default_component_feature_indices(feature_names: list[str]) -> tuple[list[in
         "nc_usgs30m_match_tcc",
         "distance_to_waterbody_m",
         "distance_to_coastline_m",
+        "is_coastal_25km",
+        "is_near_water_2p5km",
     }
     bias_names = {
         "x",
@@ -363,6 +365,11 @@ def default_component_feature_indices(feature_names: list[str]) -> tuple[list[in
         "effort_distance_log1p",
         "number_observers_log1p",
         "is_traveling",
+        "coastal_x_traveling",
+        "coastal_x_duration_log1p",
+        "coastal_x_effort_distance_log1p",
+        "near_water_x_traveling",
+        "near_water_x_duration_log1p",
     }
     ecology = [idx for idx, name in enumerate(feature_names) if name in ecology_names]
     bias = [idx for idx, name in enumerate(feature_names) if name in bias_names]
@@ -663,6 +670,8 @@ def cell_channel_feature_indices(feature_names: list[str]) -> tuple[list[int], l
         "nc_usgs30m_match_tcc",
         "distance_to_waterbody_m",
         "distance_to_coastline_m",
+        "is_coastal_25km",
+        "is_near_water_2p5km",
     }
     access_names = {
         "day_of_week_sin",
@@ -671,6 +680,11 @@ def cell_channel_feature_indices(feature_names: list[str]) -> tuple[list[int], l
         "effort_distance_log1p",
         "number_observers_log1p",
         "is_traveling",
+        "coastal_x_traveling",
+        "coastal_x_duration_log1p",
+        "coastal_x_effort_distance_log1p",
+        "near_water_x_traveling",
+        "near_water_x_duration_log1p",
     }
     ecology_indices = [
         feature_offset + idx

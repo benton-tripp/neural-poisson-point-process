@@ -9,6 +9,7 @@ Run from the project root after running effort, ecology, and both baselines:
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -66,6 +67,46 @@ def model_file_suffix(model: str) -> str:
     return "" if model == "linear" else f"_{model}"
 
 
+def metrics_path(
+    baseline_dir: Path,
+    top_species: int,
+    feature_set: str,
+    split: str,
+    model: str,
+) -> Path:
+    return (
+        baseline_dir
+        / f"top{top_species}_{feature_set}{model_file_suffix(model)}{split_suffix(split)}_metrics.csv"
+    )
+
+
+def summary_path(
+    baseline_dir: Path,
+    top_species: int,
+    feature_set: str,
+    split: str,
+    model: str,
+) -> Path:
+    return (
+        baseline_dir
+        / f"top{top_species}_{feature_set}{model_file_suffix(model)}{split_suffix(split)}_summary.json"
+    )
+
+
+def split_signature(path: Path) -> tuple | None:
+    if not path.exists():
+        return None
+    summary = json.loads(path.read_text(encoding="utf-8"))
+    split = summary.get("split", {})
+    return (
+        split.get("split"),
+        split.get("spatial_blocks_per_dim"),
+        tuple(split.get("test_blocks_ids", [])),
+        split.get("test_fraction_actual"),
+        split.get("mean_absolute_standardized_balance_error"),
+    )
+
+
 def read_model_metrics(
     baseline_dir: Path,
     top_species: int,
@@ -73,10 +114,7 @@ def read_model_metrics(
     split: str,
     model: str,
 ) -> pd.DataFrame:
-    path = (
-        baseline_dir
-        / f"top{top_species}_{feature_set}{model_file_suffix(model)}{split_suffix(split)}_metrics.csv"
-    )
+    path = metrics_path(baseline_dir, top_species, feature_set, split, model)
     if not path.exists():
         raise FileNotFoundError(f"Missing baseline metrics file: {path}")
     frame = pd.read_csv(path)
@@ -95,6 +133,8 @@ def read_model_metrics(
     frame = frame[keep]
     return frame.rename(
         columns={
+            "test_prevalence": f"{feature_set}_test_prevalence",
+            "test_detections": f"{feature_set}_test_detections",
             "auroc": f"{feature_set}_auroc",
             "auprc": f"{feature_set}_auprc",
         }
@@ -104,30 +144,82 @@ def read_model_metrics(
 def main() -> None:
     args = parse_args()
     baseline_dir = Path(args.baseline_dir)
-    comparison = read_model_metrics(
-        baseline_dir, args.top_species, "effort", args.split, args.model
-    )
-    for feature_set in ["ecology", "both"]:
-        comparison = comparison.merge(
-            read_model_metrics(
+    candidate_feature_sets = ["effort", "ecology", "both", "both-regime"]
+    signatures = {
+        feature_set: split_signature(
+            summary_path(
                 baseline_dir, args.top_species, feature_set, args.split, args.model
-            ),
-            on=["species_key", "common_name", "test_prevalence", "test_detections"],
-            how="inner",
+            )
         )
+        for feature_set in candidate_feature_sets
+    }
+    reference_feature = "both" if signatures.get("both") is not None else None
+    if reference_feature is None:
+        reference_feature = next(
+            (name for name in candidate_feature_sets if signatures.get(name) is not None),
+            None,
+        )
+    if reference_feature is None:
+        raise FileNotFoundError("No matching summary JSON files were found.")
+    reference_signature = signatures[reference_feature]
+
+    comparison = None
+    loaded_feature_sets = []
+    skipped = []
+    for feature_set in candidate_feature_sets:
+        signature = signatures.get(feature_set)
+        if signature is None:
+            if feature_set == "both-regime":
+                continue
+            raise FileNotFoundError(
+                f"Missing baseline summary file for feature set: {feature_set}"
+            )
+        if signature != reference_signature:
+            skipped.append(feature_set)
+            continue
+        try:
+            feature_metrics = read_model_metrics(
+                baseline_dir, args.top_species, feature_set, args.split, args.model
+            )
+        except FileNotFoundError:
+            if feature_set == "both-regime":
+                continue
+            raise
+        if comparison is None:
+            comparison = feature_metrics
+        else:
+            comparison = comparison.merge(
+                feature_metrics,
+                on=["species_key", "common_name"],
+                how="inner",
+            )
+        loaded_feature_sets.append(feature_set)
+    if comparison is None or len(loaded_feature_sets) < 2:
+        raise ValueError("Need at least two compatible feature sets to compare.")
 
     for metric in ["auroc", "auprc"]:
-        comparison[f"both_minus_effort_{metric}"] = (
-            comparison[f"both_{metric}"] - comparison[f"effort_{metric}"]
-        )
-        comparison[f"both_minus_ecology_{metric}"] = (
-            comparison[f"both_{metric}"] - comparison[f"ecology_{metric}"]
-        )
-        comparison[f"effort_minus_ecology_{metric}"] = (
-            comparison[f"effort_{metric}"] - comparison[f"ecology_{metric}"]
-        )
+        if {"both", "effort"}.issubset(loaded_feature_sets):
+            comparison[f"both_minus_effort_{metric}"] = (
+                comparison[f"both_{metric}"] - comparison[f"effort_{metric}"]
+            )
+        if {"both", "ecology"}.issubset(loaded_feature_sets):
+            comparison[f"both_minus_ecology_{metric}"] = (
+                comparison[f"both_{metric}"] - comparison[f"ecology_{metric}"]
+            )
+        if {"effort", "ecology"}.issubset(loaded_feature_sets):
+            comparison[f"effort_minus_ecology_{metric}"] = (
+                comparison[f"effort_{metric}"] - comparison[f"ecology_{metric}"]
+            )
+        if "both-regime" in loaded_feature_sets:
+            comparison[f"both-regime_minus_both_{metric}"] = (
+                comparison[f"both-regime_{metric}"] - comparison[f"both_{metric}"]
+            )
 
-    sort_column = f"both_minus_effort_{args.metric}"
+    sort_column = (
+        f"both-regime_minus_both_{args.metric}"
+        if "both-regime" in loaded_feature_sets
+        else f"both_minus_effort_{args.metric}"
+    )
     comparison = comparison.sort_values(sort_column, ascending=False)
 
     output = (
@@ -140,14 +232,30 @@ def main() -> None:
 
     display_columns = [
         "common_name",
-        "test_prevalence",
-        "test_detections",
-        "effort_auprc",
-        "ecology_auprc",
-        "both_auprc",
+    ]
+    prevalence_source = "both" if "both" in loaded_feature_sets else loaded_feature_sets[0]
+    display_columns.extend(
+        [
+            f"{prevalence_source}_test_prevalence",
+            f"{prevalence_source}_test_detections",
+        ]
+    )
+    for feature_set in loaded_feature_sets:
+        display_columns.append(f"{feature_set}_auprc")
+    for column in [
         "both_minus_effort_auprc",
         "both_minus_ecology_auprc",
-    ]
+        "both-regime_minus_both_auprc",
+    ]:
+        if column in comparison.columns:
+            display_columns.append(column)
+    if "both-regime" in loaded_feature_sets:
+        pass
+    if skipped:
+        print(
+            "Skipped incompatible split configuration for feature set(s): "
+            + ", ".join(skipped)
+        )
     print(comparison[display_columns].to_string(index=False, float_format="%.4f"))
     print(f"\nWrote {output}")
 

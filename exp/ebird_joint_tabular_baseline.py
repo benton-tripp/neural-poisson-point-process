@@ -30,6 +30,8 @@ ECOLOGY_COLUMNS = [
     "distance_to_waterbody_m",
     "distance_to_coastline_m",
 ]
+COASTAL_DISTANCE_THRESHOLD_M = 25_000.0
+NEAR_WATER_DISTANCE_THRESHOLD_M = 2_500.0
 
 
 def parse_args() -> argparse.Namespace:
@@ -54,7 +56,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--feature-set",
-        choices=["effort", "ecology", "both"],
+        choices=["effort", "ecology", "both", "both-regime"],
         default="both",
         help="Checklist features used by the model. Defaults to both.",
     )
@@ -99,6 +101,14 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=SEED,
         help="Random seed used to break ties in spatial split selection. Defaults to 19.",
+    )
+    parser.add_argument(
+        "--test-block-ids",
+        default=None,
+        help=(
+            "Optional space/comma-separated spatial block ids to hold out for "
+            "spatial-stratified validation. Overrides greedy block selection."
+        ),
     )
     parser.add_argument(
         "--epochs",
@@ -248,14 +258,14 @@ def build_features(checklists: gpd.GeoDataFrame, feature_set: str) -> pd.DataFra
         axis=1,
     )
 
-    if feature_set in {"effort", "both"}:
+    if feature_set in {"effort", "both", "both-regime"}:
         effort_distance = checklists["effort_distance_km"].fillna(0.0)
         features["duration_log1p"] = np.log1p(checklists["duration_minutes"])
         features["effort_distance_log1p"] = np.log1p(effort_distance)
         features["number_observers_log1p"] = np.log1p(checklists["number_observers"])
         features["is_traveling"] = (checklists["protocol_code"] == "P22").astype(float)
 
-    if feature_set in {"ecology", "both"}:
+    if feature_set in {"ecology", "both", "both-regime"}:
         missing = [col for col in ECOLOGY_COLUMNS if col not in checklists.columns]
         if missing:
             raise ValueError(f"Missing ecology columns: {', '.join(missing)}")
@@ -264,6 +274,30 @@ def build_features(checklists: gpd.GeoDataFrame, feature_set: str) -> pd.DataFra
             if col.startswith("distance_to_"):
                 values = np.log1p(values)
             features[col] = values
+
+    if feature_set == "both-regime":
+        missing = [
+            col
+            for col in ["distance_to_coastline_m", "distance_to_waterbody_m"]
+            if col not in checklists.columns
+        ]
+        if missing:
+            raise ValueError(f"Missing regime columns: {', '.join(missing)}")
+        coastline = checklists["distance_to_coastline_m"].astype(float)
+        waterbody = checklists["distance_to_waterbody_m"].astype(float)
+        coastal = (coastline <= COASTAL_DISTANCE_THRESHOLD_M).astype(float)
+        near_water = (waterbody <= NEAR_WATER_DISTANCE_THRESHOLD_M).astype(float)
+        duration = features["duration_log1p"]
+        effort_distance = features["effort_distance_log1p"]
+        is_traveling = features["is_traveling"]
+
+        features["is_coastal_25km"] = coastal
+        features["is_near_water_2p5km"] = near_water
+        features["coastal_x_traveling"] = coastal * is_traveling
+        features["coastal_x_duration_log1p"] = coastal * duration
+        features["coastal_x_effort_distance_log1p"] = coastal * effort_distance
+        features["near_water_x_traveling"] = near_water * is_traveling
+        features["near_water_x_duration_log1p"] = near_water * duration
 
     return features.astype(np.float32)
 
@@ -393,6 +427,53 @@ def select_spatial_test_blocks(
     return test_mask, balance
 
 
+def parse_test_block_ids(value: str | None) -> list[int] | None:
+    if value is None:
+        return None
+    ids = [
+        int(part)
+        for part in value.replace(",", " ").split()
+        if part.strip()
+    ]
+    if not ids:
+        return None
+    return sorted(set(ids))
+
+
+def evaluate_fixed_spatial_test_blocks(
+    block_ids: np.ndarray,
+    stratify_values: pd.DataFrame,
+    selected_blocks: list[int],
+) -> tuple[np.ndarray, dict]:
+    unique_blocks = set(int(block) for block in np.unique(block_ids))
+    missing = [block for block in selected_blocks if block not in unique_blocks]
+    if missing:
+        raise ValueError(
+            "Requested --test-block-ids are not populated blocks: "
+            + ", ".join(str(block) for block in missing)
+        )
+    test_mask = np.isin(block_ids, np.array(selected_blocks, dtype=np.int64))
+    if test_mask.all() or not test_mask.any():
+        raise ValueError("--test-block-ids did not create both train and test rows.")
+
+    values = stratify_values.to_numpy(dtype=np.float64)
+    target_mean = values.mean(axis=0)
+    selected_mean = values[test_mask].mean(axis=0)
+    row_std = values.std(axis=0)
+    row_std[row_std == 0.0] = 1.0
+    balance = {
+        "blocks_total": int(len(unique_blocks)),
+        "test_blocks": int(len(selected_blocks)),
+        "test_fraction_actual": float(test_mask.mean()),
+        "test_blocks_ids": [int(block) for block in selected_blocks],
+        "mean_absolute_standardized_balance_error": float(
+            np.mean(np.abs((selected_mean - target_mean) / row_std))
+        ),
+        "fixed_test_block_ids": True,
+    }
+    return test_mask, balance
+
+
 def make_split(
     checklists: gpd.GeoDataFrame,
     labels: np.ndarray,
@@ -411,12 +492,20 @@ def make_split(
             species,
             args.stratify_species_count,
         )
-        test_mask, balance = select_spatial_test_blocks(
-            block_ids,
-            stratify_values,
-            args.test_fraction,
-            args.split_seed,
-        )
+        fixed_blocks = parse_test_block_ids(getattr(args, "test_block_ids", None))
+        if fixed_blocks is None:
+            test_mask, balance = select_spatial_test_blocks(
+                block_ids,
+                stratify_values,
+                args.test_fraction,
+                args.split_seed,
+            )
+        else:
+            test_mask, balance = evaluate_fixed_spatial_test_blocks(
+                block_ids,
+                stratify_values,
+                fixed_blocks,
+            )
         train_mask = ~test_mask
         split_info = {
             "split": "spatial-stratified",

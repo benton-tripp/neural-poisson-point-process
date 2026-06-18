@@ -9,6 +9,7 @@ Run from the project root after baseline runs have produced *_calibration.csv:
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -60,6 +61,33 @@ def model_file_suffix(model: str) -> str:
     return "" if model == "linear" else f"_{model}"
 
 
+def summary_path(
+    baseline_dir: Path,
+    top_species: int,
+    feature_set: str,
+    split: str,
+    model: str,
+) -> Path:
+    return (
+        baseline_dir
+        / f"top{top_species}_{feature_set}{model_file_suffix(model)}{split_suffix(split)}_summary.json"
+    )
+
+
+def split_signature(path: Path) -> tuple | None:
+    if not path.exists():
+        return None
+    summary = json.loads(path.read_text(encoding="utf-8"))
+    split = summary.get("split", {})
+    return (
+        split.get("split"),
+        split.get("spatial_blocks_per_dim"),
+        tuple(split.get("test_blocks_ids", [])),
+        split.get("test_fraction_actual"),
+        split.get("mean_absolute_standardized_balance_error"),
+    )
+
+
 def read_calibration(
     baseline_dir: Path,
     top_species: int,
@@ -85,15 +113,51 @@ def read_calibration(
 def main() -> None:
     args = parse_args()
     baseline_dir = Path(args.baseline_dir)
-    calibration = pd.concat(
-        [
-            read_calibration(
+    candidate_feature_sets = ["effort", "ecology", "both", "both-regime"]
+    signatures = {
+        feature_set: split_signature(
+            summary_path(
                 baseline_dir, args.top_species, feature_set, args.split, args.model
             )
-            for feature_set in ["effort", "ecology", "both"]
-        ],
-        ignore_index=True,
-    )
+        )
+        for feature_set in candidate_feature_sets
+    }
+    reference_feature = "both" if signatures.get("both") is not None else None
+    if reference_feature is None:
+        reference_feature = next(
+            (name for name in candidate_feature_sets if signatures.get(name) is not None),
+            None,
+        )
+    if reference_feature is None:
+        raise FileNotFoundError("No matching summary JSON files were found.")
+    reference_signature = signatures[reference_feature]
+
+    frames = []
+    skipped = []
+    for feature_set in candidate_feature_sets:
+        signature = signatures.get(feature_set)
+        if signature is None:
+            if feature_set == "both-regime":
+                continue
+            raise FileNotFoundError(
+                f"Missing baseline summary file for feature set: {feature_set}"
+            )
+        if signature != reference_signature:
+            skipped.append(feature_set)
+            continue
+        try:
+            frames.append(
+                read_calibration(
+                    baseline_dir, args.top_species, feature_set, args.split, args.model
+                )
+            )
+        except FileNotFoundError:
+            if feature_set == "both-regime":
+                continue
+            raise
+    if len(frames) < 2:
+        raise ValueError("Need at least two compatible calibration files to compare.")
+    calibration = pd.concat(frames, ignore_index=True)
 
     output = (
         Path(args.output)
@@ -123,6 +187,11 @@ def main() -> None:
         "observed_rate",
         "calibration_error",
     ]
+    if skipped:
+        print(
+            "Skipped incompatible split configuration for feature set(s): "
+            + ", ".join(skipped)
+        )
     print("\nLargest effort-stratum calibration errors:")
     print(effort[display_cols].head(15).to_string(index=False, float_format="%.4f"))
 
