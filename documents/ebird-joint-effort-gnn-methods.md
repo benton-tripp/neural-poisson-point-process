@@ -17,6 +17,67 @@ data, the current eBird workflow uses complete checklists, so unreported modeled
 species on retained checklists are treated as observed non-detections under an
 explicit observation/effort process rather than as arbitrary pseudo-absences.
 
+## Current Analysis Checkpoint
+
+This document is both the methods plan and the analysis ledger. Older sections
+are intentionally retained as a timeline of what was tested, including negative
+results. The current working interpretation is:
+
+- Complete-checklist eBird is not pure presence-only data. The retained data
+  contain checklist-level detections and informative non-detections under an
+  observation process.
+- Checklist-level tabular and graph models remain useful for modeling
+  detection/reporting, but they do not by themselves fully separate biological
+  availability from observer effort.
+- The strongest repeated checklist-level result is that a portable
+  ecological/temporal/effort detector explains most of the signal. Spatial GNN
+  residuals add modest, sometimes useful improvement, but architecture variants
+  alone have mostly moved metrics within a narrow band.
+- The current preferred checklist-level GNN benchmark is
+  `spatial_gcn_frozen_access_h64_l2_z64`. It is a benchmark residual framework,
+  not the final scientific model.
+- Support-gate variants are documented as negative or mixed results. A
+  cell-density gate improved pooled calibration slightly but reduced ranking;
+  the species-cell gate broadly degraded ranking and calibration. These results
+  argue against naive support-based suppression as the main path.
+- The methodological pivot is to use repeated complete checklists at the same
+  localities through biological seasons. This locality-season view is the
+  in-dataset route toward separating ecological availability/occupancy from
+  checklist-level detection.
+- The active next track is therefore:
+  `locality-season availability component + checklist detection component`.
+  The current binomial locality-season baseline is a bridge toward that target,
+  not a full latent occupancy model yet.
+
+Current tested-method timeline:
+
+1. Bulk eBird preprocessing with complete-checklist detections, inferred
+   modeled-species non-detections, covariate sampling, NC boundary/raster
+   alignment, and stationary-distance handling.
+2. Tabular baselines: prevalence, effort-only, ecology-only, combined, and MLP
+   variants with spatial-stratified validation and calibration diagnostics.
+3. Graph-ready species/checklist datasets and sampled-edge link baselines.
+4. All-species checklist-batch bridge models, including stronger hybrid
+   species-embedding models and RBF spatial residuals.
+5. Spatial-cell GNNs with residual/separated-channel variants, access encoders,
+   environmental-neighbor edges, species co-detection graphs, effort/access
+   bias components, and support-aware gates.
+6. Cross-regime validation across primary 10x10, coastal-stress, and
+   regime-feature splits; the frozen-access residual GNN is modestly but
+   consistently above matching tabular baselines, while gains remain small.
+7. Locality-season replication dataset and diagnostics, now followed by the
+   first aggregated binomial locality-season baseline.
+
+How to maintain this document going forward:
+
+- Keep raw command/result notes in the relevant timeline section.
+- Add a short interpretation after each result, especially whether it changes
+  the current preferred framework.
+- Mark negative results explicitly rather than deleting them.
+- Keep the top checkpoint current when the strategy changes.
+- Keep the final implementation checklist focused on the active next steps,
+  not every historical step already completed.
+
 ## Glossary
 
 ### Core modeling terms
@@ -83,6 +144,22 @@ explicit observation/effort process rather than as arbitrary pseudo-absences.
   space and time. It reflects observation effort, not species occurrence.
 - **Species-specific detectability**: Variation in how easily different species
   are detected or reported under the same effort conditions.
+- **Locality-season**: A repeated-sampling unit formed by grouping checklists at
+  the same eBird locality within a biological season/year window. It is the
+  current bridge between checklist-level detection modeling and
+  occupancy-style availability modeling.
+- **Biological season-year**: A season label and year chosen to better match
+  bird life-history periods than calendar months alone. In the current
+  `biological-nc` scheme, winter spans December-February and December is
+  assigned to the next winter year.
+- **Availability**: The model's ecological/seasonal estimate that a species is
+  plausibly available to be detected at a locality during a season. It is not
+  identical to confirmed occupancy, but it is closer to the biological process
+  than checklist-level detection.
+- **Adequately sampled locality-season**: A locality-season group with enough
+  repeated and varied effort to be useful for availability/detection
+  separation. The current flag requires at least two dates and at least two
+  duration bins in addition to the minimum checklist count.
 - **Identifiability**: Whether model components can be uniquely separated from
   the data. In eBird data, ecological occurrence, effort, and detectability are
   not fully identifiable without assumptions, so ablations and validation are
@@ -4041,6 +4118,12 @@ Spatial residual result:
 
 ## Current Framework Checkpoint
 
+Historical note: this checkpoint records the state of the checklist-level GNN
+work before the locality-season pivot. It remains useful for tracking tested
+architectures and negative results, but the active modeling direction is now the
+locality-season availability/detection framework described near the end of this
+document and summarized at the top.
+
 The repeated result across the frozen-access spatial GNN, environmental-neighbor
 edges, separated spatial channels, access-density supervision, and raw
 co-detection species GCNs is that aggregate metrics move only modestly while
@@ -4826,6 +4909,447 @@ python exp/diagnose_ebird_species_block_residuals.py --graph-dir data/ebird/grap
 
 ## Training Objective Options
 
+## Support-Aware Residual Gate
+
+Current model-development direction:
+
+- The most generalizable framework remains a portable base detector plus a
+  constrained spatial/species residual GNN:
+  `base ecological/temporal/effort model + support gate * spatial residual`.
+- This is preferable to species-by-species tuning because the decision to trust
+  or dampen the residual is based on general support information, not on
+  hand-selected species or NC-specific failure cases.
+- The first implementation adds `--support-aware-residual cell` to
+  `exp/ebird_spatial_gnn_baseline.py`.
+- The initial support signal is the spatial cell's standardized log count of
+  training checklists. This is deliberately simple and non-leaky: it tells the
+  residual head how well the local training geography is supported without using
+  held-out detections.
+- The gate is initialized permissively with `--support-gate-init-bias 2.0`
+  (roughly 0.88 after the sigmoid), so it should not erase the residual at the
+  start of training. If the model learns that weak-support cells need less
+  residual correction, it can shrink them.
+- This is a framework-level test. If it helps, later versions can expand the
+  gate to include nearest supported training-cell distance, ecology/access
+  regime similarity, and species-level support summaries. Those additions should
+  still be generic and support-based, not tuned to particular species.
+
+First support-aware coastal-stress run:
+
+```
+python exp/ebird_spatial_gnn_baseline.py --graph-dir data/ebird/graph_top100_spatial_10x10_coastalstress --run-name spatial_gcn_support_gate_cell_frozen_access_h64_l2_z64 --gnn-mode residual --component-mode joint --spatial-channel-mode separated --support-aware-residual cell --support-gate-init-bias 2.0 --epochs 10 --batch-size 2048 --hidden-dim 128 --hidden-layers 2 --latent-dim 128 --cell-hidden-dim 64 --cell-layers 1 --dropout 0.10 --weight-decay 0.0001 --spatial-grid-size-m 25000 --species-residual-scale sigmoid --species-residual-scale-init 0.10 --species-residual-scale-l2 0.01 --spatial-access-bias-l2 0.001 --frozen-access-embeddings data/ebird/graph_top100_spatial_10x10_coastalstress/access_encoder/access_gcn_h64_l2_z64_cell_embeddings.npy
+```
+
+Follow-up diagnostics after the run:
+
+```
+python exp/compare_ebird_effort_strata.py --graph-dir data/ebird/graph_top100_spatial_10x10_coastalstress --spatial-run-name spatial_gcn_support_gate_cell_frozen_access_h64_l2_z64
+python exp/diagnose_ebird_species_block_residuals.py --graph-dir data/ebird/graph_top100_spatial_10x10_coastalstress --run-name spatial_gcn_support_gate_cell_frozen_access_h64_l2_z64 --species "Red-headed Woodpecker" "Northern Rough-winged Swallow" "Green Heron" "Dark-eyed Junco" "Scarlet Tanager" "Swamp Sparrow" "Hairy Woodpecker" "Common Grackle"
+```
+
+Initial support-gate result:
+
+- Run name: `spatial_gcn_support_gate_cell_frozen_access_h64_l2_z64`
+- Important caveat: the first submitted command did not include
+  `--frozen-access-embeddings`, so despite the run name it is an unfrozen-access
+  support-gate run and should not be compared directly to the frozen-access
+  coastal-stress baseline.
+- Metrics:
+  - micro AUROC: 0.8862
+  - micro AUPRC: 0.5734
+  - macro AUROC: 0.8397
+  - macro AUPRC: 0.4071
+  - ECE: 0.0008
+  - max bin error: 0.0075
+  - species calibration MAE: 0.0127
+- Interpretation: the support gate improved pooled calibration relative to the
+  earlier frozen-access coastal-stress run, but ranking was lower. Because the
+  access embeddings were not frozen in this run, the next comparison should
+  repeat the same support gate with the frozen access encoder included.
+
+Frozen-access support-gate result:
+
+- Run name: `spatial_gcn_support_gate_cell_frozen_access_h64_l2_z64_v2`
+- This is the apples-to-apples comparison against the prior frozen-access
+  coastal-stress model.
+- Metrics:
+  - micro AUROC: 0.8858
+  - micro AUPRC: 0.5730
+  - macro AUROC: 0.8390
+  - macro AUPRC: 0.4074
+  - ECE: 0.0010
+  - max bin error: 0.0045
+  - species calibration MAE: 0.0128
+- Comparison to prior frozen-access coastal-stress baseline
+  (`spatial_gcn_frozen_access_h64_l2_z64`):
+  - prior micro/macro AUPRC: 0.5767 / 0.4092
+  - support-gated micro/macro AUPRC: 0.5730 / 0.4074
+  - prior ECE/species calibration MAE: 0.0012 / 0.0109
+  - support-gated ECE/species calibration MAE: 0.0010 / 0.0128
+- Interpretation: a cell-density-only support gate is too blunt. It slightly
+  improves pooled calibration, but it gives up ranking and species calibration.
+  Do not make this the main architecture as-is. The useful lesson is that
+  support-aware damping is plausible, but the gate needs richer, more relevant
+  support information than total training-checklist density alone.
+- Next support-aware variants should be framework-level rather than
+  species-specific:
+  - local species support: species-specific positive counts or smoothed
+    prevalence in nearby training cells
+  - regime support: distance to nearest training cell in ecology/access feature
+    space
+  - uncertainty support: stronger damping where base/residual disagreement is
+    high and local training support is weak
+  - monotone prior: preserve the portable base model unless support evidence is
+    strong enough to justify a spatial residual correction
+
+Species-cell support gate implementation:
+
+- Added `--support-aware-residual species-cell` to
+  `exp/ebird_spatial_gnn_baseline.py`.
+- This version uses training-only support features for every spatial
+  cell/species pair:
+  - standardized `log1p` positive detections for that species in that training
+    cell
+  - standardized smoothed local prevalence logit for that species in that
+    training cell
+- The gate parameters are shared across species. This is important for the
+  overall goal: the model can learn a general rule for when species-specific
+  spatial residuals are trustworthy, while each species/cell still supplies its
+  own support evidence.
+- This is more general than the density-only gate because total checklist
+  density measures observer activity, not whether a species' local residual is
+  supported. The species-cell gate can damp a residual for a weakly supported
+  species even in high-effort cells.
+- Diagnostics that reload spatial GNN runs were updated to rebuild these
+  training-only support features.
+
+First species-cell support command:
+
+```
+python exp/ebird_spatial_gnn_baseline.py --graph-dir data/ebird/graph_top100_spatial_10x10_coastalstress --run-name spatial_gcn_support_gate_species_cell_frozen_access_h64_l2_z64 --gnn-mode residual --component-mode joint --spatial-channel-mode separated --support-aware-residual species-cell --support-gate-init-bias 2.0 --epochs 10 --batch-size 2048 --hidden-dim 128 --hidden-layers 2 --latent-dim 128 --cell-hidden-dim 64 --cell-layers 1 --dropout 0.10 --weight-decay 0.0001 --spatial-grid-size-m 25000 --species-residual-scale sigmoid --species-residual-scale-init 0.10 --species-residual-scale-l2 0.01 --spatial-access-bias-l2 0.001 --frozen-access-embeddings data/ebird/graph_top100_spatial_10x10_coastalstress/access_encoder/access_gcn_h64_l2_z64_cell_embeddings.npy
+```
+
+Follow-up diagnostics:
+
+```
+python exp/compare_ebird_effort_strata.py --graph-dir data/ebird/graph_top100_spatial_10x10_coastalstress --spatial-run-name spatial_gcn_support_gate_species_cell_frozen_access_h64_l2_z64
+python exp/diagnose_ebird_species_block_residuals.py --graph-dir data/ebird/graph_top100_spatial_10x10_coastalstress --run-name spatial_gcn_support_gate_species_cell_frozen_access_h64_l2_z64 --species "Red-headed Woodpecker" "Northern Rough-winged Swallow" "Green Heron" "Dark-eyed Junco" "Scarlet Tanager" "Swamp Sparrow" "Hairy Woodpecker" "Common Grackle"
+```
+
+Species-cell support result:
+
+- Run name: `spatial_gcn_support_gate_species_cell_frozen_access_h64_l2_z64`
+- Metrics:
+  - micro AUROC: 0.8718
+  - micro AUPRC: 0.5499
+  - macro AUROC: 0.8177
+  - macro AUPRC: 0.3849
+  - ECE: 0.0117
+  - max bin error: 0.0217
+  - species calibration MAE: 0.0192
+- Comparison to the frozen-access coastal-stress baseline
+  (`spatial_gcn_frozen_access_h64_l2_z64`):
+  - baseline micro/macro AUPRC: 0.5767 / 0.4092
+  - species-cell support micro/macro AUPRC: 0.5499 / 0.3849
+  - baseline ECE/species calibration MAE: 0.0012 / 0.0109
+  - species-cell support ECE/species calibration MAE: 0.0117 / 0.0192
+- Interpretation: this implementation made the residual gating problem worse.
+  The general idea remains aligned with the project goal, but direct gating on
+  raw cell/species positive support appears too restrictive or too confounded
+  with the held-out spatial regime. It likely dampens residual corrections in
+  precisely the transfer cases where the model needs a supported ecological
+  adjustment.
+- Do not promote this run as the current preferred architecture. Use it as a
+  diagnostic negative result. Before adding more architecture complexity, inspect
+  where it fails by effort stratum, spatial block, and species. If the damage is
+  broad, move back to the simpler frozen-access residual model and focus next on
+  better validation splits and transferable covariates rather than more gating.
+
+Species-cell support diagnostics:
+
+- Effort-strata diagnostics show broad degradation rather than a localized
+  failure mode. Even the "largest gains" over the tabular model are negative:
+  - distance `(2,5]`: micro AUPRC delta -0.0077
+  - distance `5+`: micro AUPRC delta -0.0087
+  - duration `121+`: micro AUPRC delta -0.0098
+  - traveling protocol: micro AUPRC delta -0.0137
+  - short stationary/zero-distance strata show larger losses, e.g. stationary
+    protocol -0.0268 and distance `0` -0.0268.
+- Spatial-block losses are also clear:
+  - block 79: micro AUPRC delta -0.0526
+  - block 48: micro AUPRC delta -0.0297
+  - block 65: micro AUPRC delta -0.0122
+  - block 17: micro AUPRC delta -0.0107
+- Species/block diagnostics show the mechanism: the full model often suppresses
+  probabilities far below the portable base model, including on positives.
+  Examples:
+  - Green Heron, block 17: AUPRC -0.0853, mean probability 0.1317 -> 0.0315
+  - Green Heron, block 65: AUPRC -0.0834, mean probability 0.1327 -> 0.0634
+  - Red-headed Woodpecker, block 48: AUPRC -0.0834, mean probability 0.2395 -> 0.0407
+  - Swamp Sparrow, block 65: AUPRC -0.0595, mean probability 0.1294 -> 0.0761
+  - Common Grackle, block 48: AUPRC -0.0483, mean probability 0.3365 -> 0.1402
+- Decision: retire `--support-aware-residual species-cell` as a main modeling
+  path for now. It is useful evidence that naive support gating can improve some
+  calibration errors by suppressing predictions, but it does not support the
+  broader goal because it reduces ranking performance and suppresses held-out
+  positives across multiple effort regimes and blocks.
+- Current preferred architecture returns to the simpler frozen-access residual
+  model:
+  `spatial_gcn_frozen_access_h64_l2_z64`.
+- Next framework work should emphasize:
+  - validation across deliberately different spatial regimes
+  - clearer comparison to the portable tabular baseline
+  - adding transferable covariates or better regime features before adding more
+    residual gates
+  - if gates return later, make them regularizers or priors rather than direct
+    species/cell support suppressors.
+
+Cross-regime validation reset:
+
+- Added `exp/summarize_ebird_split_regime_validation.py` to summarize the
+  preferred spatial-GNN run across existing graph split directories without
+  retraining.
+- Current preferred architecture for this comparison:
+  `spatial_gcn_frozen_access_h64_l2_z64`.
+- Current cross-regime summary:
+  - `primary10x10`: graph micro/macro AUPRC 0.5800 / 0.4151; tabular
+    micro/macro AUPRC 0.5725 / 0.4017; deltas +0.0075 / +0.0134; ECE 0.0056;
+    74 species improve in AUPRC and 26 decline.
+  - `coastalstress`: graph micro/macro AUPRC 0.5767 / 0.4092; tabular
+    micro/macro AUPRC 0.5676 / 0.3966; deltas +0.0092 / +0.0125; ECE 0.0012;
+    78 species improve in AUPRC and 22 decline.
+  - `regime_features`: graph micro/macro AUPRC 0.5762 / 0.4118; both-regime
+    tabular micro/macro AUPRC 0.5739 / 0.4056; deltas +0.0023 / +0.0062; ECE
+    0.0114; 65 species improve in AUPRC and 35 decline.
+- Interpretation: the preferred frozen-access residual model is modestly but
+  consistently above the matching tabular baseline across the available split
+  regimes. The gain is small, which is important: the current evidence supports
+  the GNN residual as a useful add-on, not as a replacement for the portable
+  ecological/temporal/effort detector.
+- The regime-feature case has the smallest gain and worse calibration, so adding
+  coarse regime covariates alone is not clearly better than the simpler `both`
+  feature set.
+- The per-species comparisons now show that graph gains are widespread but not
+  universal. The graph does especially well for some waterbird, open-country,
+  and spatially structured species, but loses for several species where the
+  tabular model already ranks well or where spatial residuals suppress positives.
+
+Strategic interpretation after architecture search:
+
+- The architecture search has likely reached the point of diminishing returns
+  for checklist-level detection prediction. Linear, MLP, link baselines, spatial
+  residuals, species graphs, access encoders, environmental edges, and support
+  gates all land in the same broad performance band.
+- This does not mean the GNN direction failed. It means the current target
+  (`checklist x species` detection prediction on complete checklists) is already
+  mostly captured by the portable tabular detector, and the GNN adds a modest
+  residual improvement.
+- For the overall SDM/bias goal, the next gains probably will not come from
+  another residual architecture tweak. They should come from stronger structure:
+  temporal replication, explicit effort/checklist process modeling, and
+  evaluation targets that reward transfer and ecological plausibility rather
+  than only all-pairs detection ranking.
+
+Revised next direction:
+
+1. Treat `spatial_gcn_frozen_access_h64_l2_z64` as the current benchmark GNN
+   residual framework, not necessarily the final model.
+2. Add a locality-time replication dataset that summarizes repeated complete
+   checklists at the same or nearby localities through time. This is the most
+   general in-dataset source of information for separating occupancy-like
+   persistence from effort/detection variation.
+3. Add explicit transfer diagnostics beyond stratified spatial holdout:
+   mountain -> piedmont/coastal, coastal -> inland, high-effort -> low-effort,
+   and year/season transfer.
+4. Add ecological plausibility diagnostics:
+   species-response curves by canopy/elevation/water/coast distance, phenology
+   curves, and comparison against broad known biology for focus species.
+5. Keep external structured datasets such as BBS or Atlas as optional anchoring
+   data, not a dependency for the core method. They can validate or calibrate
+   the framework later, but the method should first exploit complete-checklist
+   replication because that is broadly available within eBird.
+
+Target distinction for the pivot:
+
+- Do not silently replace checklist detection with occupancy. The two linked
+  targets are:
+  - checklist detection: whether species `j` is reported on checklist `i`, given
+    effort, time, protocol, observer, location, and environment
+  - locality-season availability/occupancy: whether species `j` is plausibly
+    present or available at locality `l` during season/year `s`
+- The preferred next model family is therefore:
+  `availability/occupancy component + checklist detection component`.
+- Conceptually:
+
+```
+z[j, locality, season] = ecological availability / occupancy
+y[j, checklist] ~ detection(z, effort, time, protocol, observer, checklist context)
+```
+
+- The current checklist-level detection models remain useful because they
+  estimate the observation process. The locality-season dataset adds repeated
+  visit structure so that "present but missed" can start to be separated from
+  "not available here/now."
+
+Locality-season replication dataset:
+
+- Added `exp/build_ebird_locality_season_dataset.py`.
+- The script builds two tables:
+  - `locality_seasons.parquet`: one row per locality/season-year group with
+    checklist count, date count, observer count, effort summaries, protocol mix,
+    environmental medians, coordinates, and adequate-sampling flags
+  - `locality_season_species.parquet`: one row per eligible
+    locality-season/species pair with `n_checklists`, `n_detections`,
+    `n_non_detections`, naive detection rate, effort summaries, and species
+    names
+- Default locality filter keeps eBird hotspots (`H`) and personal locations
+  (`P`) and drops vague/nonstandard locality types. This can be relaxed later
+  with `--include-all-locality-types`.
+- Default season scheme is `biological-nc`:
+  - winter: Dec-Feb, with December assigned to the next winter year
+  - spring migration: Mar-Apr
+  - early breeding: May-Jun
+  - late breeding: Jul-Aug
+  - fall migration: Sep-Nov
+- Default triplet eligibility is `--min-checklists 3`; the
+  `adequate_sampling` flag is stricter and also requires at least two unique
+  dates and at least two occupied duration bins.
+- A quick count on the full processed dataset suggested the default
+  hotspot/personal locality filter yields about 206k locality-season groups,
+  about 38.6k with at least three checklists, or roughly 3.86M triplet rows for
+  the top 100 species.
+- Smoke test with 5,000 checklists and top 20 species passed:
+  - 4,998 retained checklists
+  - 3,206 locality-season groups
+  - 305 eligible locality-seasons
+  - 280 adequately sampled locality-seasons
+  - 6,100 locality-season/species rows
+
+Build command:
+
+```
+python exp/build_ebird_locality_season_dataset.py --processed-dir data/ebird/processed_nc_2020_2023 --output-dir data/ebird/locality_season_top100 --top-species 100 --season-scheme biological-nc --min-checklists 3 --min-dates 2 --min-effort-bins 2 --overwrite
+```
+
+Completed full build:
+
+- Retained 661,106 of 661,979 checklists after locality filters.
+- Created 206,364 locality-season groups.
+- Created 38,639 eligible locality-season groups with at least three
+  checklists.
+- Flagged 34,328 locality-season groups as adequately sampled under the
+  stricter date/effort-variation criteria.
+- Created 3,863,900 locality-season/species rows for the top 100 species.
+- 1,208,717 locality-season/species rows have at least one detection.
+
+Immediate uses:
+
+- Quantify how much replication is actually available by species, season, and
+  locality type.
+- Identify locality-seasons with enough varied effort to inform
+  occupancy/detection separation.
+- Build focus-species diagnostics for strong seasonal migrants such as Wood
+  Thrush, plus habitat specialists/generalists used in the spatial-GNN
+  diagnostics.
+- Provide the data foundation for an explicit hierarchical model where
+  locality-season availability is modeled separately from visit-level detection.
+
+Replication-support diagnostics:
+
+- Added `exp/diagnose_ebird_locality_season_replication.py`.
+- Output directory:
+  `data/ebird/locality_season_top100/diagnostics/replication_support`.
+- The diagnostic writes:
+  - `overall_summary.csv`
+  - `season_summary.csv`
+  - `species_replication_summary.csv`
+  - `species_season_summary.csv`
+  - `effort_support_summary.csv`
+  - `focus_species_season_summary.csv`
+- Overall support:
+  - 206,364 locality-season groups
+  - 38,639 eligible locality-season groups
+  - 34,328 adequately sampled locality-season groups
+  - 3,863,900 locality-season/species rows
+  - 1,208,717 positive locality-season/species rows
+  - 1,119,416 positive rows are in adequately sampled locality-seasons
+- Seasonal support is broad:
+  - winter: 10,014 eligible locality-seasons; 271,511 positive triplets
+  - spring migration: 7,672 eligible locality-seasons; 269,999 positive triplets
+  - early breeding: 7,997 eligible locality-seasons; 264,722 positive triplets
+  - late breeding: 5,432 eligible locality-seasons; 156,624 positive triplets
+  - fall migration: 7,524 eligible locality-seasons; 245,861 positive triplets
+- Focus-species support looks suitable for the pivot:
+  - Wood Thrush has strong early-breeding support (2,710 positive
+    locality-seasons; 10,822 detections) and essentially no winter support
+    (one positive locality-season; one detection), making it a good phenology
+    sanity check.
+  - Green Heron shows strong breeding-season support and very low winter
+    support, also useful for seasonal availability checks.
+  - Northern Cardinal and Eastern Towhee have broad year-round support, useful
+    for resident/generalist comparisons.
+  - Red-headed Woodpecker has support across seasons but lower detection rates,
+    useful for testing whether the model can avoid suppressing a species that
+    has been difficult for the spatial residual GNN.
+
+Replication diagnostic command:
+
+```
+python exp/diagnose_ebird_locality_season_replication.py --dataset-dir data/ebird/locality_season_top100
+```
+
+Locality-season binomial baseline:
+
+- Added `exp/ebird_locality_season_baseline.py`.
+- This is the first bridge model after the replication dataset. It is not a
+  full latent occupancy model yet. It treats each locality-season/species row
+  as an aggregated binomial observation:
+
+```
+n_detections ~ Binomial(n_checklists, p_species_locality_season)
+```
+
+- The baseline compares four models on a held-out season-year:
+  - `train_prevalence`: species-specific training prevalence only
+  - `availability`: environmental medians plus biological season/year
+  - `effort`: locality-season effort summaries
+  - `combined`: availability plus effort summaries
+- The default split trains on season-years before 2023 and tests on
+  season-year 2023. Season-years after 2023 are held out of this comparison,
+  which avoids mixing December 2023 winter records into the test year.
+- The default dataset is restricted to adequately sampled locality-seasons.
+  This keeps the first comparison focused on replicated locality-seasons with
+  at least two dates and at least two duration bins.
+- Outputs are written to `data/ebird/locality_season_top100/baselines`:
+  - `locality_season_baseline_metrics.csv`
+  - `locality_season_baseline_species_metrics.csv`
+  - `locality_season_baseline_focus_species_season.csv`
+  - `locality_season_baseline_summary.json`
+- Smoke validation with 20,000 rows and two epochs passed. The expected pattern
+  appeared: the prevalence baseline was sensible after species-intercept
+  initialization, and the combined model improved weighted BCE and positive
+  triplet AUPRC over availability-only and effort-only models. The full run is
+  needed before interpreting biological results.
+
+Locality-season baseline command:
+
+```
+python exp/ebird_locality_season_baseline.py --dataset-dir data/ebird/locality_season_top100 --epochs 30
+```
+
+Cross-regime summary command:
+
+```
+python exp/summarize_ebird_split_regime_validation.py --case "primary10x10|data/ebird/graph_top100_spatial_10x10|spatial_gcn_frozen_access_h64_l2_z64|data/ebird/baselines_10x10|both" --case "coastalstress|data/ebird/graph_top100_spatial_10x10_coastalstress|spatial_gcn_frozen_access_h64_l2_z64|data/ebird/baselines/coastalstress|both" --case "regime_features|data/ebird/graph_top100_spatial_10x10_regime|spatial_gcn_frozen_access_h64_l2_z64|data/ebird/baselines|both-regime"
+```
+
+Commands to fill missing per-species comparisons:
+
+```
+python exp/compare_ebird_graph_tabular_species.py --graph-dir data/ebird/graph_top100_spatial_10x10 --baseline-dir data/ebird/baselines_10x10 --top-species 100 --tabular-model mlp --feature-set both --split spatial-stratified --graph-species-metrics data/ebird/graph_top100_spatial_10x10/spatial_gnn_baselines/spatial_gnn_spatial_gcn_frozen_access_h64_l2_z64_test_species_metrics.csv --output data/ebird/graph_top100_spatial_10x10/spatial_gnn_baselines/spatial_gcn_frozen_access_h64_l2_z64_graph_vs_tabular_species.csv
+python exp/compare_ebird_graph_tabular_species.py --graph-dir data/ebird/graph_top100_spatial_10x10_regime --baseline-dir data/ebird/baselines --top-species 100 --tabular-model mlp --feature-set both-regime --split spatial-stratified --graph-species-metrics data/ebird/graph_top100_spatial_10x10_regime/spatial_gnn_baselines/spatial_gnn_spatial_gcn_frozen_access_h64_l2_z64_test_species_metrics.csv --output data/ebird/graph_top100_spatial_10x10_regime/spatial_gnn_baselines/spatial_gcn_frozen_access_h64_l2_z64_graph_vs_tabular_species.csv
+```
+
 For graph link prediction:
 
 - positive edges are observed species-checklist detections
@@ -4865,24 +5389,42 @@ Key metrics:
 - Wood Thrush-specific comparison against existing IPPP/NIPPP outputs
 - sensitivity to protocol and effort filters
 
-Immediate validation next steps:
+Completed validation phases:
 
-1. Add spatial-stratified blocked validation to the tabular baseline. The split
-   should hold out whole geographic blocks while greedily matching the full
-   dataset on checklist count, effort variables, raster covariates, and
-   top-species prevalence.
-2. Compare temporal and spatial-stratified results for effort, ecology, and
-   combined feature sets. A large drop under spatial validation would indicate
-   that the temporal split is benefiting from repeated geography or observer
-   structure.
-3. Add calibration outputs by predicted probability, protocol, duration, and
-   checklist effort strata. The tabular baseline now writes
-   `*_calibration.csv` files with mean predicted probability, observed
-   detection rate, and calibration error for each bin/stratum; the summary JSON
-   includes expected calibration error over predicted-probability bins.
-4. Add a small nonlinear MLP tabular baseline before graph construction. This
-   tests whether the remaining ranking/calibration gaps are due to linear
-   underfitting before adding graph structure.
+1. Spatial-stratified blocked validation was added to the tabular baseline.
+   Later split diagnostics also added explicit coastal-stress test blocks, which
+   are useful for regime-transfer stress testing even when aggregate metrics
+   drop.
+2. Effort-only, ecology-only, combined, and MLP tabular baselines were compared
+   under spatial validation. The combined ecological/temporal/effort MLP is the
+   main portable non-graph checklist-level baseline.
+3. Calibration outputs by probability bin and effort stratum were added. These
+   remain central because the project goal is effort-aware modeling, not only
+   ranking.
+4. Graph bridge and spatial-GNN models were evaluated against all-pairs
+   checklist/species targets and per-species metrics. Sampled-edge link metrics
+   are retained as diagnostics but are not the fair target for final comparison.
+5. Cross-regime validation now compares the preferred frozen-access spatial GNN
+   residual against matched tabular baselines on primary 10x10, coastal-stress,
+   and regime-feature splits.
+
+Current validation priorities:
+
+1. Finish the locality-season binomial baseline and compare prevalence,
+   availability-only, effort-only, and combined models on held-out season-year
+   2023.
+2. Inspect focus-species season outputs for biological plausibility, especially
+   Wood Thrush and Green Heron seasonality versus resident/generalist species
+   such as Northern Cardinal and Eastern Towhee.
+3. Use the locality-season baseline to decide whether the next model should be
+   a latent availability/detection model, a checklist-level model with
+   locality-season availability features, or both.
+4. Keep cross-regime checklist-level validation for any new model family:
+   primary spatial holdout, coastal-stress holdout, effort strata, and
+   species-level calibration.
+5. Add ecological plausibility diagnostics that do not depend only on AUROC or
+   AUPRC: response curves by canopy/elevation/water/coast distance and
+   phenology curves for focus species.
 
 Spatial-stratified baseline commands:
 
@@ -4905,23 +5447,38 @@ python exp/compare_ebird_calibration.py --top-species 100 --split spatial-strati
 
 ## Immediate Implementation Steps
 
-1. Preprocess the bulk EBD and sampling files into checklist, detection, and
+Completed implementation phases:
+
+1. Preprocessed the bulk EBD and sampling files into checklist, detection, and
    species tables.
-2. Sample existing NC raster covariates onto checklist points.
-3. Inspect retained counts and missingness.
-4. Build a small pilot subset:
+2. Sampled NC raster covariates onto checklist points and corrected the raster
+   stack/masking workflow.
+3. Built top-species graph-ready datasets with spatial-stratified splits,
+   coastal-stress splits, and validation scripts.
+4. Trained tabular linear/MLP baselines, graph link baselines, all-species
+   bridge models, RBF spatial residuals, and spatial-cell GNN variants.
+5. Added calibration, effort-strata, species/block, residual-map,
+   regime-support, split-candidate, and cross-regime summary diagnostics.
+6. Built the locality-season replication dataset and replication-support
+   diagnostics.
+7. Added the first locality-season binomial baseline script.
 
-   - top 20-100 species by checklist frequency
-   - complete stationary/traveling checklists only
-   - 2020-2023 all NC
+Active implementation steps:
 
-5. Train tabular multi-species baseline.
-6. Add spatial-stratified blocked validation to the tabular baseline.
-7. Add calibration summaries by probability and effort strata.
-8. Add small nonlinear MLP tabular baseline.
-9. Build graph-ready checklist/species node tables and positive/negative edge
-   tables.
-10. Train a non-message-passing embedding/link baseline on the graph dataset.
-11. Train an all-species-per-checklist graph bridge objective.
-12. Add graph construction and a simple heterogeneous GNN.
-13. Compare Wood Thrush predictions to existing single-species IPPP/NIPPP runs.
+1. Run the full locality-season binomial baseline:
+
+```
+python exp/ebird_locality_season_baseline.py --dataset-dir data/ebird/locality_season_top100 --epochs 30
+```
+
+2. Review the overall, species-level, and focus-species season outputs. Decide
+   whether availability, effort, or their combination explains most of the
+   locality-season detection-rate signal.
+3. If the binomial baseline behaves sensibly, implement the first explicit
+   two-component model:
+   `locality-season availability + checklist-level detection`.
+4. Keep the frozen-access spatial GNN as the checklist-level benchmark while
+   the locality-season model is developed. Do not add more spatial-GNN
+   architecture variants unless a diagnostic points to a specific failure mode.
+5. Add phenology and species-environment response diagnostics for the
+   locality-season model before expanding to broader geography or more species.

@@ -28,6 +28,7 @@ import torch
 from ebird_graph_all_species_baseline import build_label_matrix, load_split_checklists
 from ebird_spatial_gnn_baseline import (
     SpatialGCNHybrid,
+    build_cell_species_support_features,
     build_species_adjacency_for_run,
     build_spatial_cell_graph_for_run,
     inject_frozen_access_embeddings,
@@ -135,12 +136,19 @@ def base_and_full_logits(
     checklist_features: torch.Tensor,
     cell_embeddings: torch.Tensor,
     checklist_cells: torch.Tensor,
+    cell_species_support_features: torch.Tensor | None,
     species_adjacency: torch.Tensor | None = None,
+    cell_features: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     if model.gnn_mode == "concat":
         raise ValueError("Residual maps require a residual or gated spatial GNN.")
     return model.base_and_full_logits(
-        checklist_features, cell_embeddings, checklist_cells, species_adjacency
+        checklist_features,
+        cell_embeddings,
+        checklist_cells,
+        species_adjacency,
+        cell_features=cell_features,
+        cell_species_support_features=cell_species_support_features,
     )
 
 
@@ -152,6 +160,7 @@ def predict_selected_species(
     frozen_access_embeddings: torch.Tensor | None,
     species_adjacency: torch.Tensor | None,
     checklist_cells: torch.Tensor,
+    cell_species_support_features: torch.Tensor | None,
     checklist_indices: np.ndarray,
     species_indices: list[int],
     batch_size: int,
@@ -174,7 +183,9 @@ def predict_selected_species(
                 features[batch_tensor],
                 cell_embeddings,
                 checklist_cells[batch_tensor],
-                species_adjacency,
+                species_adjacency=species_adjacency,
+                cell_features=cell_features,
+                cell_species_support_features=cell_species_support_features,
             )
             base_scores = torch.sigmoid(base_logits[:, species_tensor])
             base_parts.append(base_scores.cpu().numpy())
@@ -384,6 +395,16 @@ def main() -> None:
     species_adjacency, _species_graph_metadata = build_species_adjacency_for_run(
         train_labels, model_info
     )
+    cell_species_support_features = (
+        build_cell_species_support_features(
+            checklist_cell,
+            train_checklists,
+            train_labels,
+            cell_features.shape[0],
+        )
+        if model_info.get("support_aware_residual", "none") == "species-cell"
+        else None
+    )
     model = SpatialGCNHybrid(
         checklist_feature_dim=features_np.shape[1],
         cell_feature_dim=cell_features.shape[1],
@@ -409,6 +430,12 @@ def main() -> None:
         ecology_cell_feature_indices=model_info.get("ecology_cell_feature_indices", []),
         access_cell_feature_indices=model_info.get("access_cell_feature_indices", []),
         access_density_auxiliary=bool(model_info.get("access_density_auxiliary", False)),
+        support_aware_residual=model_info.get("support_aware_residual", "none"),
+        support_cell_feature_indices=model_info.get("support_cell_feature_indices", []),
+        support_species_feature_dim=len(
+            model_info.get("support_species_feature_names", [])
+        ),
+        support_gate_init_bias=float(model_info.get("support_gate_init_bias", 2.0)),
         species_gcn_layers=int(model_info.get("species_gcn_layers", 0)),
         species_gcn_dropout=float(model_info.get("species_gcn_dropout", 0.0)),
     )
@@ -423,6 +450,7 @@ def main() -> None:
         frozen_access_embeddings,
         species_adjacency,
         torch.from_numpy(checklist_cell.astype(np.int64)),
+        cell_species_support_features,
         test_checklists,
         species_indices,
         args.batch_size,

@@ -228,6 +228,27 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--support-aware-residual",
+        choices=["none", "cell", "species-cell"],
+        default="none",
+        help=(
+            "Dampen spatial residual logits using non-leaky training support "
+            "features. cell uses the spatial cell's standardized log training "
+            "checklist count; species-cell uses per-cell/per-species training "
+            "positive support. Defaults to none."
+        ),
+    )
+    parser.add_argument(
+        "--support-gate-init-bias",
+        type=float,
+        default=2.0,
+        help=(
+            "Initial logit bias for the support-aware residual gate. 2.0 starts "
+            "near 0.88, so the gate begins permissive and can learn to shrink "
+            "weak-support residuals. Defaults to 2.0."
+        ),
+    )
+    parser.add_argument(
         "--spatial-channel-mode",
         choices=["single", "separated"],
         default="single",
@@ -521,6 +542,8 @@ def build_spatial_cell_graph(
         "spatial_cell_edge_count": int(edge_index_np.shape[1]),
         "spatial_cell_feature_count": int(cell_features.shape[1]),
         "spatial_cells_with_train_checklists": int((train_counts > 0).sum()),
+        "support_cell_feature_indices": [2],
+        "support_cell_feature_names": ["log_train_checklists"],
         "cell_edge_mode": cell_edge_mode,
         "environmental_neighbors": int(environmental_neighbors),
         "environmental_edge_count": int(environmental_edge_count),
@@ -622,6 +645,51 @@ def build_species_adjacency_for_run(
         species_edge_mode=model_info.get("species_edge_mode", "none"),
         species_neighbors=int(model_info.get("species_neighbors", 10)),
     )
+
+
+def build_cell_species_support_features(
+    checklist_cell: np.ndarray,
+    train_checklists: np.ndarray,
+    train_labels: np.ndarray,
+    cell_count: int,
+    smoothing: float = 1.0,
+) -> torch.Tensor:
+    train_cells = checklist_cell[train_checklists]
+    species_count = train_labels.shape[1]
+    train_counts = np.bincount(train_cells, minlength=cell_count).astype(np.float32)
+    positive_counts = np.zeros((cell_count, species_count), dtype=np.float32)
+    np.add.at(positive_counts, train_cells, train_labels.astype(np.float32))
+
+    log_positive = np.log1p(positive_counts)
+    log_mean = log_positive.mean(axis=0, keepdims=True)
+    log_std = log_positive.std(axis=0, keepdims=True)
+    log_std[log_std == 0] = 1.0
+    log_positive = (log_positive - log_mean) / log_std
+
+    global_positive_rate = (
+        train_labels.mean(axis=0).astype(np.float32)
+        if len(train_labels)
+        else np.zeros(species_count, dtype=np.float32)
+    )
+    smoothed_positive = positive_counts + smoothing * global_positive_rate[None, :]
+    smoothed_total = train_counts[:, None] + smoothing
+    smoothed_rate = np.divide(
+        smoothed_positive,
+        np.maximum(smoothed_total, 1e-6),
+        out=np.zeros_like(smoothed_positive),
+        where=smoothed_total > 0,
+    )
+    smoothed_rate = np.clip(smoothed_rate, 1e-6, 1.0 - 1e-6)
+    smoothed_logit = np.log(smoothed_rate / (1.0 - smoothed_rate))
+    logit_mean = smoothed_logit.mean(axis=0, keepdims=True)
+    logit_std = smoothed_logit.std(axis=0, keepdims=True)
+    logit_std[logit_std == 0] = 1.0
+    smoothed_logit = (smoothed_logit - logit_mean) / logit_std
+
+    support_features = np.stack([log_positive, smoothed_logit], axis=2).astype(
+        np.float32
+    )
+    return torch.from_numpy(support_features)
 
 
 def load_frozen_access_embeddings(path: str | None, cell_count: int) -> torch.Tensor | None:
@@ -730,6 +798,10 @@ class SpatialGCNHybrid(nn.Module):
         ecology_cell_feature_indices: list[int] | None = None,
         access_cell_feature_indices: list[int] | None = None,
         access_density_auxiliary: bool = False,
+        support_aware_residual: str = "none",
+        support_cell_feature_indices: list[int] | None = None,
+        support_species_feature_dim: int = 0,
+        support_gate_init_bias: float = 2.0,
         species_gcn_layers: int = 0,
         species_gcn_dropout: float = 0.0,
     ):
@@ -781,6 +853,22 @@ class SpatialGCNHybrid(nn.Module):
                     "Separated spatial channel mode requires ecology and access "
                     "cell feature indices."
                 )
+        if support_aware_residual not in {"none", "cell", "species-cell"}:
+            raise ValueError(
+                "--support-aware-residual must be none, cell, or species-cell."
+            )
+        if support_aware_residual != "none" and gnn_mode not in {"residual", "gated"}:
+            raise ValueError(
+                "--support-aware-residual requires residual or gated GNN mode."
+            )
+        if support_aware_residual == "cell" and not support_cell_feature_indices:
+            raise ValueError(
+                "--support-aware-residual cell requires support cell feature indices."
+            )
+        if support_aware_residual == "species-cell" and support_species_feature_dim <= 0:
+            raise ValueError(
+                "--support-aware-residual species-cell requires species support features."
+            )
         if species_gcn_layers < 0:
             raise ValueError("--species-gcn-layers must be nonnegative.")
         if not 0 <= species_gcn_dropout < 1:
@@ -793,12 +881,16 @@ class SpatialGCNHybrid(nn.Module):
         self.spatial_residual_noise_std = spatial_residual_noise_std
         self.spatial_channel_mode = spatial_channel_mode
         self.access_density_auxiliary = access_density_auxiliary
+        self.support_aware_residual = support_aware_residual
+        self.support_cell_feature_indices = list(support_cell_feature_indices or [])
+        self.support_species_feature_dim = support_species_feature_dim
         self.species_gcn_layers = species_gcn_layers
         self.species_gcn_dropout = species_gcn_dropout
         self.ecology_cell_feature_indices = list(ecology_cell_feature_indices or [])
         self.access_cell_feature_indices = list(access_cell_feature_indices or [])
         self.last_spatial_residual_logits: torch.Tensor | None = None
         self.last_spatial_access_bias_logits: torch.Tensor | None = None
+        self.last_support_residual_gate: torch.Tensor | None = None
         self.species_residual_scale_mode = species_residual_scale
         self.ecology_feature_indices = ecology_feature_indices or []
         self.bias_feature_indices = bias_feature_indices or []
@@ -935,6 +1027,18 @@ class SpatialGCNHybrid(nn.Module):
             nn.init.zeros_(self.cell_residual_head.bias)
         else:
             self.cell_residual_head = None
+        if support_aware_residual == "cell":
+            self.support_residual_gate = nn.Linear(
+                len(self.support_cell_feature_indices), 1
+            )
+            nn.init.zeros_(self.support_residual_gate.weight)
+            nn.init.constant_(self.support_residual_gate.bias, support_gate_init_bias)
+        elif support_aware_residual == "species-cell":
+            self.support_residual_gate = nn.Linear(support_species_feature_dim, 1)
+            nn.init.zeros_(self.support_residual_gate.weight)
+            nn.init.constant_(self.support_residual_gate.bias, support_gate_init_bias)
+        else:
+            self.support_residual_gate = None
         if species_residual_scale == "sigmoid":
             init = float(species_residual_scale_init)
             init_logit = np.log(init / (1.0 - init))
@@ -1102,6 +1206,8 @@ class SpatialGCNHybrid(nn.Module):
         cell_embeddings: torch.Tensor,
         checklist_cell: torch.Tensor,
         species_adjacency: torch.Tensor | None = None,
+        cell_features: torch.Tensor | None = None,
+        cell_species_support_features: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         cell_context = cell_embeddings[checklist_cell]
         ecology_cell_context, access_cell_context = self.split_cell_context(cell_context)
@@ -1167,6 +1273,36 @@ class SpatialGCNHybrid(nn.Module):
                     gate_latent = bias_latent
                 gate_input = torch.cat([gate_latent, ecology_cell_context], dim=1)
                 residual_logits = torch.sigmoid(self.gate_head(gate_input)) * residual_logits
+            if self.support_residual_gate is not None:
+                if self.support_aware_residual == "cell":
+                    if cell_features is None:
+                        raise RuntimeError(
+                            "Cell support-aware residual gate requires cell_features."
+                        )
+                    support_features = cell_features[checklist_cell][
+                        :, self.support_cell_feature_indices
+                    ]
+                    support_gate = torch.sigmoid(
+                        self.support_residual_gate(support_features)
+                    )
+                elif self.support_aware_residual == "species-cell":
+                    if cell_species_support_features is None:
+                        raise RuntimeError(
+                            "Species-cell support-aware residual gate requires "
+                            "cell_species_support_features."
+                        )
+                    support_features = cell_species_support_features[checklist_cell]
+                    support_gate = torch.sigmoid(
+                        self.support_residual_gate(support_features).squeeze(-1)
+                    )
+                else:
+                    raise RuntimeError(
+                        f"Unexpected support mode: {self.support_aware_residual}"
+                    )
+                residual_logits = support_gate * residual_logits
+                self.last_support_residual_gate = support_gate
+            else:
+                self.last_support_residual_gate = None
             self.last_spatial_residual_logits = residual_logits
             if self.training and self.spatial_residual_dropout > 0:
                 residual_logits = F.dropout(
@@ -1187,9 +1323,16 @@ class SpatialGCNHybrid(nn.Module):
         cell_embeddings: torch.Tensor,
         checklist_cell: torch.Tensor,
         species_adjacency: torch.Tensor | None = None,
+        cell_features: torch.Tensor | None = None,
+        cell_species_support_features: torch.Tensor | None = None,
     ) -> torch.Tensor:
         _base_logits, full_logits = self.base_and_full_logits(
-            checklist_features, cell_embeddings, checklist_cell, species_adjacency
+            checklist_features,
+            cell_embeddings,
+            checklist_cell,
+            species_adjacency,
+            cell_features=cell_features,
+            cell_species_support_features=cell_species_support_features,
         )
         return full_logits
 
@@ -1198,6 +1341,7 @@ def evaluate_all_pairs(
     model: SpatialGCNHybrid,
     features: torch.Tensor,
     cell_features: torch.Tensor,
+    cell_species_support_features: torch.Tensor | None,
     adjacency: torch.Tensor,
     frozen_access_embeddings: torch.Tensor | None,
     species_adjacency: torch.Tensor | None,
@@ -1223,6 +1367,8 @@ def evaluate_all_pairs(
                 cell_embeddings,
                 checklist_cells[checklist_tensor],
                 species_adjacency,
+                cell_features=cell_features,
+                cell_species_support_features=cell_species_support_features,
             )
             score_parts.append(torch.sigmoid(logits).cpu().numpy())
     scores = np.vstack(score_parts).astype(np.float32)
@@ -1326,6 +1472,16 @@ def main() -> None:
         environmental_cell_feature_indices=ecology_cell_indices,
     )
     checklist_cells = torch.from_numpy(checklist_cell_np.astype(np.int64))
+    cell_species_support_features = (
+        build_cell_species_support_features(
+            checklist_cell_np,
+            train_checklists,
+            train_labels,
+            int(cell_metadata["spatial_cell_count"]),
+        )
+        if args.support_aware_residual == "species-cell"
+        else None
+    )
     frozen_access_embeddings = load_frozen_access_embeddings(
         args.frozen_access_embeddings,
         int(cell_metadata["spatial_cell_count"]),
@@ -1342,6 +1498,21 @@ def main() -> None:
     )
     if args.species_gcn_layers > 0 and species_adjacency is None:
         raise ValueError("--species-gcn-layers requires --species-edge-mode codetection.")
+    support_cell_indices = (
+        list(cell_metadata.get("support_cell_feature_indices", []))
+        if args.support_aware_residual == "cell"
+        else []
+    )
+    support_feature_lookup = dict(
+        zip(
+            cell_metadata.get("support_cell_feature_indices", [2]),
+            cell_metadata.get("support_cell_feature_names", ["log_train_checklists"]),
+        )
+    )
+    support_cell_names = [
+        support_feature_lookup.get(idx, f"cell_feature_{idx}")
+        for idx in support_cell_indices
+    ]
 
     model = SpatialGCNHybrid(
         checklist_feature_dim=features_np.shape[1],
@@ -1368,6 +1539,14 @@ def main() -> None:
         ecology_cell_feature_indices=ecology_cell_indices,
         access_cell_feature_indices=access_cell_indices,
         access_density_auxiliary=args.access_density_loss_weight > 0,
+        support_aware_residual=args.support_aware_residual,
+        support_cell_feature_indices=support_cell_indices,
+        support_species_feature_dim=(
+            int(cell_species_support_features.shape[2])
+            if cell_species_support_features is not None
+            else 0
+        ),
+        support_gate_init_bias=args.support_gate_init_bias,
         species_gcn_layers=args.species_gcn_layers,
         species_gcn_dropout=args.species_gcn_dropout,
     )
@@ -1412,6 +1591,8 @@ def main() -> None:
                 cell_embeddings,
                 checklist_cells[checklist_index],
                 species_adjacency,
+                cell_features=cell_features,
+                cell_species_support_features=cell_species_support_features,
             )
             loss = criterion(logits, y)
             residual_scales = model.species_residual_scales()
@@ -1469,6 +1650,7 @@ def main() -> None:
         model,
         features,
         cell_features,
+        cell_species_support_features,
         adjacency,
         frozen_access_embeddings,
         species_adjacency,
@@ -1503,6 +1685,15 @@ def main() -> None:
         "spatial_residual_logit_l2": args.spatial_residual_logit_l2,
         "spatial_residual_dropout": args.spatial_residual_dropout,
         "spatial_residual_noise_std": args.spatial_residual_noise_std,
+        "support_aware_residual": args.support_aware_residual,
+        "support_cell_feature_indices": support_cell_indices,
+        "support_cell_feature_names": support_cell_names,
+        "support_species_feature_names": (
+            ["log_positive_count", "smoothed_prevalence_logit"]
+            if args.support_aware_residual == "species-cell"
+            else []
+        ),
+        "support_gate_init_bias": args.support_gate_init_bias,
         "spatial_channel_mode": args.spatial_channel_mode,
         "cell_edge_mode": args.cell_edge_mode,
         "environmental_neighbors": args.environmental_neighbors,

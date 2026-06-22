@@ -23,6 +23,7 @@ from ebird_graph_all_species_baseline import build_label_matrix, load_split_chec
 from ebird_joint_tabular_baseline import SEED, auc_roc, average_precision
 from ebird_spatial_gnn_baseline import (
     SpatialGCNHybrid,
+    build_cell_species_support_features,
     build_species_adjacency_for_run,
     build_spatial_cell_graph_for_run,
     inject_frozen_access_embeddings,
@@ -118,6 +119,7 @@ def build_model(
     torch.Tensor,
     torch.Tensor | None,
     torch.Tensor | None,
+    torch.Tensor | None,
     np.ndarray,
     dict,
     dict,
@@ -139,6 +141,16 @@ def build_model(
     )
     species_adjacency, species_graph_metadata = build_species_adjacency_for_run(
         train_labels, model_info
+    )
+    cell_species_support_features = (
+        build_cell_species_support_features(
+            checklist_cell,
+            train_checklists,
+            train_labels,
+            cell_features.shape[0],
+        )
+        if model_info.get("support_aware_residual", "none") == "species-cell"
+        else None
     )
     model = SpatialGCNHybrid(
         checklist_feature_dim=features_np.shape[1],
@@ -165,6 +177,12 @@ def build_model(
         ecology_cell_feature_indices=model_info.get("ecology_cell_feature_indices", []),
         access_cell_feature_indices=model_info.get("access_cell_feature_indices", []),
         access_density_auxiliary=bool(model_info.get("access_density_auxiliary", False)),
+        support_aware_residual=model_info.get("support_aware_residual", "none"),
+        support_cell_feature_indices=model_info.get("support_cell_feature_indices", []),
+        support_species_feature_dim=len(
+            model_info.get("support_species_feature_names", [])
+        ),
+        support_gate_init_bias=float(model_info.get("support_gate_init_bias", 2.0)),
         species_gcn_layers=int(model_info.get("species_gcn_layers", 0)),
         species_gcn_dropout=float(model_info.get("species_gcn_dropout", 0.0)),
     )
@@ -175,6 +193,7 @@ def build_model(
         adjacency,
         frozen_access_embeddings,
         species_adjacency,
+        cell_species_support_features,
         checklist_cell,
         cell_metadata,
         species_graph_metadata,
@@ -290,6 +309,7 @@ def main() -> None:
         adjacency,
         frozen_access_embeddings,
         species_adjacency,
+        cell_species_support_features,
         checklist_cell,
         cell_metadata,
         species_graph_metadata,
@@ -309,6 +329,7 @@ def main() -> None:
         frozen_access_embeddings,
         species_adjacency,
         torch.from_numpy(checklist_cell.astype(np.int64)),
+        cell_species_support_features,
         test_checklists,
         species_indices,
         args.batch_size,
