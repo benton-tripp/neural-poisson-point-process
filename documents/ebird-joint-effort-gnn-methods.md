@@ -19,6 +19,130 @@ explicit observation/effort process rather than as arbitrary pseudo-absences.
 
 ## Current Analysis Checkpoint
 
+The locality-season latent repeated-visit model remains the correct primary
+scientific path. The NC top-100 analysis is a development and validation
+testbed for a transferable framework, not an attempt to optimize only these
+species or this geography. The current decision is:
+
+- Keep the unregularized two-component bridge
+  (`two_component_checklist_detection_e10_d20`) as the strongest fair
+  checklist-level predictive benchmark. It is not a latent occupancy model.
+- Keep the repeated-visit likelihood as the primary structural model because
+  it explicitly separates locality-season availability (`psi`) from
+  checklist-level conditional detection (`p`) and uses complete-checklist
+  temporal replication rather than arbitrary pseudo-absences.
+- Use `latent_marginal_all_pairs` as the fair held-out checklist metric.
+  Label-informed posterior and known-positive-group conditional metrics remain
+  diagnostics only.
+- Retain
+  `latent_repeated_visit_e200_mrate25_srate10_speciesseason_detection_l2_0p0025`
+  as the current parsimonious latent sensitivity. Its fair prior-marginal
+  metrics are AUPRC 0.56862, BCE 0.29629, calibration error 0.01488, ECE
+  0.01834, and focus-season weighted absolute error 0.01596.
+- The completed `both` species-season run is effectively tied on pooled
+  ranking but is not a clear replacement. Relative to the detection-only
+  species-season run, it changes AUPRC by only +0.00002, improves BCE by
+  0.00035, calibration error by 0.00041, ECE by 0.00080, and max-bin error by
+  0.00495, but slightly worsens focus-season weighted error from 0.01596 to
+  0.01604 and availability positive-triplet AUPRC from 0.71673 to 0.71589.
+- Giving both components species-season offsets redistributes seasonal signal
+  without fixing the persistent species failures. Its availability-season
+  parameter RMS is 0.41067 and detection-season RMS is 0.52154, compared with
+  detection-season RMS 0.55843 and no availability-season offset in the
+  detection-only run. This is evidence of added component redundancy, not a
+  new biological result.
+- Persistent losses versus the bridge remain concentrated in Tree Swallow,
+  Hooded Merganser, Red-breasted Nuthatch, Mallard, Bald Eagle,
+  White-throated Sparrow, Bufflehead, Swamp Sparrow, Double-crested Cormorant,
+  Downy Woodpecker, and related species. The pattern spans multiple ecological
+  groups and is not solved by moving seasonal flexibility between `psi` and
+  `p`.
+- Close the current species-season placement/L2 axis. Do not add another
+  offset strength, GNN layer, or post-hoc calibrator in response to this run.
+- The next question is component identifiability and replication support:
+  determine whether failures arise from the availability component,
+  conditional detection, or locality-seasons with weak variation in visits,
+  dates, protocols, observers, and effort. The latent training script now
+  writes compact component-by-season and component-by-support diagnostics for
+  this purpose.
+- The first component-support run shows that fair group-level any-detection
+  error generally improves with stronger temporal and effort diversity, while
+  checklist-level marginal detection becomes underpredicted in the most
+  intensively sampled groups. Conditional `p` is approximately aligned inside
+  high-support known-positive groups, although that diagnostic is
+  label-informed. This points more toward availability/site heterogeneity and
+  observer-geography concentration than a simple failure of the checklist
+  effort coefficients.
+- The completed strict-support sensitivity required at least five distinct
+  dates and three duration bins, retaining 11,243 training groups, 4,564 test
+  groups, and 99,471 test checklists. Group any-detection calibration is nearly
+  exact in the strongest strata (`10+` dates or `11+` checklists), but
+  medium-support groups still overpredict any-detection while high-support
+  checklist frequency remains underpredicted. Filtering improves some
+  component behavior but is not a complete solution and should not replace the
+  broader target population.
+- The pairwise co-detection diagnostic confirmed the likelihood-assumption
+  problem. In every replication-support stratum, observed repeated
+  co-detection exceeded the model-implied conditionally independent prediction.
+  The overall strict-support weighted pairwise signed error was -0.03335; the
+  `11+` checklist stratum was -0.03360, `10+` dates was -0.03370, one-observer
+  groups were -0.03464, and 3-5 observer groups were -0.04230. This is direct
+  evidence for excess repeated-detection dependence.
+- The next model change is therefore a transferable detection-overdispersion
+  term, not stricter filtering, another species-season offset, a GNN layer, or
+  post-hoc calibration. The latent script now supports an optional
+  logistic-normal shared detection frailty within each locality-season/species
+  group via `--detection-frailty-mode global|species`.
+- The completed global-frailty test validates that direction. Relative to the
+  same strict-support independent-detection run:
+  - overall weighted pairwise co-detection error improved from -0.03335 to
+    -0.01562
+  - 90 of 100 species had smaller absolute species-level pairwise error
+  - fair checklist calibration error improved from 0.01361 to 0.00888, ECE
+    from 0.01741 to 0.01337, and max-bin error from 0.06245 to 0.04768
+  - fair checklist AUPRC changed only modestly from 0.57498 to 0.57279, while
+    BCE improved slightly from 0.30566 to 0.30519
+  - focus-species season weighted absolute error improved from 0.01498 to
+    0.01311
+  - overall fair group any-detection probability was nearly exact: observed
+    0.41331 versus predicted 0.41551
+  - the learned global logistic-normal frailty scale was 1.07439 logit units
+- Mean latent availability rose from 0.50488 to 0.53329 while the observed
+  any-detection rate was 0.41331. This is not direct occupancy
+  miscalibration: an observed-positive locality-season is a lower bound on
+  availability, and frailty explicitly permits available groups to have no
+  detections. The fair check is the combined any-detection probability, which
+  remained calibrated. Availability must instead be judged through transfer,
+  phenology, environmental response, and sensitivity stability.
+- The completed independently regularized species-frailty run did not improve
+  on global frailty. Relative to the global run, overall weighted pairwise
+  error was effectively unchanged (-0.01566 versus -0.01562), fair checklist
+  AUPRC changed from 0.57279 to 0.57249, overall any-detection error increased
+  from 0.00220 to 0.00325, and focus-season weighted error increased from
+  0.01311 to 0.01355. Absolute species-level pairwise error improved for only
+  37 of 100 species, and the median species became slightly worse.
+- The learned species scales remained tightly clustered: mean 1.03631, RMS
+  1.04000, implied standard deviation 0.08755, and maximum 1.22293. The
+  existing `species` parameterization shrinks each absolute scale toward zero;
+  it does not preserve the supported global frailty while partially pooling
+  species departures. Close that formulation as a non-promoted sensitivity.
+- The next isolated test is hierarchical frailty: retain one shared global
+  scale and add zero-centered, regularized species deviations. This directly
+  tests whether modest species heterogeneity helps without discarding the
+  global result or allowing 100 unrelated variance parameters. The script now
+  saves per-species frailty scales so stability and extreme values can be
+  evaluated explicitly.
+
+This is still the right path, but success is no longer defined as squeezing a
+few additional points of checklist AUPRC from the NC testbed. The purpose of
+the latent branch is to estimate a stable, interpretable availability surface
+while preserving a separately testable observation process. The bridge remains
+ahead on raw checklist prediction, which is acceptable unless component
+diagnostics show that the latent separation is unstable or biologically
+implausible.
+
+## Historical Analysis Checkpoints
+
 This document is both the methods plan and the analysis ledger. Older sections
 are intentionally retained as a timeline of what was tested, including negative
 results. The current working interpretation is:
@@ -46,8 +170,178 @@ results. The current working interpretation is:
   checklist-level detection.
 - The active next track is therefore:
   `locality-season availability component + checklist detection component`.
-  The current binomial locality-season baseline is a bridge toward that target,
-  not a full latent occupancy model yet.
+  The completed binomial locality-season baseline is a bridge toward that
+  target, not a full latent occupancy model yet.
+- The first full locality-season baseline supports the pivot. The combined
+  availability + effort model has the best held-out weighted BCE and
+  positive-triplet ranking, availability-only is clearly stronger than
+  effort-only, and effort summaries add broad complementary signal when combined
+  with availability features.
+- The next model should not be judged only by whether pooled AUROC/AUPRC moves a
+  few points. The key question is whether the availability component preserves
+  biologically plausible seasonal/ecological structure while the checklist-level
+  component explains effort-driven detection variation.
+- The first two-component checklist detection run supports the pivot. It
+  improved held-out checklist-level BCE and micro/species AUPRC over
+  availability-only and effort-only while preserving key focus-species
+  phenology checks such as Wood Thrush winter near-zero detection.
+- The active diagnostic question is now calibration heterogeneity and
+  ecological plausibility, not whether the two-component bridge has detection
+  signal. Filtered probability-bin diagnostics show that tiny-bin artifacts
+  should be ignored and that the stable remaining issues are county-season and
+  focus-species season calibration pockets. The next step should be response
+  and phenology diagnostics before another model architecture change.
+- The updated 10/20 two-component run generated the new focus-species monthly
+  phenology and environmental-response diagnostics. Initial review suggests the
+  two-component correction usually preserves ecological response ordering but
+  sometimes worsens probability levels relative to availability-only. The next
+  step is visual component inspection followed by targeted detection-component
+  shrinkage if the same pattern is confirmed.
+- The first combined neutral-point shrinkage run (`residual_l2=0.01`,
+  `availability_weight_l2=0.01`) is a mixed result. It materially improves pooled
+  and mean-species calibration with only a small ranking loss, but aggregate
+  monthly phenology error worsens slightly and several species lose more AUPRC
+  than the pooled change suggests. The penalties should therefore be ablated
+  separately before adopting regularization as the preferred model.
+- The residual-only `0.01` ablation is almost identical to the combined run but
+  slightly worse on pooled AUPRC, monthly MAE, and max-bin calibration. This
+  indicates that residual/effort shrinkage drives most of the broad calibration
+  change and most of the ranking cost.
+- The availability-weight-only `0.01` ablation is effectively neutral. It
+  preserves pooled and species ranking, phenology, response error, and
+  calibration almost exactly. Therefore availability-weight shrinkage alone
+  does not solve the calibration issue, and its small contribution in the
+  combined run is secondary to residual shrinkage.
+- Residual-only shrinkage at `0.0025` produced a real intermediate tradeoff. It
+  retained about 62% of the `0.01` ECE improvement while incurring about 47% of
+  the pooled AUPRC loss, 45% of the mean-species AUPRC loss, and 54% of the
+  focus-species phenology degradation. It also retained nearly all of the small
+  environmental-response MAE improvement.
+- The final midpoint residual L2 `0.005` run confirmed a smooth monotonic
+  ranking/calibration tradeoff rather than a sharp optimum. It retained about
+  81% of the `0.01` ECE improvement but incurred about 73% of its pooled AUPRC
+  loss, 71% of its mean-species AUPRC loss, and 75% of its phenology cost.
+- Scalar L2 tuning is now closed. Keep the unregularized model as the ranking
+  reference and use `0.0025` as the conservative regularized sensitivity model:
+  it provides a meaningful calibration improvement with less ecological and
+  species-ranking disruption than `0.005` or `0.01`.
+- The first partial-pooling effort-response run is a safe but not superior
+  variant. It behaves almost identically to weak species-specific residual
+  shrinkage: a small calibration improvement relative to the unregularized
+  model, a small ranking cost, and no evidence yet that partial pooling solves
+  the remaining species/regime issues.
+- The fully shared effort-response ablation is a negative result. It is still
+  better than availability-only, but it loses substantial checklist-level and
+  species-level ranking relative to all species-specific or partially pooled
+  effort models, and it does not improve pooled calibration. This indicates
+  that species-specific detectability responses are necessary; a single shared
+  effort effect is too restrictive.
+- Effort-mode testing is now closed for the current two-component bridge. Keep
+  the unregularized species-specific model as the ranking reference, keep
+  species-specific residual L2 `0.0025` as the conservative regularized
+  sensitivity model, and treat partial pooling as a safe but currently
+  non-superior variant.
+- The proposed latent repeated-visit availability/detection model is a fair and
+  appropriate next step. The current two-stage bridge uses an aggregate
+  availability point estimate as a fixed input to checklist-level detection,
+  so zero-detection locality-seasons are already pushed toward low availability
+  before detection uncertainty can feed back. The latent likelihood changes the
+  estimand: zero-detection groups can mean either true non-availability or
+  availability with missed detections across all visits.
+- The first 20-epoch latent repeated-visit run is a working but underfit
+  baseline. Group-level availability ranking is promising, but marginal
+  checklist detection probabilities are strongly underpredicted. This is not a
+  reason to abandon the path; it means the first latent model needs longer
+  optimization and clearer diagnostics separating prior marginal detection,
+  posterior availability, and conditional detection within known-positive
+  locality-seasons.
+- The 100-epoch latent repeated-visit run is a credible first latent baseline.
+  It nearly closes the checklist-ranking gap to the two-component bridge, and
+  the label-informed posterior diagnostic is stronger than the bridge, which
+  indicates that repeated-visit availability information is useful. The fair
+  prior marginal prediction still underpredicts detection and is less calibrated
+  than the bridge, so the next work should focus on latent component scale and
+  plausibility rather than another broad architecture change.
+- The 200-epoch latent repeated-visit run produced only modest additional gains
+  over e100. The prior marginal model moved slightly closer to the bridge, but
+  underprediction remained. This suggests the remaining gap is not mainly
+  optimizer runtime; it is a component-scale/identifiability issue in how
+  availability and conditional detection trade off.
+- The first global marginal-rate moment run (`marginal_rate_l2=100`, 100
+  epochs) did exactly what the constraint was intended to do: it pulled prior
+  marginal detection rates much closer to observed rates and improved pooled
+  ECE/max-bin error. It also reduced ranking and worsened several species-level
+  deltas, especially coastal/waterbird species. This makes it a useful
+  sensitivity result but not a new preferred model yet.
+- The 200-epoch marginal-rate sensitivity sweep is now confirming a smooth
+  calibration/ranking frontier rather than a single dominant model. The
+  `mrate25` run is currently the best diagnosed calibrated sensitivity: it
+  improves BCE and calibration over unconstrained e200 with less pooled-ranking
+  cost than `mrate100`. The `mrate50` headline metrics sit between `mrate25`
+  and `mrate100`, and its saved-output diagnostics confirm that it is a viable
+  midpoint rather than a clear replacement. Unconstrained e200 remains the
+  ranking-oriented latent reference; `mrate25` and `mrate50` now bracket the
+  useful calibrated sensitivity range.
+- The first species-wise marginal-rate anchor (`mrate25_srate10`) is a useful
+  but small nudge. It improves BCE, calibration, focus-season error, and
+  availability AUPRC versus `mrate25`, with a tiny pooled AUPRC cost. It does
+  not resolve the persistent species-level bridge losses, so the next useful
+  test is one stronger species-wise anchor before closing this axis.
+- The stronger species-wise anchor (`mrate25_srate50`) confirms that this axis
+  is also a calibration/ranking tradeoff rather than a fix for the main species
+  failures. It improves pooled calibration and focus-season error but reduces
+  AUPRC and does not remove recurring losses for Red-breasted Nuthatch, Tree
+  Swallow, Hooded Merganser, Laughing Gull, White-throated Sparrow, Bald Eagle,
+  Mallard, Swamp Sparrow, and several other species. Close rate-penalty tuning
+  for now and move to species/regime diagnostics.
+- Saved-output species-pattern diagnostics confirm that the remaining latent
+  losses are not a single-species-group problem. Mean AUPRC deltas versus the
+  two-component bridge are negative for water/coastal, urban/generalist,
+  open/agricultural, raptor/scavenger, and forest/woodland groups, while the
+  "other" bucket is slightly positive. Persistent failures are therefore more
+  likely tied to species-season detection/availability structure and component
+  scale than to a simple waterbird/coastal artifact. The next modeling axis
+  should be explicit species-season/phenology structure in the latent model,
+  not another scalar marginal-rate penalty.
+- Optional species-by-season offsets have now been added to the latent
+  repeated-visit model. They default to off, so all earlier runs remain
+  reproducible. The first full test should use a detection-side
+  species-season offset with shrinkage, because the strongest diagnostic
+  pattern is species-season prior-marginal underprediction rather than a
+  single ecological-group failure.
+- The first species-season detection-offset run
+  (`latent_repeated_visit_e200_mrate25_srate10_speciesseason_detection_l2_0p01`)
+  is the first latent variant in this sequence that improves the balanced
+  calibrated latent reference on ranking, BCE, and calibration at the same
+  time. It improves prior-marginal micro AUPRC, BCE, ECE, max-bin error, and
+  focus-season weighted absolute error relative to
+  `latent_repeated_visit_e200_mrate25_srate10`. It still trails the
+  two-component bridge on fair prior-marginal checklist AUPRC/BCE/calibration,
+  and persistent species losses remain, so the next step should be a tight
+  species-season shrinkage sensitivity rather than a new architecture.
+- The looser species-season detection-offset run
+  (`latent_repeated_visit_e200_mrate25_srate10_speciesseason_detection_l2_0p0025`)
+  is essentially tied with `0p01`, with tiny improvements in prior-marginal
+  AUPRC, BCE, calibration, ECE, and focus-season weighted error. The difference
+  is too small to justify more detection-side L2 tuning. Treat `0p0025` as the
+  current best saved species-season detection sensitivity, but consider this
+  axis closed unless a later diagnostic points back to it.
+- Persistent latent losses after the species-season detection-offset sweep are
+  still broad across groups, especially Tree Swallow, Hooded Merganser,
+  Red-breasted Nuthatch, Mallard, Bald Eagle, White-throated Sparrow,
+  Bufflehead, Swamp Sparrow, Double-crested Cormorant, Downy Woodpecker, and
+  several nuthatch/woodland species. The next useful probe is availability-side
+  species-season structure, because that tests whether the remaining gap is
+  true seasonal availability/phenology rather than checklist-level seasonal
+  detectability.
+- The first species-season availability-offset run is not a replacement for the
+  detection-side species-season model. It improves availability positive-triplet
+  AUPRC and slightly improves pooled ECE/max-bin error, but it worsens fair
+  prior-marginal checklist AUPRC, BCE, calibration error, and focus-season
+  weighted error relative to the best detection-side run. It also does not
+  remove the persistent species-loss pattern. Treat it as an informative
+  sensitivity: seasonal availability structure matters, but availability-side
+  offsets alone are not the missing piece.
 
 Current tested-method timeline:
 
@@ -65,8 +359,158 @@ Current tested-method timeline:
 6. Cross-regime validation across primary 10x10, coastal-stress, and
    regime-feature splits; the frozen-access residual GNN is modestly but
    consistently above matching tabular baselines, while gains remain small.
-7. Locality-season replication dataset and diagnostics, now followed by the
-   first aggregated binomial locality-season baseline.
+7. Locality-season replication dataset, replication diagnostics, and first
+   aggregated binomial locality-season baseline.
+8. First explicit two-component bridge script that uses an aggregate
+   locality-season availability score as input to a checklist-level detection
+   model with effort and timing features.
+9. First two-component checklist detection run, showing clear ranking/BCE gains
+   over one-component baselines and mostly sensible seasonal behavior.
+10. County-season and focus-species season calibration diagnostics for the
+    two-component bridge.
+11. Filtered probability-bin diagnostics with a minimum-pair threshold so stable
+    county-season and focus-species calibration failures can be separated from
+    tiny-bin artifacts.
+12. Focus-species monthly phenology and response-curve diagnostic outputs added
+    and generated for the stable 10/20 two-component run.
+13. Plausibility plotting and summary script added for monthly phenology,
+    environmental-response curves, and two-component versus availability-only
+    response-error differences.
+14. First combined neutral-point shrinkage run completed. It improved
+    calibration but produced mixed phenology/species effects, motivating
+    one-penalty ablation rather than stronger combined shrinkage.
+15. Residual-only shrinkage completed. It closely matched the combined result
+    but was marginally worse on pooled ranking, monthly error, and max-bin
+    calibration.
+16. Availability-weight-only shrinkage completed. It was almost indistinguishable
+    from the unregularized run, showing that residual shrinkage is the component
+    responsible for both the broad calibration improvement and its tradeoffs.
+17. Weaker residual-only shrinkage at `0.0025` completed. It split the difference
+    between the unregularized and `0.01` runs and justified one final midpoint
+    test at `0.005`.
+18. Midpoint residual shrinkage at `0.005` completed. The full sequence showed
+    a smooth tradeoff with no unique scalar optimum, so further global L2 tuning
+    was stopped in favor of partial pooling.
+19. Partially pooled effort responses completed at residual L2 `0.0025`. The
+    result is almost indistinguishable from weak species-specific shrinkage, so
+    the next ablation is a fully shared effort response rather than another
+    scalar tuning pass.
+20. Fully shared effort response completed at residual L2 `0.0025`. It degraded
+    ranking sharply, confirming that species-specific effort/detection responses
+    are required in this framework.
+21. Added the first latent repeated-visit availability/detection model script.
+    This is the first implementation of the repeated-visit likelihood rather
+    than another checklist-level detector or residual architecture variant.
+22. Ran the first full 20-epoch latent repeated-visit baseline. It produced
+    promising group-level availability ranking but underpredicted marginal
+    checklist detection rates, so the next step is a longer run with added
+    latent-diagnostic outputs rather than changing the architecture.
+23. Added latent diagnostic outputs that separate:
+    - prior marginal checklist detection before knowing held-out group history
+    - posterior marginal detection after conditioning on group detections
+      (diagnostic only, because it is label-informed)
+    - conditional detection within known-positive locality-seasons
+      (diagnostic only, because these groups are confirmed available)
+24. Set the next latent run to 100 epochs using the updated diagnostics. The
+    purpose is to test whether the e20 marginal-detection underprediction is
+    mainly optimization underfit before changing the latent architecture.
+25. Ran the 100-epoch latent repeated-visit model. Checklist-level prior
+    marginal prediction improved substantially and is now close to the
+    two-component bridge on ranking, but it remains undercalibrated. The
+    label-informed posterior diagnostic outperforms the bridge, supporting the
+    repeated-visit availability direction.
+26. Added `exp/diagnose_ebird_latent_repeated_visit.py` to compare latent runs
+    against each other and against the two-component bridge without retraining.
+    It writes headline comparisons, species deltas, availability species
+    summaries, and focus-species season deltas.
+27. Ran the 200-epoch latent repeated-visit model and diagnosed it against e100.
+    It improved prior marginal AUPRC from 0.56294 to 0.56802 and BCE from
+    0.30258 to 0.29878, but availability ranking slipped slightly and marginal
+    underprediction persisted.
+28. Added optional training-time marginal-rate moment penalties to
+    `exp/ebird_locality_season_latent_model.py`:
+    - `--marginal-rate-l2` anchors the overall prior marginal detection rate to
+      the observed training detection rate
+    - `--species-marginal-rate-l2` anchors species-wise prior marginal rates to
+      observed training rates
+    These are training constraints, not post-hoc calibration, and default to
+    zero so all previous runs are reproducible.
+29. Ran the first global marginal-rate moment probe:
+    `latent_repeated_visit_e100_mrate100`. It improved pooled prior-marginal
+    calibration but reduced ranking and worsened several species deltas,
+    especially coastal/waterbird species.
+30. Ran the apples-to-apples 200-epoch global marginal-rate probe:
+    `latent_repeated_visit_e200_mrate100`. It retained the calibration gain
+    with much smaller ranking and species-level cost than the e100
+    moment-constrained run.
+31. Ran and diagnosed the weaker 200-epoch `mrate25` probe. It improved BCE and
+    prior-marginal calibration relative to unconstrained e200 while preserving
+    more pooled ranking than `mrate100`, so it is now the best diagnosed
+    calibrated latent sensitivity run.
+32. Ran and diagnosed the 200-epoch `mrate50` probe. It is an intermediate
+    calibration/ranking point: slightly better BCE/calibration than `mrate25`,
+    slightly lower pooled AUPRC, and mixed species-level effects. This closes
+    the current global marginal-rate sweep.
+33. Added and ran `exp/compare_ebird_latent_repeated_visit_runs.py` for saved
+    latent run comparisons. The mrate sweep summary confirms a smooth global
+    frontier: stronger anchoring improves pooled/focus-season calibration but
+    gradually lowers pooled AUPRC and can worsen some species losses.
+34. Ran `latent_repeated_visit_e200_mrate25_srate10` and diagnosed it against
+    `mrate25`. The weak species-wise marginal anchor slightly improved
+    calibration, BCE, focus-season error, and availability AUPRC with only a
+    tiny AUPRC cost, but it did not materially fix the main species-level losses.
+35. Ran `latent_repeated_visit_e200_mrate25_srate50` and compared it across the
+    full latent sensitivity set. It further improved pooled/focus-season
+    calibration, but the cost to pooled AUPRC increased and the recurring
+    species-level bridge losses persisted. This closes the current scalar
+    rate-penalty tuning axis.
+36. Added and ran `exp/diagnose_ebird_latent_species_patterns.py` on the full
+    latent sensitivity set. The output shows broad, persistent losses across
+    several species groups and identifies species-season underprediction as the
+    next target before any additional latent architecture work.
+37. Added optional species-by-season latent offsets to
+    `exp/ebird_locality_season_latent_model.py`:
+    `--species-season-mode {none,availability,detection,both}` and
+    `--species-season-l2`. Smoke tests passed for the default path and the
+    detection-offset path.
+38. Ran the first full species-season detection-offset latent model with
+    `--species-season-mode detection --species-season-l2 0.01`. This was a
+    positive direction: it improved the balanced calibrated latent reference on
+    AUPRC, BCE, and calibration, while leaving the two-component bridge ahead
+    and several species-level losses unresolved.
+39. Ran the looser species-season detection-offset sensitivity at
+    `--species-season-l2 0.0025`. It was effectively tied with `0.01`, with
+    very small pooled and focus-season improvements but no meaningful change to
+    the persistent species-loss pattern. Detection-side species-season L2 tuning
+    is therefore closed for now.
+40. Ran the first species-season availability-offset sensitivity at
+    `--species-season-mode availability --species-season-l2 0.01`. It improved
+    availability ranking and slightly improved ECE/max-bin error, but it reduced
+    prior-marginal checklist ranking, worsened BCE/calibration error, worsened
+    focus-season weighted error, and did not resolve the persistent species
+    losses. Availability-only species-season offsets are therefore not promoted.
+41. Ran the combined species-season sensitivity with offsets in both
+    availability and detection. It tied the best detection-only run on pooled
+    AUPRC, modestly improved BCE and checklist calibration, slightly worsened
+    focus-season error and availability ranking, and left the same persistent
+    species losses. Parameter magnitudes show seasonal signal being split
+    across both latent components. This closes the current species-season
+    placement/L2 axis and shifts the next work to component and replication-
+    support diagnostics.
+42. Reproduced the preferred detection-only species-season run with compact
+    component diagnostics. Fair group any-detection errors improve under
+    stronger date and duration-bin support, while high-support checklist
+    detection remains underpredicted. Known-positive conditional-detection
+    diagnostics are close to aligned in the strongest support strata. Added
+    optional stricter group-support filters so the next run can test whether
+    stronger repeated-visit information stabilizes the latent separation.
+43. Ran the stricter-support sensitivity requiring five dates and three
+    duration bins. It improved several calibration summaries and produced
+    nearly exact group any-detection calibration in the strongest support
+    strata, but medium-support any-detection remained overpredicted and
+    high-support checklist frequency remained underpredicted. This identifies
+    conditional independence of repeated detections as the next assumption to
+    test rather than supporting progressively stricter filtering.
 
 How to maintain this document going forward:
 
@@ -156,6 +600,51 @@ How to maintain this document going forward:
   plausibly available to be detected at a locality during a season. It is not
   identical to confirmed occupancy, but it is closer to the biological process
   than checklist-level detection.
+- **Conditional detection probability (`p`)**: The modeled probability that a
+  species is detected on a particular checklist given that it is available in
+  that locality-season. Effort, protocol, observer count, time of day, and
+  within-season timing can affect this component.
+- **Prior marginal checklist detection (`psi * p`)**: The held-out probability
+  of a checklist detection before using any detections from that held-out
+  locality-season. This is the fair checklist-level prediction from the latent
+  model.
+- **Conditional any-detection probability**: For a species that is available in
+  a locality-season with repeated checklists, the probability it is detected at
+  least once: `1 - product(1 - p_i)`.
+- **Prior group any-detection probability**: The observable group-level target
+  `psi * (1 - product(1 - p_i))`. It can be compared fairly with whether the
+  species was detected at least once in the locality-season. It is not the same
+  as occupancy probability.
+- **Known-positive-group detection diagnostic**: Conditional-detection
+  evaluation restricted to locality-season/species groups with at least one
+  observed detection. It is useful for interpreting `p`, but it is
+  label-informed and selection-biased, so it is not a fair stand-alone test
+  metric.
+- **Replication support**: The amount and diversity of repeated observation
+  information in a locality-season, including checklist count, distinct dates,
+  effort bins, protocols, and observers. Stronger replication support should
+  make availability/detection separation more stable.
+- **Conditional independence of repeated detections**: The current latent
+  likelihood assumes that checklist detections are independent after
+  conditioning on species availability and each checklist's detection
+  probability. Shared weather, abundance, observer skill, and local conditions
+  can violate this assumption.
+- **Pairwise co-detection probability**: The probability that a species is
+  detected on two distinct checklists in the same locality-season. Under the
+  independent model, its prior expectation is availability multiplied by the
+  product of the two conditional detection probabilities. Under a frailty
+  model, the product is integrated over the shared random effect. Comparing
+  observed and predicted pairwise rates is a fair diagnostic of residual
+  dependence.
+- **Detection overdispersion / detection frailty**: Extra repeated-visit
+  heterogeneity beyond the modeled checklist covariates. A shared latent
+  detection propensity or random effect can induce positive correlation among
+  visits without memorizing a specific locality, but it must be constrained so
+  it does not absorb the availability component.
+- **Hierarchical species frailty**: A shared global detection-frailty scale
+  plus zero-centered species deviations. This preserves the broadly supported
+  repeated-detection dependence while allowing regularized species departures,
+  rather than estimating unrelated absolute scales for every species.
 - **Adequately sampled locality-season**: A locality-season group with enough
   repeated and varied effort to be useful for availability/detection
   separation. The current flag requires at least two dates and at least two
@@ -5337,6 +5826,2256 @@ Locality-season baseline command:
 python exp/ebird_locality_season_baseline.py --dataset-dir data/ebird/locality_season_top100 --epochs 30
 ```
 
+Completed full locality-season baseline:
+
+- Rows:
+  - train: 2,361,700 locality-season/species rows
+  - test: 993,200 rows
+  - unused: 77,900 rows
+- Checklist trials:
+  - train: 31,518,300
+  - test: 12,771,900
+- Held-out detections: 1,961,663
+- Held-out observed detection rate: 0.1536
+- Overall held-out model comparison:
+  - `train_prevalence`: weighted BCE 0.3587; weighted MAE rate 0.1442;
+    positive-triplet AUROC/AUPRC 0.7615 / 0.6394; calibration error 0.0039
+  - `availability`: weighted BCE 0.3151; weighted MAE rate 0.1171;
+    positive-triplet AUROC/AUPRC 0.8474 / 0.7320; calibration error 0.0031
+  - `effort`: weighted BCE 0.3390; weighted MAE rate 0.1290;
+    positive-triplet AUROC/AUPRC 0.7969 / 0.6820; calibration error 0.0076
+  - `combined`: weighted BCE 0.2990; weighted MAE rate 0.1035;
+    positive-triplet AUROC/AUPRC 0.8723 / 0.7737; calibration error 0.0045
+- Species-level means show the same pattern:
+  - `train_prevalence`: mean species AUROC/AUPRC 0.5000 / 0.3544
+  - `availability`: mean species AUROC/AUPRC 0.7589 / 0.5513
+  - `effort`: mean species AUROC/AUPRC 0.6687 / 0.4537
+  - `combined`: mean species AUROC/AUPRC 0.8104 / 0.6305
+- The combined model improved species-level AUPRC for 98 of 100 species versus
+  availability-only. The largest gains were for Swamp Sparrow, Mallard, Common
+  Yellowthroat, White-eyed Vireo, Belted Kingfisher, Black Vulture, Great Blue
+  Heron, Indigo Bunting, Northern Rough-winged Swallow, and Wood Duck.
+- The only species with AUPRC declines versus availability-only were House
+  Sparrow and Red-breasted Nuthatch. These should be checked before treating
+  effort effects as uniformly beneficial.
+- Interpretation:
+  - Availability features, especially season plus environment, explain much
+    more locality-season detection-rate structure than effort summaries alone.
+  - Effort summaries still add broad complementary information once the
+    availability component is present.
+  - This is exactly the desired direction for the pivot: first model
+    locality-season availability, then let visit/checklist-level effort explain
+    detection conditional on availability.
+  - The combined model is best for ranking and BCE, but availability-only has
+    the lowest aggregate calibration error. This calibration/ranking distinction
+    should remain explicit in the next model.
+- Focus-species season checks are biologically sensible:
+  - Wood Thrush has high early-breeding detection rate (observed 0.1296;
+    combined 0.1106) and essentially zero winter detection (observed 0.0000;
+    combined 0.0004). Effort-only incorrectly predicts a flat winter rate near
+    0.0339.
+  - Green Heron has breeding-season peaks and near-zero winter detection
+    (observed 0.0008; combined 0.0014), while effort-only again predicts a
+    non-biological winter rate near 0.0421.
+  - Black-and-white Warbler shows the same pattern: winter observed 0.0071,
+    combined 0.0093, effort-only 0.0439.
+  - Resident/generalist species such as Northern Cardinal and Eastern Towhee
+    retain broad year-round rates, with seasonal peaks and mild underprediction
+    in some high-detection seasons.
+- Next modeling implication: move from the aggregate binomial bridge to an
+  explicit two-component model. The first version should preserve this
+  availability/effort separation rather than collapsing everything back into a
+  single checklist-level detector.
+
+Two-component checklist detection bridge:
+
+- Added `exp/ebird_locality_season_detection_model.py`.
+- This script implements the first explicit bridge from the aggregate
+  locality-season baseline to a checklist-level detection model.
+- Stage 1 fits an aggregate availability-style model from biological
+  season/year and environmental medians:
+
+```
+n_detections ~ Binomial(n_checklists, p_available_detectable_locality_season_species)
+```
+
+- Stage 2 broadcasts the aggregate locality-season/species availability score
+  back to individual complete checklists and fits checklist-level detection
+  models with effort and timing features:
+  - `train_prevalence`: species train prevalence only
+  - `availability_only`: aggregate locality-season/species score only
+  - `effort_only`: checklist effort/timing features plus species intercept
+  - `two_component`: aggregate availability score plus checklist effort/timing
+    features
+- The intended interpretation is not "did AUROC move a tiny amount?" The key
+  checks are:
+  - Does `availability_only` preserve the biologically plausible
+    locality-season/phenology structure from the aggregate baseline?
+  - Does `two_component` improve checklist-level detection calibration or
+    ranking without destroying seasonal plausibility?
+  - Do effort effects help focus species and effort strata in ways that are
+    consistent with detection rather than observer geography?
+- The script writes:
+  - `{run_name}_metrics.csv`
+  - `{run_name}_species_metrics.csv`
+  - `{run_name}_species_delta_vs_availability.csv`
+  - `{run_name}_calibration.csv`
+  - `{run_name}_focus_species_season.csv`
+  - `{run_name}_strata_metrics.csv`
+  - `{run_name}_strata_deltas.csv`
+  - `{run_name}_county_season_metrics.csv`
+  - `{run_name}_county_season_deltas.csv`
+  - `{run_name}_county_season_calibration.csv`
+  - `{run_name}_focus_species_season_calibration.csv`
+  - `{run_name}_focus_species_month.csv`
+  - `{run_name}_focus_species_response.csv`
+  - `{run_name}_summary.json`
+- A small smoke pass validated the joins, label construction, availability
+  broadcast, and output writing. The smoke pass is not biologically
+  interpretable because it used one epoch and a small checklist subset.
+
+Two-component checklist detection command:
+
+```
+python exp/ebird_locality_season_detection_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --availability-epochs 30 --detection-epochs 30
+```
+
+If runtime is too long, the first acceptable full-ish diagnostic run is:
+
+```
+python exp/ebird_locality_season_detection_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --availability-epochs 10 --detection-epochs 20 --run-name two_component_checklist_detection_e10_d20
+```
+
+Completed first two-component checklist detection run:
+
+- Command:
+
+```
+python exp/ebird_locality_season_detection_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --availability-epochs 10 --detection-epochs 20 --run-name two_component_checklist_detection_e10_d20
+```
+
+- Retained 450,699 of 661,979 checklists after locality-season filters.
+- Checklist rows:
+  - train: 315,183
+  - test: 127,719
+  - unused: 7,797
+- Checklist/species pairs:
+  - train: 31,518,300
+  - test: 12,771,900
+- Held-out detections: 1,961,663
+- Held-out observed detection rate: 0.1536
+- Overall held-out checklist-level metrics:
+  - `train_prevalence`: BCE 0.3587; micro AUROC/AUPRC 0.7764 / 0.4209;
+    ECE 0.0039; calibration error 0.0039
+  - `availability_only`: BCE 0.3154; micro AUROC/AUPRC 0.8480 / 0.5077;
+    ECE 0.0052; calibration error 0.0031
+  - `effort_only`: BCE 0.3168; micro AUROC/AUPRC 0.8457 / 0.5154;
+    ECE 0.0070; calibration error 0.0069
+  - `two_component`: BCE 0.2910; micro AUROC/AUPRC 0.8761 / 0.5767;
+    ECE 0.0066; calibration error 0.0065
+- Mean species-level metrics:
+  - `train_prevalence`: mean species AUROC/AUPRC 0.5000 / 0.1535;
+    mean species calibration error 0.0085
+  - `availability_only`: mean species AUROC/AUPRC 0.7537 / 0.2996;
+    mean species calibration error 0.0090
+  - `effort_only`: mean species AUROC/AUPRC 0.7525 / 0.3017;
+    mean species calibration error 0.0099
+  - `two_component`: mean species AUROC/AUPRC 0.8154 / 0.3881;
+    mean species calibration error 0.0108
+- Species-level AUPRC:
+  - `two_component` improved over `availability_only` for 99 of 100 species.
+  - Largest AUPRC gains were for White-eyed Vireo, Eastern Wood-Pewee, Common
+    Yellowthroat, Ruby-crowned Kinglet, Turkey Vulture, American Redstart,
+    Eastern Phoebe, Indigo Bunting, Blue-gray Gnatcatcher, and Swamp Sparrow.
+  - The only AUPRC decline was Red-breasted Nuthatch (-0.0094), so this species
+    remains the main case to inspect for overcorrection or weak support.
+- Focus-species seasonal plausibility remains mostly sound:
+  - Wood Thrush early breeding is captured almost exactly by `two_component`
+    (observed 0.1296; predicted 0.1295) and winter remains near zero (observed
+    0.0000; predicted 0.0008).
+  - Green Heron winter remains near zero (observed 0.0008; predicted 0.0016),
+    while breeding-season rates remain high.
+  - Black-and-white Warbler winter is corrected downward relative to
+    `availability_only` and `effort_only` (observed 0.0071; `two_component`
+    0.0064).
+  - Northern Cardinal and Eastern Towhee retain broad year-round detection
+    patterns, though `two_component` mildly underpredicts some resident-season
+    rates.
+- Interpretation:
+  - This is the strongest evidence so far that the pivot is productive. The
+    aggregate availability score carries biological/seasonal structure, and
+    checklist-level effort/timing adds substantial detection-ranking signal.
+  - The result is not just another spatial-GNN architecture tweak; it explicitly
+    separates locality-season availability from checklist-level detection while
+    still using complete-checklist non-detections.
+  - Calibration is acceptable but not uniformly best. `availability_only` has
+    the lowest pooled calibration error, while `two_component` has much better
+    BCE/ranking. Future work should inspect calibration by probability bin,
+    species, effort strata, and season rather than relying on pooled ECE alone.
+- Script update after this run: the script now also writes calibration-bin
+  outputs and species AUPRC deltas versus availability-only, and prints mean
+  species-level metrics in the console for future runs.
+
+Two-component diagnostic script:
+
+- Added `exp/diagnose_ebird_locality_season_detection.py`.
+- This reads saved outputs from the two-component checklist detection bridge and
+  summarizes:
+  - overall metric deltas for `two_component` versus `availability_only`,
+    `effort_only`, and `train_prevalence`
+  - mean species-level AUROC/AUPRC/calibration
+  - species AUPRC gains/losses versus availability-only
+  - worst predicted-probability calibration bins
+  - focus-species/season calibration changes versus availability-only
+  - effort/locality stratum deltas and worst stratum calibration when
+    `_strata_metrics.csv` and `_strata_deltas.csv` are available
+  - county-season AUPRC/ECE deltas and worst county-season probability bins when
+    the county-season calibration CSVs are available
+  - focus-species season probability-bin calibration when
+    `_focus_species_season_calibration.csv` is available
+- This script does not retrain the model and does not reconstruct
+  checklist-level predictions. It is a fast diagnostic layer from saved summary
+  outputs. County-season and focus-season calibration bins are available after
+  rerunning the detection model script with the current version.
+
+Diagnostic command:
+
+```
+python exp/diagnose_ebird_locality_season_detection.py --model-dir data/ebird/locality_season_top100/detection_models --run-name two_component_checklist_detection_e10_d20 --top 10
+```
+
+Direct effort/locality stratum diagnostics were added to the two-component
+training script after this saved-output diagnostic pass. These are computed
+inside the training run while checklist-level predictions are already in memory,
+rather than saving large prediction matrices for a separate post-processing
+step.
+
+Rerun command to add the stratum outputs:
+
+```
+python exp/ebird_locality_season_detection_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --availability-epochs 10 --detection-epochs 20 --run-name two_component_checklist_detection_e10_d20
+```
+
+New output files from that rerun:
+
+- `two_component_checklist_detection_e10_d20_strata_metrics.csv`
+- `two_component_checklist_detection_e10_d20_strata_deltas.csv`
+- updated `two_component_checklist_detection_e10_d20_summary.json` with stratum
+  row counts and the `stratum_min_checklists` setting
+
+The strata currently include protocol, duration, effort distance, observer
+count, start-hour bin, biological season, locality type, county,
+locality-season checklist-count bin, locality-season date-count bin, and
+locality-season effort-bin count. This is intended to answer where the
+two-component availability/detection bridge helps because effort explains
+missed detections, and where it overcorrects relative to availability-only or
+effort-only baselines.
+
+Completed first effort/locality stratum diagnostics:
+
+- The rerun reproduced the previous overall and species-level two-component
+  results exactly, then added stratum metrics and deltas.
+- Across the reported large strata, `two_component` improved micro-AUPRC over
+  `availability_only` in every stratum:
+  - minimum stratum micro-AUPRC delta: +0.0177
+  - maximum stratum micro-AUPRC delta: +0.0943
+  - negative stratum deltas: 0 of 66
+- The largest AUPRC gains over availability-only occurred in several county
+  strata and in broad effort/season strata:
+  - Person, Craven, Forsyth, Gaston, Henderson, Cumberland, Wake, and Orange
+    counties
+  - checklists with 3+ observers
+  - fall migration and winter
+  - locality-seasons with 26-50 checklists
+- The smallest gains were still positive, not true losses. They included
+  Jackson County, short-duration checklists, several duration bins, Carteret,
+  Yancey, Transylvania, the `(2,5]` and `(0.5,2]` distance bins, and Beaufort.
+  The console label was updated after this run so future output says
+  "smallest gains" unless an actual negative stratum delta exists.
+- Calibration changed differently by stratum:
+  - Strong calibration improvements versus availability-only occurred for long
+    and very short duration strata, long-distance traveling strata, evening and
+    early-morning strata, 3+ observers, Stationary protocol, and zero-distance
+    checklists.
+  - The largest calibration degradations were concentrated in specific counties
+    and spring migration. Beaufort, Guilford, Yancey, Wake, Forsyth, Craven,
+    Dare, and Haywood should be treated as county-level calibration inspection
+    targets, not as evidence that the two-component bridge failed overall.
+- Worst `two_component` stratum calibration was mostly county-specific:
+  Craven, Transylvania, Yancey, Beaufort, Person, Cumberland, Guilford, Wake,
+  Henderson, Watauga, and Gaston. A low-replication locality-season date bin
+  (`1-2` dates) also appeared, which reinforces that replication depth matters.
+- Interpretation:
+  - This is a strong diagnostic result for the pivot. The two-component model is
+    not only improving pooled metrics; it improves ranking across all tested
+    effort/locality strata.
+  - The remaining issue is calibration locality/regime heterogeneity, not a lack
+    of effort/detection signal.
+  - The next step should be calibration and component diagnostics for the
+    two-component bridge, not another broad spatial-GNN architecture variant.
+
+Completed first two-component diagnostics:
+
+- Overall deltas for `two_component` versus `availability_only`:
+  - BCE improved by -0.0243.
+  - Micro AUROC improved by +0.0281.
+  - Micro AUPRC improved by +0.0690.
+  - ECE worsened slightly by +0.0015.
+  - Pooled calibration error worsened slightly by +0.0034.
+  - Max bin error improved substantially because `availability_only` had a very
+    small high-probability bin with severe overprediction.
+- Overall deltas for `two_component` versus `effort_only`:
+  - BCE improved by -0.0257.
+  - Micro AUROC improved by +0.0305.
+  - Micro AUPRC improved by +0.0613.
+  - ECE and pooled calibration error were slightly better.
+- Species-level AUPRC versus availability-only:
+  - improved for 99 species
+  - declined for one species
+  - mean species AUPRC delta was +0.0885
+  - Red-breasted Nuthatch remains the only negative species-level AUPRC case
+    (-0.0094)
+- Worst calibration bins:
+  - `availability_only` has a severe high-probability calibration issue in the
+    0.9-1.0 bin: mean predicted 0.9328 versus observed 0.6651, but only 1,072
+    pairs are in that bin.
+  - `two_component` has its largest bin errors in much larger mid-probability
+    bins: 0.3-0.4, 0.4-0.5, and 0.5-0.6. It tends to underpredict observed rates
+    in these bins by about 0.02.
+  - This suggests that `two_component` improves ranking and removes the most
+    extreme high-bin issue, but still needs calibration diagnostics beyond a
+    single pooled ECE value.
+- Focus species/season:
+  - `two_component` most improved absolute error for Double-crested Cormorant
+    early breeding, Black-and-white Warbler fall migration/winter, and Wood
+    Thrush winter.
+  - `two_component` most worsened absolute error for Northern Cardinal winter,
+    Eastern Towhee late breeding/winter, Double-crested Cormorant winter/late
+    breeding, and Wood Thrush spring migration.
+  - Several worsened focus rows are resident/generalist or common-waterbird
+    cases where availability-only was already close, so the effort correction may
+    be over-adjusting some high-prevalence seasonal rates.
+- Interpretation:
+  - The bridge is on the right track. The main value is not only a metric bump;
+    it is that availability and detection are now separable enough to diagnose
+    where effort/timing helps versus where it overcorrects.
+  - The next modeling step should be diagnostic-driven calibration and
+    focus-species inspection, not another broad architecture sweep.
+
+Completed county-season and focus-season calibration diagnostics:
+
+- The repeated 10/20 two-component run reproduced the earlier headline metrics:
+  `two_component` held-out BCE 0.2910, micro AUROC 0.8762, micro AUPRC 0.5767,
+  and ECE 0.0066. This suggests the current run is stable enough for
+  diagnostics without immediately moving to a longer 30/30 epoch run.
+- The diagnostic script now filters ranked probability-bin calibration rows
+  with `--min-bin-pairs` (default `100`). This matters because the unfiltered
+  focus-species and county-season bin tables were dominated by tiny bins with
+  only a handful of checklist/species pairs.
+- The filtered rerun successfully excluded tiny probability bins from the
+  ranked tables. Stable county-season issues remain concentrated in Dare
+  high-probability bins, Carteret spring migration, and Craven winter, while
+  stable focus-species issues include Eastern Meadowlark overprediction, Great
+  Egret high-probability overprediction, and selected underprediction for
+  Double-crested Cormorant, Green Heron, and Black-and-white Warbler.
+- County-season ranking remained broadly positive:
+  - county-season AUPRC improved in all reported county-season groups
+  - minimum county-season AUPRC gain was about +0.021
+  - maximum county-season AUPRC gain was about +0.112
+  - largest gains included Craven winter, Henderson winter, Forsyth late
+    breeding/fall/winter, Cumberland winter, Wake winter, Guilford winter, and
+    Watauga spring migration
+- Remaining county-season concerns are calibration pockets, not ranking:
+  - worst overall county-season ECE included Chatham early breeding, Watauga
+    early breeding, Henderson fall migration, Craven winter, Guilford spring
+    migration/early breeding, Wake spring/winter, Brunswick early breeding, and
+    Dare early breeding
+  - after filtering to bins with at least 100 pairs, stable high-probability
+    overprediction is concentrated in Dare, especially winter/spring/fall
+    high-probability bins; Carteret spring also appears
+  - Craven winter shows an opposite issue in one stable bin: underprediction
+    around the 0.6-0.7 probability range
+- Focus-species stable probability-bin issues:
+  - Eastern Meadowlark is overpredicted in several stable early/spring/fall
+    seasonal bins
+  - Great Egret has high-probability seasonal overprediction in fall/late
+    breeding
+  - Double-crested Cormorant late breeding and Green Heron fall show
+    underprediction in stable bins
+  - Wood Thrush still passes the important sanity check of near-zero winter
+    detection, but spring migration remains underpredicted
+- Interpretation:
+  - The two-component bridge is now clearly more useful than the one-component
+    baselines for ranking and stratified detection prediction.
+  - The next work should not chase small pooled metric gains. It should test
+    whether the availability component and detection component produce
+    biologically plausible seasonal and environmental responses for focus
+    species.
+  - Post-hoc calibration or calibration-aware loss may be useful later, but it
+    should follow response/phenology diagnostics so calibration fixes do not
+    hide ecological misspecification.
+
+Completed first monthly phenology and environmental-response diagnostic review:
+
+- The updated model run wrote:
+  - 120 monthly focus-species rows: 10 species x 12 months
+  - 320 environmental-response rows: 10 species x 4 covariates x 8 bins
+- Monthly phenology:
+  - the two-component model had lower checklist-weighted monthly error than
+    availability-only for Eastern Meadowlark, Green Heron, Great Egret, Wood
+    Thrush, and Black-and-white Warbler
+  - availability-only remained better for Red-headed Woodpecker, House Sparrow,
+    Double-crested Cormorant, Eastern Towhee, and Northern Cardinal, although
+    the Northern Cardinal difference was small in aggregate
+  - the two-component model corrected useful seasonal errors such as Green Heron
+    and Wood Thrush near-zero months and Black-and-white Warbler late fall
+  - its largest monthly degradations were mostly level shifts for common
+    residents or waterbirds, including Eastern Towhee summer/winter, Northern
+    Cardinal winter, and Double-crested Cormorant winter
+- Environmental response:
+  - across focus species, response-bin probability error was slightly worse for
+    the two-component model than availability-only for canopy, water distance,
+    and coast distance, and approximately tied for elevation
+  - response shape ordering was nevertheless usually retained; mean Spearman
+    agreement improved for canopy and water distance but weakened somewhat for
+    coastline distance and elevation
+  - strong two-component improvements included Double-crested Cormorant canopy
+    and elevation, Great Egret elevation, and Red-headed Woodpecker elevation
+    and coastline distance
+  - the largest degradations were concentrated in Northern Cardinal across
+    multiple covariates, Eastern Towhee canopy/coast distance, and smaller
+    probability-level shifts for Wood Thrush despite strong shape agreement
+- Interpretation:
+  - the detection component is adding real ranking signal without generally
+    destroying ecological ordering
+  - the main failure is probability-level overcorrection or undercorrection for
+    some species/regimes, not wholesale ecological response reversal
+  - this supports testing shrinkage or partial pooling of species-specific
+    detection effects rather than replacing the framework or returning to a
+    broad GNN architecture search
+  - these are marginal binned response diagnostics, not causal partial
+    dependence curves; season, geography, and correlated habitat covariates can
+    still confound their shapes
+- Visual review of the generated plots confirmed this interpretation:
+  - the two-component curve generally follows the availability-only curve rather
+    than reversing its shape
+  - Northern Cardinal shows a systematic downward shift from availability-only
+    across elevation, water-distance, and coastline-distance bins
+  - Eastern Towhee shows its largest degradation for canopy and coastline
+    response levels
+  - Wood Thrush retains the expected increasing canopy/elevation/distance
+    response shapes, but the two-component correction suppresses the highest
+    predicted habitat bins too strongly
+  - Double-crested Cormorant is the clearest focus-species case where the
+    two-component environmental-response levels improve over availability-only
+- This is sufficient evidence to test neutral-point shrinkage of the
+  checklist-level correction before changing model families.
+
+Plausibility plotting command:
+
+```
+python exp/plot_ebird_locality_season_plausibility.py --model-dir data/ebird/locality_season_top100/detection_models --run-name two_component_checklist_detection_e10_d20
+```
+
+The script writes:
+
+- `phenology_overview.png`
+- one four-panel environmental-response plot per focus species
+- `environmental_response_mae_delta.png`
+- `phenology_summary.csv`
+- `environmental_response_summary.csv`
+- `metadata.json`
+
+under:
+
+`data/ebird/locality_season_top100/detection_models/diagnostics/plausibility/two_component_checklist_detection_e10_d20`
+
+Completed first combined detection-shrinkage experiment:
+
+- Run:
+  `two_component_checklist_detection_shrink_r0p01_a0p01`
+- Penalties:
+  - residual/intercept/effort L2: `0.01`
+  - availability-weight-to-one L2: `0.01`
+- Pooled changes versus the unregularized two-component run:
+  - BCE: +0.0008, slightly worse
+  - micro AUROC: -0.0010
+  - micro AUPRC: -0.0012
+  - ECE: -0.0022, improving from 0.0066 to 0.0044
+  - max bin error: -0.0047, improving from 0.0230 to 0.0182
+  - pooled mean-rate calibration error: -0.0025
+- Mean species changes:
+  - AUROC: -0.0019
+  - AUPRC: -0.0023
+  - calibration error: -0.0008
+- Species effects were heterogeneous:
+  - Red-breasted Nuthatch AUPRC improved by +0.0069, reducing its deficit versus
+    availability-only from -0.0094 to -0.0024, although its species calibration
+    error worsened slightly
+  - Gray Catbird and Red-eyed Vireo also gained AUPRC
+  - larger AUPRC losses included Yellow-billed Cuckoo (-0.0202),
+    Golden-crowned Kinglet (-0.0131), Acadian Flycatcher (-0.0125), Hermit
+    Thrush (-0.0108), Bufflehead (-0.0107), and Hooded Merganser (-0.0100)
+- Monthly phenology:
+  - overall focus-species weighted monthly MAE worsened from 0.01759 to 0.01799
+  - Black-and-white Warbler, Red-headed Woodpecker, Eastern Towhee, House
+    Sparrow, and Wood Thrush improved slightly
+  - Green Heron and Double-crested Cormorant worsened the most
+- Environmental responses:
+  - mean weighted response error improved slightly for all four covariates
+  - the strongest improvements were Black-and-white Warbler canopy and Wood
+    Thrush water/elevation/coast responses
+  - shape agreement was mostly stable, but some Green Heron response shapes
+    weakened
+- Learned regularized parameter summary:
+  - species intercept RMS: 0.1456
+  - effort-weight RMS: 0.1923
+  - mean availability multiplier: 1.0675
+  - availability-multiplier deviation RMS from one: 0.0913
+- Interpretation:
+  - the combined penalty demonstrates that calibration can improve without a
+    large pooled ranking collapse
+  - it is not yet preferable overall because monthly phenology and individual
+    species effects are mixed
+  - because two penalties changed simultaneously, the next experiment should
+    isolate residual/effort shrinkage from availability-weight shrinkage
+
+Saved-run comparison utility:
+
+```
+python exp/compare_ebird_locality_season_runs.py --run two_component_checklist_detection_e10_d20 --run two_component_checklist_detection_shrink_r0p01_a0p01
+```
+
+This writes pooled, species, phenology, and environmental-response comparison
+CSVs under:
+
+`data/ebird/locality_season_top100/detection_models/diagnostics/run_comparisons`
+
+Completed residual-only shrinkage ablation:
+
+- Run:
+  `two_component_checklist_detection_shrink_r0p01_a0`
+- Penalties:
+  - residual/intercept/effort L2: `0.01`
+  - availability-weight-to-one L2: `0`
+- Changes versus the unregularized two-component run:
+  - BCE: +0.0008
+  - micro AUROC: -0.0011
+  - micro AUPRC: -0.0014
+  - ECE: -0.0022, improving from 0.0066 to 0.0044
+  - max bin error: -0.0016, improving from 0.0230 to 0.0213
+  - mean species AUPRC: -0.0023
+  - mean species calibration error: -0.0008
+- Changes versus the combined `0.01 / 0.01` run were very small:
+  - micro AUPRC was lower by about 0.0002
+  - ECE was effectively unchanged
+  - max bin error was worse by about 0.0031
+  - mean focus-species monthly MAE was worse by about 0.00005
+  - mean environmental-response MAE was better by only about 0.00001
+- The species gains/losses were also nearly the same as the combined run.
+  Red-breasted Nuthatch again gained about +0.0069 AUPRC, while
+  Yellow-billed Cuckoo, Golden-crowned Kinglet, Acadian Flycatcher, Hermit
+  Thrush, Bufflehead, and Hooded Merganser remained among the largest losses.
+- Parameter comparison:
+  - residual-only effort-weight RMS: 0.1951
+  - combined effort-weight RMS: 0.1923
+  - residual-only availability multiplier mean/deviation: 1.0853 / 0.1178
+  - combined availability multiplier mean/deviation: 1.0675 / 0.0913
+- Interpretation:
+  - residual shrinkage is responsible for nearly all of the broad ECE
+    improvement and most of the species-ranking cost
+  - availability-weight shrinkage contributes a small benefit to max-bin
+    calibration and pooled ranking when combined with residual shrinkage
+  - neither run is a clear new default because both slightly worsen aggregate
+    focus-species monthly phenology
+  - the next clean experiment is availability-weight-only shrinkage
+
+The initial three-run comparison failed only while writing output because the
+automatic filename exceeded a Windows path-component limit. The comparison
+script now uses a compact hashed name by default and also accepts
+`--comparison-name`. The repaired comparison completed successfully.
+
+Completed availability-weight-only shrinkage ablation:
+
+- Run:
+  `two_component_checklist_detection_shrink_r0_a0p01`
+- Penalties:
+  - residual/intercept/effort L2: `0`
+  - availability-weight-to-one L2: `0.01`
+- Changes versus the unregularized two-component run:
+  - BCE: +0.00014
+  - micro AUROC: -0.00019
+  - micro AUPRC: +0.00007
+  - ECE: -0.00006
+  - max bin error: -0.00132, from 0.02295 to 0.02163
+  - mean species AUPRC: +0.00007
+  - mean species calibration error: -0.00004
+- Plausibility changes were also very small:
+  - mean focus-species monthly MAE increased by 0.00003
+  - mean environmental-response MAE improved by 0.00011
+  - mean response-shape Spearman declined by 0.00179
+- Species effects were much smaller than under residual shrinkage:
+  - the largest AUPRC gain was Gray Catbird at +0.00555
+  - the largest AUPRC loss was Hooded Merganser at -0.00282
+  - Red-breasted Nuthatch gained +0.00131 but still remained below its
+    availability-only comparator
+- Learned parameter summary:
+  - species intercept RMS: 0.7088
+  - effort-weight RMS: 0.2354
+  - mean availability multiplier: 0.9578
+  - availability-multiplier deviation RMS from one: 0.0976
+- Four-run comparison:
+  - unregularized micro AUPRC / ECE: 0.57670 / 0.00664
+  - combined `0.01 / 0.01`: 0.57549 / 0.00442
+  - residual-only `0.01`: 0.57528 / 0.00443
+  - availability-only `0.01`: 0.57677 / 0.00658
+- Interpretation:
+  - availability-weight shrinkage alone is effectively a no-op at this strength
+  - residual shrinkage produces nearly all of the pooled calibration gain and
+    nearly all of the associated ranking and phenology cost
+  - the combined penalty's slightly better max-bin behavior does not justify
+    treating availability-weight shrinkage as the primary control
+  - the next clean experiment is weaker residual-only shrinkage, not a stronger
+    availability penalty
+
+Four-run comparison command:
+
+```
+python exp/compare_ebird_locality_season_runs.py --run two_component_checklist_detection_e10_d20 --run two_component_checklist_detection_shrink_r0p01_a0p01 --run two_component_checklist_detection_shrink_r0p01_a0 --run two_component_checklist_detection_shrink_r0_a0p01 --comparison-name shrinkage_ablation_001
+```
+
+The comparison outputs are under:
+
+`data/ebird/locality_season_top100/detection_models/diagnostics/run_comparisons`
+
+Completed weaker residual-only shrinkage experiment:
+
+- Run:
+  `two_component_checklist_detection_shrink_r0p0025_a0`
+- Penalties:
+  - residual/intercept/effort L2: `0.0025`
+  - availability-weight-to-one L2: `0`
+- Changes versus the unregularized two-component run:
+  - BCE: approximately +0.00041
+  - micro AUROC: approximately -0.00056
+  - micro AUPRC: -0.00067, from 0.57670 to 0.57603
+  - ECE: -0.00137, from 0.00664 to 0.00527
+  - max bin error: approximately -0.00050, from 0.02295 to 0.02245
+  - mean species AUPRC: -0.00106, from 0.38812 to 0.38706
+  - mean species calibration error: -0.00047, from 0.01083 to 0.01035
+- Relative to residual L2 `0.01`, the `0.0025` run retained:
+  - about 62% of the pooled ECE improvement
+  - about 47% of the pooled AUPRC loss
+  - about 45% of the mean-species AUPRC loss
+  - about 57% of the mean-species calibration improvement
+- Plausibility comparison:
+  - mean focus-species monthly MAE increased by 0.00025 versus 0.00046 at
+    residual L2 `0.01`
+  - mean environmental-response MAE improved by 0.00038 versus 0.00041 at
+    residual L2 `0.01`
+  - mean response-shape Spearman declined by 0.00476 versus 0.00595 at
+    residual L2 `0.01`
+- Species-level changes:
+  - 26 species gained AUPRC and 74 lost AUPRC relative to the unregularized run
+  - the median species change was only -0.00029
+  - Red-breasted Nuthatch improved by +0.00488
+  - the largest losses were smaller than at `0.01`, including
+    Yellow-billed Cuckoo (-0.01291), Acadian Flycatcher (-0.00879), Hooded
+    Merganser (-0.00801), Bufflehead (-0.00742), and Golden-crowned Kinglet
+    (-0.00724)
+- Learned parameter summary:
+  - species intercept RMS: 0.3175
+  - effort-weight RMS: 0.2088
+  - mean availability multiplier: 1.0379
+  - availability-multiplier deviation RMS from one: 0.0968
+- Interpretation:
+  - `0.0025` is meaningfully different from the unregularized model and
+    substantially less destructive than `0.01`
+  - calibration improvement scales nonlinearly with the penalty; a relatively
+    weak penalty recovers more than half of the ECE benefit
+  - environmental-response level error improves almost as much as at `0.01`,
+    while ranking and phenology losses are materially smaller
+  - max-bin calibration changes little, so pooled ECE should not be the only
+    criterion used to select the final operating point
+  - one midpoint run at `0.005` is justified; further scalar L2 search after
+    that would have diminishing scientific value
+
+Residual-strength comparison command:
+
+```
+python exp/compare_ebird_locality_season_runs.py --run two_component_checklist_detection_e10_d20 --run two_component_checklist_detection_shrink_r0p01_a0 --run two_component_checklist_detection_shrink_r0p0025_a0 --comparison-name residual_shrinkage_strength
+```
+
+Completed midpoint residual-only shrinkage experiment:
+
+- Run:
+  `two_component_checklist_detection_shrink_r0p005_a0`
+- Penalties:
+  - residual/intercept/effort L2: `0.005`
+  - availability-weight-to-one L2: `0`
+- Changes versus the unregularized two-component run:
+  - micro AUPRC: -0.00104, from 0.57670 to 0.57566
+  - ECE: -0.00180, from 0.00664 to 0.00484
+  - mean species AUPRC: -0.00168, from 0.38812 to 0.38644
+  - mean species calibration error: -0.00064, from 0.01083 to 0.01019
+  - focus-species monthly MAE: +0.00035
+  - environmental-response MAE: -0.00041
+  - response-shape Spearman: -0.00476
+- Relative to residual L2 `0.01`, the `0.005` run retained:
+  - about 81% of the ECE improvement
+  - about 73% of the pooled AUPRC loss
+  - about 71% of the mean-species AUPRC loss
+  - about 77% of the mean-species calibration improvement
+  - about 75% of the focus-species phenology degradation
+- Species effects:
+  - 25 species gained AUPRC and 75 lost AUPRC relative to the unregularized run
+  - median species AUPRC change was -0.00058
+  - Red-breasted Nuthatch improved by +0.00591
+  - larger losses included Yellow-billed Cuckoo (-0.01586), Acadian
+    Flycatcher (-0.01078), Golden-crowned Kinglet (-0.01060), Bufflehead
+    (-0.00917), and Hooded Merganser (-0.00911)
+- Learned parameter summary:
+  - species intercept RMS: 0.2098
+  - effort-weight RMS: 0.2020
+  - mean availability multiplier: 1.0652
+  - availability-multiplier deviation RMS from one: 0.1062
+- Interpretation:
+  - the four residual strengths form a smooth Pareto sequence rather than
+    identifying a uniquely best scalar penalty
+  - `0.005` gains only 0.00043 additional ECE improvement over `0.0025`, while
+    losing another 0.00037 pooled AUPRC, 0.00062 mean species AUPRC, and
+    increasing monthly phenology MAE by another 0.00010
+  - `0.0025` is therefore the preferred conservative regularized sensitivity
+    run, not a replacement for the unregularized ranking benchmark
+  - further scalar L2 tuning would optimize this NC/top-100 fit without solving
+    the structural separation problem
+
+Complete residual-strength comparison command:
+
+```
+python exp/compare_ebird_locality_season_runs.py --run two_component_checklist_detection_e10_d20 --run two_component_checklist_detection_shrink_r0p0025_a0 --run two_component_checklist_detection_shrink_r0p005_a0 --run two_component_checklist_detection_shrink_r0p01_a0 --comparison-name residual_shrinkage_strength_complete
+```
+
+Partial-pooling implementation:
+
+- `exp/ebird_locality_season_detection_model.py` now accepts:
+  `--two-component-effort-mode species|shared|partial`.
+- `species` preserves the existing independent species-specific effort
+  coefficients.
+- `shared` estimates one checklist-effort response applied to every species.
+- `partial` estimates:
+  - one shared effort response
+  - zero-mean species-specific deviations around that response
+- Under `partial`, `--two-component-residual-l2` shrinks the species intercept
+  corrections and species effort deviations but does not shrink the shared
+  effort response. This is the intended partial-pooling behavior: common
+  detection effects remain learnable while unsupported species differences are
+  pulled toward the common response.
+- Existing commands remain unchanged because the default mode is `species`.
+
+Completed partial-pooling result:
+
+- Run: `two_component_checklist_detection_partial_r0p0025`
+- Command:
+
+```
+python exp/ebird_locality_season_detection_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --availability-epochs 10 --detection-epochs 20 --run-name two_component_checklist_detection_partial_r0p0025 --two-component-effort-mode partial --two-component-residual-l2 0.0025
+```
+
+- Held-out checklist-level metrics:
+  - BCE: 0.29146
+  - micro AUROC: 0.87561
+  - micro AUPRC: 0.57601
+  - ECE: 0.00575
+  - max bin error: 0.02286
+- Mean species metrics:
+  - AUROC: 0.81437
+  - AUPRC: 0.38711
+  - calibration error: 0.01050
+- Relative to the unregularized two-component run:
+  - micro AUPRC: -0.00068
+  - ECE: -0.00089
+  - mean species AUPRC: -0.00101
+  - mean species calibration error: -0.00033
+- Relative to species-specific residual-only shrinkage at `0.0025`, partial
+  pooling is effectively tied on ranking but has weaker pooled and species
+  calibration:
+  - partial ECE 0.00575 vs 0.00527 for species-specific `0.0025`
+  - partial mean species AUPRC 0.38711 vs 0.38706
+  - partial mean species calibration error 0.01050 vs 0.01035
+- Interpretation: partial pooling is not a new preferred model yet. It confirms
+  that weak regularization can be applied without collapsing the detector, but
+  it does not materially improve on simple species-specific weak shrinkage.
+  The next useful test is a fully shared effort response to determine whether
+  species-specific effort deviations are necessary at all.
+
+Partial-pooling comparison command:
+
+```
+python exp/compare_ebird_locality_season_runs.py --run two_component_checklist_detection_e10_d20 --run two_component_checklist_detection_shrink_r0p0025_a0 --run two_component_checklist_detection_partial_r0p0025 --comparison-name partial_pooling_first
+```
+
+Completed shared-effort ablation:
+
+- Run: `two_component_checklist_detection_shared_r0p0025`
+- Command:
+
+```
+python exp/ebird_locality_season_detection_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --availability-epochs 10 --detection-epochs 20 --run-name two_component_checklist_detection_shared_r0p0025 --two-component-effort-mode shared --two-component-residual-l2 0.0025
+```
+
+- Held-out checklist-level metrics:
+  - BCE: 0.29831
+  - micro AUROC: 0.86805
+  - micro AUPRC: 0.56023
+  - ECE: 0.00714
+  - max bin error: 0.02699
+- Mean species metrics:
+  - AUROC: 0.80053
+  - AUPRC: 0.36940
+  - calibration error: 0.01071
+- Relative to the unregularized two-component run:
+  - micro AUPRC: -0.01647
+  - ECE: +0.00050
+  - mean species AUPRC: -0.01872
+  - mean species calibration error: -0.00012
+- Relative to `availability_only`, shared effort still adds detection signal
+  (micro AUPRC 0.56023 vs 0.50772; mean species AUPRC 0.36940 vs 0.29961),
+  but it gives up too much of the two-component gain.
+- Largest species AUPRC losses versus the unregularized two-component run were
+  large and biologically diverse:
+  - House Finch: -0.12967
+  - Ruby-throated Hummingbird: -0.12340
+  - Golden-crowned Kinglet: -0.06911
+  - Turkey Vulture: -0.05769
+  - American Redstart: -0.04953
+  - Acadian Flycatcher: -0.04846
+  - Eastern Wood-Pewee: -0.04808
+  - Swamp Sparrow: -0.04578
+  - White-eyed Vireo: -0.04570
+  - Yellow-billed Cuckoo: -0.04338
+- A few species gained under shared effort, including Red-breasted Nuthatch
+  (+0.02498), Brown-headed Nuthatch (+0.01147), and Gray Catbird (+0.00969),
+  but these gains are not enough to offset broad losses.
+- Interpretation: fully shared effort is too restrictive. It confirms that
+  checklist effort effects are not merely a single global observer-process
+  correction; species differ in how duration, observers, distance, time, and
+  related checklist features affect report probability. The general framework
+  should retain species-specific detection responses, with optional weak
+  shrinkage or partial pooling as sensitivity checks rather than replacements.
+
+Effort-pooling comparison command:
+
+```
+python exp/compare_ebird_locality_season_runs.py --run two_component_checklist_detection_e10_d20 --run two_component_checklist_detection_shrink_r0p0025_a0 --run two_component_checklist_detection_partial_r0p0025 --run two_component_checklist_detection_shared_r0p0025 --comparison-name effort_pooling_ablation
+```
+
+Latent repeated-visit model implementation:
+
+- Added `exp/ebird_locality_season_latent_model.py`.
+- This script is the first direct repeated-visit availability/detection model.
+  It does not broadcast a fixed aggregate availability score into a second-stage
+  detector. Instead, it jointly optimizes:
+  - locality-season/species availability probability \(\psi_{j,l,s}\)
+  - checklist/species detection probability \(p_{j,i}\), conditional on
+    availability
+- For a locality-season/species group with at least one detection, the
+  likelihood is:
+
+```
+log psi + sum_i log Bernoulli(y_i | p_i)
+```
+
+- For a group with no detections, the likelihood is:
+
+```
+log((1 - psi) + psi * product_i(1 - p_i))
+```
+
+- This directly addresses the bridge model's main limitation: a zero-detection
+  locality-season is no longer forced to be low availability before the model
+  has considered repeated missed detections under the visit effort distribution.
+- The first implementation is intentionally plain:
+  - availability features: biological season/year plus environmental covariates
+  - detection features: checklist effort, timing, protocol, and species-specific
+    detection responses
+  - no GNN, no spatial residual, no post-hoc calibration
+- Outputs:
+  - `{run_name}_metrics.csv`
+  - `{run_name}_species_metrics.csv`
+  - `{run_name}_availability_metrics.csv`
+  - `{run_name}_availability_species_metrics.csv`
+  - `{run_name}_focus_species_season.csv`
+  - `{run_name}_focus_species_availability_season.csv`
+  - `{run_name}_latent_detection_diagnostics.csv`
+  - `{run_name}_summary.json`
+- A smoke run with 40 train and 40 test locality-season groups completed
+  successfully. The smoke metrics are not biologically interpretable, but they
+  validated the group/checklist joins, full repeated-visit likelihood,
+  availability predictions, marginal checklist detection predictions, and output
+  writing.
+- A later smoke run validated the added latent-diagnostic outputs. These
+  outputs deliberately separate headline prior-predictive metrics from
+  label-informed diagnostics:
+  - `latent_marginal_all_pairs`: fair prior marginal checklist prediction
+    before using held-out group detection history
+  - `latent_posterior_marginal_all_pairs_label_informed`: diagnostic posterior
+    marginal prediction after conditioning on group detections
+  - `latent_conditional_detection_known_available_pairs`: diagnostic detection
+    component inside locality-season/species groups with at least one detection
+
+Smoke-test command:
+
+```
+python exp/ebird_locality_season_latent_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --epochs 1 --max-groups-per-split 40 --run-name latent_smoke --output-dir data/ebird/locality_season_top100/latent_models_smoke
+```
+
+First full latent repeated-visit command:
+
+```
+python exp/ebird_locality_season_latent_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --epochs 20 --run-name latent_repeated_visit_e20
+```
+
+First full latent repeated-visit result:
+
+- Retained 450,699 of 661,979 checklists after locality-season filters.
+- Latent training data:
+  - train groups: 23,617
+  - test groups: 9,932
+  - train checklists: 315,183
+  - test checklists: 127,719
+  - species: 100
+- Training NLL was still decreasing at epoch 20:
+  - epoch 1: 4.37926
+  - epoch 10: 4.08252
+  - epoch 20: 3.89680
+- Checklist-level prior marginal detection metrics:
+  - observed detection rate: 0.15359
+  - mean predicted detection rate: 0.09903
+  - calibration error / ECE: 0.05456
+  - BCE: 0.34291
+  - micro AUROC / AUPRC: 0.83753 / 0.50844
+  - max bin error: 0.14489
+- Group-level availability diagnostics:
+  - observed positive locality-season/species rate: 0.32871
+  - mean predicted availability: 0.37126
+  - calibration error versus observed positives: 0.04255
+  - positive-triplet AUROC / AUPRC: 0.82679 / 0.70661
+  - ECE versus observed positives: 0.04346
+  - max bin error versus observed positives: 0.06664
+- Interpretation:
+  - The first latent model is not yet competitive with the two-component bridge
+    as a checklist-level detector.
+  - The availability component is promising: it ranks positive
+    locality-season/species triplets well, which is closer to the intended
+    occupancy-style target.
+  - The marginal checklist detector is too conservative. This could be
+    optimization underfit, scale mismatch between availability and detection, or
+    both.
+  - Observed positive locality-season/species rate is a lower bound on true
+    availability, so availability calibration against observed positives should
+    be treated as a diagnostic rather than true occupancy calibration.
+  - Because training NLL was still improving, the next action is a longer run
+    using the updated script with posterior and conditional-detection
+    diagnostics, not an architecture change.
+
+Next latent repeated-visit command:
+
+```
+python exp/ebird_locality_season_latent_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --epochs 100 --run-name latent_repeated_visit_e100
+```
+
+Completed 100-epoch latent repeated-visit run:
+
+- Training NLL continued improving, but with diminishing returns:
+  - epoch 20: 3.89680
+  - epoch 50: 3.72163
+  - epoch 100: 3.65533
+- Checklist-level prior marginal detection improved substantially versus e20:
+  - mean predicted detection rate: 0.12600 versus observed 0.15359
+  - calibration error / ECE: 0.02759
+  - BCE: 0.30258
+  - micro AUROC / AUPRC: 0.86874 / 0.56294
+  - max bin error: 0.10397
+- Group-level availability ranking improved:
+  - mean predicted availability: 0.43967 versus observed positive rate 0.32871
+  - positive-triplet AUROC / AUPRC: 0.84574 / 0.71968
+  - calibration error versus observed positives: 0.11097
+- Latent detection diagnostics:
+  - `latent_marginal_all_pairs`: fair prior predictive metric; micro
+    AUROC/AUPRC 0.86874 / 0.56294, BCE 0.30258, ECE 0.02759
+  - `latent_posterior_marginal_all_pairs_label_informed`: diagnostic only;
+    micro AUROC/AUPRC 0.90664 / 0.59869, BCE 0.25942, ECE 0.01240
+  - `latent_conditional_detection_known_available_pairs`: diagnostic only;
+    micro AUROC/AUPRC 0.74755 / 0.60026, BCE 0.54975, ECE 0.02708
+- Comparison with the current two-component bridge:
+  - bridge `two_component`: BCE 0.29104, micro AUROC/AUPRC
+    0.87615 / 0.57670, ECE 0.00664
+  - latent prior marginal is close on ranking but worse on calibration and BCE
+  - latent posterior label-informed diagnostic is stronger than the bridge,
+    showing that repeated-visit information can materially improve predictions
+    when group availability is inferred from visit history
+- Species-level pattern from the latent diagnostic script:
+  - largest latent AUPRC gains versus the bridge include White-eyed Vireo,
+    Northern Parula, Blue-gray Gnatcatcher, Dark-eyed Junco, Hooded Warbler,
+    Golden-crowned Kinglet, Red-eyed Vireo, Ruby-throated Hummingbird, Eastern
+    Wood-Pewee, Black-and-white Warbler, and Wood Thrush
+  - largest losses include Laughing Gull, Brown Pelican, Red-breasted Nuthatch,
+    Boat-tailed Grackle, Tree Swallow, Royal Tern, Hooded Merganser, American
+    Herring Gull, Bald Eagle, and Brown-headed Nuthatch
+  - the losses are concentrated among coastal/waterbird and some sparse-support
+    species, which should be checked before changing the framework globally
+- Focus-species season diagnostics show remaining underprediction in high-rate
+  seasons, especially Eastern Towhee, Double-crested Cormorant, Northern
+  Cardinal, Wood Thrush early breeding, and Green Heron late breeding.
+- Interpretation:
+  - e100 largely confirms that e20 was underfit.
+  - The latent path remains valid and scientifically better aligned with the
+    repeated-checklist structure than more checklist-only architecture tuning.
+  - The fair prior marginal model still underpredicts detection, so the next
+    modeling issue is component-scale/identifiability calibration: the model can
+    trade off high availability and low conditional detection while preserving
+    much of the likelihood.
+  - Do not treat availability calibration versus observed positive groups as
+    true calibration. Observed positives are lower bounds on availability.
+
+Latent diagnostic command:
+
+```
+python exp/diagnose_ebird_latent_repeated_visit.py --latent-dir data/ebird/locality_season_top100/latent_models --run-name latent_repeated_visit_e100 --bridge-dir data/ebird/locality_season_top100/detection_models --bridge-run-name two_component_checklist_detection_e10_d20 --compare-run latent_repeated_visit_e20
+```
+
+Completed 200-epoch latent repeated-visit run:
+
+- Training NLL continued improving slowly:
+  - epoch 100: 3.65533
+  - epoch 150: 3.63413
+  - epoch 200: 3.62422
+- Prior marginal checklist detection:
+  - mean predicted detection rate: 0.12801 versus observed 0.15359
+  - calibration error / ECE: 0.02558
+  - BCE: 0.29878
+  - micro AUROC / AUPRC: 0.87234 / 0.56802
+  - max bin error: 0.09577
+- Group-level availability:
+  - mean predicted availability: 0.44108 versus observed positive rate 0.32871
+  - positive-triplet AUROC / AUPRC: 0.84384 / 0.71556
+  - calibration error versus observed positives: 0.11238
+- Label-informed posterior diagnostic:
+  - mean predicted detection rate: 0.14882 versus observed 0.15359
+  - BCE: 0.25749
+  - micro AUROC / AUPRC: 0.90808 / 0.60025
+  - ECE: 0.01171
+- Change from e100:
+  - prior marginal micro AUPRC improved by 0.00508
+  - prior marginal BCE improved by 0.00379
+  - prior marginal calibration error improved by 0.00201
+  - availability AUROC/AUPRC declined by 0.00189 / 0.00412
+- Interpretation:
+  - More epochs help, but the gains after e100 are small.
+  - The remaining prior marginal underprediction is unlikely to be solved by
+    simply running much longer.
+  - The next defensible probe is a training-time moment constraint on the
+    marginal detection rate. This tests whether a light identifiability anchor
+    can improve prior marginal calibration while preserving the repeated-visit
+    availability signal.
+
+Latent e200 diagnostic command:
+
+```
+python exp/diagnose_ebird_latent_repeated_visit.py --latent-dir data/ebird/locality_season_top100/latent_models --run-name latent_repeated_visit_e200 --bridge-dir data/ebird/locality_season_top100/detection_models --bridge-run-name two_component_checklist_detection_e10_d20 --compare-run latent_repeated_visit_e100
+```
+
+Latent marginal-rate moment probe:
+
+```
+python exp/ebird_locality_season_latent_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --epochs 100 --run-name latent_repeated_visit_e100_mrate100 --marginal-rate-l2 100
+```
+
+Completed global marginal-rate moment probe:
+
+- Command:
+
+```
+python exp/ebird_locality_season_latent_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --epochs 100 --run-name latent_repeated_visit_e100_mrate100 --marginal-rate-l2 100
+```
+
+- Training:
+  - epoch 1 objective/NLL/rate penalty: 4.89653 / 4.37926 / 0.51727
+  - epoch 50 objective/NLL/rate penalty: 3.77493 / 3.75150 / 0.02343
+  - epoch 100 objective/NLL/rate penalty: 3.67663 / 3.67230 / 0.00433
+- Prior marginal checklist detection:
+  - mean predicted detection rate: 0.14066 versus observed 0.15359
+  - calibration error: 0.01293
+  - BCE: 0.30110
+  - micro AUROC / AUPRC: 0.86636 / 0.55854
+  - ECE: 0.01498
+  - max bin error: 0.07787
+- Group-level availability:
+  - mean predicted availability: 0.46377 versus observed positive rate 0.32871
+  - positive-triplet AUROC / AUPRC: 0.84532 / 0.71766
+  - calibration error versus observed positives: 0.13506
+- Label-informed posterior diagnostic:
+  - mean predicted detection rate: 0.15636 versus observed 0.15359
+  - BCE: 0.25979
+  - micro AUROC / AUPRC: 0.90614 / 0.59802
+  - ECE: 0.00583
+- Conditional detection in known-available groups:
+  - mean predicted detection rate: 0.32508 versus observed 0.33381
+  - BCE: 0.54923
+  - micro AUROC / AUPRC: 0.74657 / 0.59957
+  - ECE: 0.01082
+- Change versus unconstrained e200:
+  - prior marginal calibration error improved by 0.01265
+  - ECE improved by 0.01060
+  - max bin error improved by 0.01790
+  - BCE worsened by 0.00232
+  - micro AUROC/AUPRC declined by 0.00598 / 0.00947
+  - availability AUPRC improved slightly by 0.00210, while
+    availability-vs-observed-positive calibration worsened
+- Species-level pattern:
+  - the largest gains versus the bridge remained mostly forest/interior species
+    such as White-eyed Vireo, Dark-eyed Junco, Northern Parula,
+    Ruby-throated Hummingbird, Red-eyed Vireo, and Golden-crowned Kinglet
+  - the largest losses worsened for Laughing Gull, Brown Pelican,
+    Boat-tailed Grackle, Royal Tern, Red-breasted Nuthatch,
+    Great Black-backed Gull, and American Herring Gull
+- Interpretation:
+  - The global moment anchor works as a calibration lever, but at this strength
+    and training horizon it introduces a ranking/species tradeoff.
+  - Because this run used 100 epochs while the current unconstrained reference is
+    e200, the next clean test is to run the same anchor for 200 epochs before
+    deciding whether the issue is the anchor strength or simply shorter
+    optimization.
+
+Latent e100 marginal-rate diagnostic command:
+
+```
+python exp/diagnose_ebird_latent_repeated_visit.py --latent-dir data/ebird/locality_season_top100/latent_models --run-name latent_repeated_visit_e100_mrate100 --bridge-dir data/ebird/locality_season_top100/detection_models --bridge-run-name two_component_checklist_detection_e10_d20 --compare-run latent_repeated_visit_e200
+```
+
+Completed 200-epoch global marginal-rate moment probe:
+
+- Command:
+
+```
+python exp/ebird_locality_season_latent_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --epochs 200 --run-name latent_repeated_visit_e200_mrate100 --marginal-rate-l2 100
+```
+
+- Training:
+  - epoch 100 objective/NLL/rate penalty: 3.67663 / 3.67230 / 0.00433
+  - epoch 150 objective/NLL/rate penalty: 3.65075 / 3.64777 / 0.00298
+  - epoch 200 objective/NLL/rate penalty: 3.63836 / 3.63586 / 0.00250
+- Prior marginal checklist detection:
+  - mean predicted detection rate: 0.14203 versus observed 0.15359
+  - calibration error: 0.01156
+  - BCE: 0.29745
+  - micro AUROC / AUPRC: 0.87111 / 0.56565
+  - ECE: 0.01733
+  - max bin error: 0.07731
+- Group-level availability:
+  - mean predicted availability: 0.47396 versus observed positive rate 0.32871
+  - positive-triplet AUROC / AUPRC: 0.84647 / 0.71567
+  - calibration error versus observed positives: 0.14526
+- Label-informed posterior diagnostic:
+  - mean predicted detection rate: 0.15545 versus observed 0.15359
+  - BCE: 0.25798
+  - micro AUROC / AUPRC: 0.90785 / 0.60017
+  - ECE: 0.00800
+- Conditional detection in known-available groups:
+  - mean predicted detection rate: 0.32237 versus observed 0.33381
+  - BCE: 0.54446
+  - micro AUROC / AUPRC: 0.75109 / 0.60185
+  - ECE: 0.01175
+- Change versus unconstrained e200:
+  - prior marginal calibration error improved by 0.01402
+  - ECE improved by 0.00825
+  - max bin error improved by 0.01846
+  - BCE improved by 0.00133
+  - micro AUROC/AUPRC declined by 0.00123 / 0.00237
+  - availability AUROC/AUPRC improved by 0.00262 / 0.00012
+  - availability-vs-observed-positive calibration worsened, which is expected
+    because observed positive groups remain a lower bound on true availability
+- Species-level pattern:
+  - the strongest gains versus the bridge include Great Black-backed Gull,
+    White-eyed Vireo, Dark-eyed Junco, Ruby-throated Hummingbird,
+    Golden-crowned Kinglet, Blue-gray Gnatcatcher, Northern Parula, American
+    Herring Gull, Eastern Wood-Pewee, Hooded Warbler, Royal Tern, and
+    Black-and-white Warbler
+  - the largest losses versus the bridge are now Red-breasted Nuthatch,
+    Laughing Gull, Tree Swallow, Hooded Merganser, White-throated Sparrow, Bald
+    Eagle, Brown Pelican, Mallard, Bufflehead, Swamp Sparrow,
+    White-breasted Nuthatch, and Double-crested Cormorant
+  - compared with the 100-epoch moment run, the severe coastal/waterbird losses
+    are much smaller, so the earlier collapse was partly undertraining rather
+    than only the moment anchor itself
+- Interpretation:
+  - `latent_repeated_visit_e200_mrate100` is the current calibrated latent
+    sensitivity run.
+  - It is not strictly dominant over unconstrained e200: it improves pooled
+    calibration and BCE, while slightly lowering pooled ranking.
+  - It is close enough that the next useful experiment is not a new architecture
+    but weaker e200 moment anchors (`25`, `50`) to map the calibration/ranking
+    Pareto frontier.
+
+Latent e200 marginal-rate diagnostic command:
+
+```
+python exp/diagnose_ebird_latent_repeated_visit.py --latent-dir data/ebird/locality_season_top100/latent_models --run-name latent_repeated_visit_e200_mrate100 --bridge-dir data/ebird/locality_season_top100/detection_models --bridge-run-name two_component_checklist_detection_e10_d20 --compare-run latent_repeated_visit_e200
+```
+
+Completed weaker 200-epoch marginal-rate moment probe:
+
+- Command:
+
+```
+python exp/ebird_locality_season_latent_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --epochs 200 --run-name latent_repeated_visit_e200_mrate25 --marginal-rate-l2 25
+```
+
+- Training:
+  - epoch 100 objective/NLL/rate penalty: 3.66392 / 3.65964 / 0.00428
+  - epoch 150 objective/NLL/rate penalty: 3.64132 / 3.63812 / 0.00320
+  - epoch 200 objective/NLL/rate penalty: 3.63056 / 3.62771 / 0.00286
+- Prior marginal checklist detection:
+  - mean predicted detection rate: 0.13655 versus observed 0.15359
+  - calibration error: 0.01704
+  - BCE: 0.29737
+  - micro AUROC / AUPRC: 0.87181 / 0.56674
+  - ECE: 0.01955
+  - max bin error: 0.07942
+- Group-level availability:
+  - mean predicted availability: 0.46440 versus observed positive rate 0.32871
+  - positive-triplet AUROC / AUPRC: 0.84583 / 0.71755
+  - calibration error versus observed positives: 0.13569
+- Label-informed posterior diagnostic:
+  - mean predicted detection rate: 0.15204 versus observed 0.15359
+  - BCE: 0.25789
+  - micro AUROC / AUPRC: 0.90783 / 0.60007
+  - ECE: 0.00936
+- Conditional detection in known-available groups:
+  - mean predicted detection rate: 0.31547 versus observed 0.33381
+  - BCE: 0.54479
+  - micro AUROC / AUPRC: 0.75132 / 0.60192
+  - ECE: 0.01846
+- Change versus unconstrained e200:
+  - prior marginal calibration error improved by 0.00854
+  - ECE improved by 0.00603
+  - max bin error improved by 0.01635
+  - BCE improved by 0.00141
+  - micro AUROC/AUPRC declined by 0.00053 / 0.00127
+  - availability AUROC/AUPRC improved by 0.00199 / 0.00199
+  - availability-vs-observed-positive calibration worsened, as expected for a
+    higher latent availability scale
+- Species-level pattern:
+  - the strongest gains versus the bridge include Great Black-backed Gull,
+    White-eyed Vireo, Royal Tern, Boat-tailed Grackle, American Herring Gull,
+    Ruby-throated Hummingbird, Golden-crowned Kinglet, Blue-gray Gnatcatcher,
+    Dark-eyed Junco, Hooded Warbler, Northern Parula, Eastern Wood-Pewee, and
+    Black-and-white Warbler
+  - the largest losses versus the bridge remain Tree Swallow, Red-breasted
+    Nuthatch, Hooded Merganser, Mallard, White-throated Sparrow, Bald Eagle,
+    Laughing Gull, Swamp Sparrow, Bufflehead, Double-crested Cormorant,
+    Eastern Kingbird, Downy Woodpecker, White-breasted Nuthatch, and
+    Brown-headed Nuthatch
+- Interpretation:
+  - `latent_repeated_visit_e200_mrate25` is now the best diagnosed calibrated
+    latent sensitivity run.
+  - It is not as well calibrated as `mrate100`, but it gives up less pooled
+    ranking and has slightly better BCE than `mrate100`.
+  - The remaining bridge losses are concentrated in species whose detection may
+    depend strongly on movement, patchiness, water/coastal geography, or
+    localized effort structure. These species should remain in focus
+    diagnostics before the latent model is treated as an ecological replacement
+    for the two-component detector.
+
+Completed 200-epoch midpoint marginal-rate probe:
+
+- Command:
+
+```
+python exp/ebird_locality_season_latent_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --epochs 200 --run-name latent_repeated_visit_e200_mrate50 --marginal-rate-l2 50
+```
+
+- Prior marginal checklist detection:
+  - mean predicted detection rate: 0.13952 versus observed 0.15359
+  - calibration error: 0.01407
+  - BCE: 0.29727
+  - micro AUROC / AUPRC: 0.87154 / 0.56630
+  - ECE: 0.01843
+  - max bin error: 0.07806
+- Group-level availability:
+  - mean predicted availability: 0.47100 versus observed positive rate 0.32871
+  - positive-triplet AUROC / AUPRC: 0.84629 / 0.71683
+  - calibration error versus observed positives: 0.14229
+- Label-informed posterior diagnostic:
+  - mean predicted detection rate: 0.15359 versus observed 0.15359
+  - BCE: 0.25797
+  - micro AUROC / AUPRC: 0.90782 / 0.60010
+  - ECE: 0.00882
+- Conditional detection in known-available groups:
+  - mean predicted detection rate: 0.31847 versus observed 0.33381
+  - BCE: 0.54458
+  - micro AUROC / AUPRC: 0.75124 / 0.60190
+  - ECE: 0.01554
+- Change versus unconstrained e200:
+  - prior marginal calibration error improved by 0.01151
+  - ECE improved by 0.00715
+  - max bin error improved by 0.01771
+  - BCE improved by 0.00151
+  - micro AUROC/AUPRC declined by 0.00081 / 0.00172
+  - availability AUROC/AUPRC improved by 0.00244 / 0.00128
+  - availability-vs-observed-positive calibration worsened by 0.02991
+- Change versus `mrate25`:
+  - mean predicted detection rate increased by 0.00297
+  - prior marginal calibration error improved by 0.00297
+  - ECE improved by 0.00112
+  - max bin error improved by 0.00136
+  - BCE improved by 0.00010
+  - micro AUROC/AUPRC declined by 0.00027 / 0.00044
+  - availability AUPRC declined by 0.00072
+  - availability-vs-observed-positive calibration worsened by 0.00660
+- Species-level pattern:
+  - the strongest gains versus the bridge include Great Black-backed Gull,
+    White-eyed Vireo, Royal Tern, Boat-tailed Grackle, American Herring Gull,
+    Dark-eyed Junco, Ruby-throated Hummingbird, Golden-crowned Kinglet,
+    Blue-gray Gnatcatcher, Northern Parula, Hooded Warbler, Eastern Wood-Pewee,
+    and Black-and-white Warbler
+  - the largest losses versus the bridge are Red-breasted Nuthatch, Tree
+    Swallow, Hooded Merganser, Laughing Gull, White-throated Sparrow, Bald
+    Eagle, Mallard, Swamp Sparrow, Bufflehead, White-breasted Nuthatch,
+    Double-crested Cormorant, Downy Woodpecker, Eastern Kingbird,
+    Brown-headed Nuthatch, and Pine Warbler
+  - relative to `mrate25`, `mrate50` improves some focus-season calibration
+    pockets, especially Double-crested Cormorant and Eastern Towhee, but it
+    worsens some species-level AUPRC losses such as Red-breasted Nuthatch,
+    Hooded Merganser, Laughing Gull, and White-throated Sparrow
+- Interpretation:
+  - `mrate50` is a viable midpoint sensitivity, not a clear replacement for
+    `mrate25`.
+  - The difference between `mrate25` and `mrate50` is small enough that the
+    choice should be framed as a calibration/ranking preference, not a model
+    breakthrough.
+  - The useful global moment range is now mapped: unconstrained e200 for ranking,
+    `mrate25` for a conservative calibrated latent sensitivity, `mrate50` for a
+    slightly stronger calibrated sensitivity, and `mrate100` as the stronger
+    calibration endpoint.
+  - Further scalar marginal-rate tuning is unlikely to answer the main
+    scientific question. The next step should inspect whether latent
+    availability and conditional detection are biologically plausible across
+    seasons, environments, and known problematic species.
+
+Latent e200 `mrate50` diagnostic commands:
+
+```
+python exp/diagnose_ebird_latent_repeated_visit.py --latent-dir data/ebird/locality_season_top100/latent_models --run-name latent_repeated_visit_e200_mrate50 --bridge-dir data/ebird/locality_season_top100/detection_models --bridge-run-name two_component_checklist_detection_e10_d20 --compare-run latent_repeated_visit_e200
+python exp/diagnose_ebird_latent_repeated_visit.py --latent-dir data/ebird/locality_season_top100/latent_models --run-name latent_repeated_visit_e200_mrate50 --bridge-dir data/ebird/locality_season_top100/detection_models --bridge-run-name two_component_checklist_detection_e10_d20 --compare-run latent_repeated_visit_e200_mrate25 --output-dir data/ebird/locality_season_top100/latent_models/diagnostics/latent_repeated_visit_e200_mrate50_vs_mrate25
+```
+
+Completed latent e200 marginal-rate sweep comparison:
+
+- Added `exp/compare_ebird_latent_repeated_visit_runs.py`.
+- Command:
+
+```
+python exp/compare_ebird_latent_repeated_visit_runs.py --runs latent_repeated_visit_e200 latent_repeated_visit_e200_mrate25 latent_repeated_visit_e200_mrate50 latent_repeated_visit_e200_mrate100 --comparison-name latent_e200_mrate_sweep
+```
+
+- Outputs:
+  - `data/ebird/locality_season_top100/latent_models/diagnostics/run_comparisons/latent_e200_mrate_sweep/latent_run_summary.csv`
+  - `latent_species_vs_bridge.csv`
+  - `latent_species_auprc_delta_pivot.csv`
+  - `latent_focus_species_season.csv`
+  - `latent_focus_species_availability_season.csv`
+  - `latent_availability_species.csv`
+  - `latent_run_tradeoffs.png`
+  - `species_auprc_delta_boxplot.png`
+  - `focus_species_season_error.png`
+- Run summary:
+  - unconstrained e200: AUPRC 0.56802; BCE 0.29878; calibration error/ECE
+    0.02558 / 0.02558; availability AUPRC 0.71556; focus-season weighted abs
+    error 0.02623
+  - `mrate25`: AUPRC 0.56674; BCE 0.29737; calibration error/ECE
+    0.01704 / 0.01955; availability AUPRC 0.71755; focus-season weighted abs
+    error 0.01871
+  - `mrate50`: AUPRC 0.56630; BCE 0.29727; calibration error/ECE
+    0.01407 / 0.01843; availability AUPRC 0.71683; focus-season weighted abs
+    error 0.01595
+  - `mrate100`: AUPRC 0.56565; BCE 0.29745; calibration error/ECE
+    0.01156 / 0.01733; availability AUPRC 0.71567; focus-season weighted abs
+    error 0.01408
+- Interpretation:
+  - global anchoring behaves monotonically for pooled/focus-season calibration
+    and mostly monotonically for pooled AUPRC loss
+  - `mrate25` is the conservative calibrated sensitivity because it gives most
+    of the useful calibration improvement with the smallest ranking cost
+  - `mrate50` is a stronger calibrated sensitivity if focus-season probability
+    level matters more than the small pooled AUPRC difference
+  - `mrate100` remains the stronger endpoint, not the default
+  - remaining failures are species-specific enough that another global scalar is
+    unlikely to help; the next test should use the existing species-wise
+    marginal-rate anchor
+
+Completed weak species-wise marginal-rate anchor probe:
+
+- Command:
+
+```
+python exp/ebird_locality_season_latent_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --epochs 200 --run-name latent_repeated_visit_e200_mrate25_srate10 --marginal-rate-l2 25 --species-marginal-rate-l2 10
+```
+
+- Prior marginal checklist detection:
+  - mean predicted detection rate: 0.13829 versus observed 0.15359
+  - calibration error: 0.01530
+  - BCE: 0.29724
+  - micro AUROC / AUPRC: 0.87164 / 0.56634
+  - ECE: 0.01859
+  - max bin error: 0.07828
+- Group-level availability:
+  - mean predicted availability: 0.46750 versus observed positive rate 0.32871
+  - positive-triplet AUROC / AUPRC: 0.84641 / 0.71809
+  - calibration error versus observed positives: 0.13879
+- Change versus `mrate25`:
+  - mean predicted detection rate increased by 0.00174
+  - prior marginal calibration error improved by 0.00174
+  - ECE improved by 0.00096
+  - max bin error improved by 0.00114
+  - BCE improved by 0.00013
+  - micro AUROC/AUPRC declined by 0.00017 / 0.00041
+  - availability AUROC/AUPRC improved by 0.00058 / 0.00054
+  - availability-vs-observed-positive calibration worsened by 0.00310
+- Run-comparison summary after adding `srate10`:
+  - unconstrained e200: AUPRC 0.56802; BCE 0.29878; calibration error/ECE
+    0.02558 / 0.02558; availability AUPRC 0.71556; focus-season weighted abs
+    error 0.02623
+  - `mrate25`: AUPRC 0.56674; BCE 0.29737; calibration error/ECE
+    0.01704 / 0.01955; availability AUPRC 0.71755; focus-season weighted abs
+    error 0.01871
+  - `mrate50`: AUPRC 0.56630; BCE 0.29727; calibration error/ECE
+    0.01407 / 0.01843; availability AUPRC 0.71683; focus-season weighted abs
+    error 0.01595
+  - `mrate100`: AUPRC 0.56565; BCE 0.29745; calibration error/ECE
+    0.01156 / 0.01733; availability AUPRC 0.71567; focus-season weighted abs
+    error 0.01408
+  - `mrate25_srate10`: AUPRC 0.56634; BCE 0.29724; calibration error/ECE
+    0.01530 / 0.01859; availability AUPRC 0.71809; focus-season weighted abs
+    error 0.01655
+- Species-level pattern:
+  - gains versus the bridge remain concentrated in Great Black-backed Gull,
+    White-eyed Vireo, Royal Tern, Boat-tailed Grackle, American Herring Gull,
+    Ruby-throated Hummingbird, Golden-crowned Kinglet, Blue-gray Gnatcatcher,
+    Hooded Warbler, Dark-eyed Junco, Northern Parula, Eastern Wood-Pewee, and
+    Black-and-white Warbler
+  - persistent losses remain Red-breasted Nuthatch, Tree Swallow, Hooded
+    Merganser, White-throated Sparrow, Bald Eagle, Mallard, Laughing Gull, Swamp
+    Sparrow, Double-crested Cormorant, Bufflehead, Downy Woodpecker, Eastern
+    Kingbird, White-breasted Nuthatch, Brown-headed Nuthatch, and Pine Warbler
+- Interpretation:
+  - the weak species-wise anchor is a balanced sensitivity, not a breakthrough
+  - it improves probability-level behavior more than `mrate25` while preserving
+    almost the same pooled ranking as `mrate50`
+  - it does not materially resolve the core species-level losses, so one
+    stronger species-wise anchor is justified before closing this axis
+
+Latent e200 `mrate25_srate10` diagnostic and comparison commands:
+
+```
+python exp/diagnose_ebird_latent_repeated_visit.py --latent-dir data/ebird/locality_season_top100/latent_models --run-name latent_repeated_visit_e200_mrate25_srate10 --bridge-dir data/ebird/locality_season_top100/detection_models --bridge-run-name two_component_checklist_detection_e10_d20 --compare-run latent_repeated_visit_e200_mrate25
+python exp/compare_ebird_latent_repeated_visit_runs.py --runs latent_repeated_visit_e200 latent_repeated_visit_e200_mrate25 latent_repeated_visit_e200_mrate50 latent_repeated_visit_e200_mrate100 latent_repeated_visit_e200_mrate25_srate10 --comparison-name latent_e200_mrate_srate_sweep
+```
+
+Completed stronger species-wise marginal-rate anchor probe:
+
+- Command:
+
+```
+python exp/ebird_locality_season_latent_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --epochs 200 --run-name latent_repeated_visit_e200_mrate25_srate50 --marginal-rate-l2 25 --species-marginal-rate-l2 50
+```
+
+- Prior marginal checklist detection:
+  - mean predicted detection rate: 0.14139 versus observed 0.15359
+  - calibration error: 0.01220
+  - BCE: 0.29732
+  - micro AUROC / AUPRC: 0.87117 / 0.56524
+  - ECE: 0.01711
+  - max bin error: 0.07667
+- Group-level availability:
+  - mean predicted availability: 0.47136 versus observed positive rate 0.32871
+  - positive-triplet AUROC / AUPRC: 0.84672 / 0.71715
+  - calibration error versus observed positives: 0.14266
+- Change versus `mrate25_srate10`:
+  - mean predicted detection rate increased by 0.00310
+  - prior marginal calibration error improved by 0.00310
+  - ECE improved by 0.00148
+  - max bin error improved by 0.00161
+  - BCE worsened by 0.00008
+  - micro AUROC/AUPRC declined by 0.00046 / 0.00110
+  - availability AUPRC declined by 0.00094
+  - availability-vs-observed-positive calibration worsened by 0.00386
+- Run-comparison summary after adding `srate50`:
+  - unconstrained e200: AUPRC 0.56802; BCE 0.29878; calibration error/ECE
+    0.02558 / 0.02558; availability AUPRC 0.71556; focus-season weighted abs
+    error 0.02623
+  - `mrate25`: AUPRC 0.56674; BCE 0.29737; calibration error/ECE
+    0.01704 / 0.01955; availability AUPRC 0.71755; focus-season weighted abs
+    error 0.01871
+  - `mrate50`: AUPRC 0.56630; BCE 0.29727; calibration error/ECE
+    0.01407 / 0.01843; availability AUPRC 0.71683; focus-season weighted abs
+    error 0.01595
+  - `mrate100`: AUPRC 0.56565; BCE 0.29745; calibration error/ECE
+    0.01156 / 0.01733; availability AUPRC 0.71567; focus-season weighted abs
+    error 0.01408
+  - `mrate25_srate10`: AUPRC 0.56634; BCE 0.29724; calibration error/ECE
+    0.01530 / 0.01859; availability AUPRC 0.71809; focus-season weighted abs
+    error 0.01655
+  - `mrate25_srate50`: AUPRC 0.56524; BCE 0.29732; calibration error/ECE
+    0.01220 / 0.01711; availability AUPRC 0.71715; focus-season weighted abs
+    error 0.01373
+- Species-level pattern:
+  - the largest gains versus the bridge remain Great Black-backed Gull,
+    White-eyed Vireo, Royal Tern, Boat-tailed Grackle, Golden-crowned Kinglet,
+    Hooded Warbler, Ruby-throated Hummingbird, Dark-eyed Junco, Blue-gray
+    Gnatcatcher, American Herring Gull, Northern Parula, Eastern Wood-Pewee,
+    and Black-and-white Warbler
+  - persistent losses remain Red-breasted Nuthatch, Tree Swallow, Hooded
+    Merganser, Laughing Gull, White-throated Sparrow, Bald Eagle, Mallard,
+    Swamp Sparrow, Bufflehead, Double-crested Cormorant, Downy Woodpecker,
+    White-breasted Nuthatch, Brown Pelican, Eastern Kingbird, and Brown-headed
+    Nuthatch
+- Interpretation:
+  - `srate50` confirms the species-wise rate-anchor direction is a small
+    calibration/focus-season adjustment, not a fix for the repeated species
+    losses
+  - this is useful evidence: the persistent species losses are likely structural
+    or regime-specific rather than just species-wise marginal-rate calibration
+  - close scalar rate-penalty tuning for now
+  - next step: diagnose the recurring losses by species group, prevalence,
+    availability inflation, and underprediction before changing the model
+
+Latent e200 `mrate25_srate50` diagnostic and comparison commands:
+
+```
+python exp/diagnose_ebird_latent_repeated_visit.py --latent-dir data/ebird/locality_season_top100/latent_models --run-name latent_repeated_visit_e200_mrate25_srate50 --bridge-dir data/ebird/locality_season_top100/detection_models --bridge-run-name two_component_checklist_detection_e10_d20 --compare-run latent_repeated_visit_e200_mrate25_srate10
+python exp/compare_ebird_latent_repeated_visit_runs.py --runs latent_repeated_visit_e200 latent_repeated_visit_e200_mrate25 latent_repeated_visit_e200_mrate50 latent_repeated_visit_e200_mrate100 latent_repeated_visit_e200_mrate25_srate10 latent_repeated_visit_e200_mrate25_srate50 --comparison-name latent_e200_mrate_srate_sweep
+```
+
+Completed latent species-pattern diagnostic across the e200 sensitivity set:
+
+- Command:
+
+```
+python exp/diagnose_ebird_latent_species_patterns.py --comparison-dir data/ebird/locality_season_top100/latent_models/diagnostics/run_comparisons/latent_e200_mrate_srate_sweep
+```
+
+- Outputs:
+  - `data/ebird/locality_season_top100/latent_models/diagnostics/run_comparisons/latent_e200_mrate_srate_sweep/species_patterns/persistent_species_summary.csv`
+  - `data/ebird/locality_season_top100/latent_models/diagnostics/run_comparisons/latent_e200_mrate_srate_sweep/species_patterns/species_group_summary.csv`
+  - `data/ebird/locality_season_top100/latent_models/diagnostics/run_comparisons/latent_e200_mrate_srate_sweep/species_patterns/worst_persistent_losses.csv`
+  - `data/ebird/locality_season_top100/latent_models/diagnostics/run_comparisons/latent_e200_mrate_srate_sweep/species_patterns/best_persistent_gains.csv`
+  - `data/ebird/locality_season_top100/latent_models/diagnostics/run_comparisons/latent_e200_mrate_srate_sweep/species_patterns/focus_species_season_persistent_errors.csv`
+  - `data/ebird/locality_season_top100/latent_models/diagnostics/run_comparisons/latent_e200_mrate_srate_sweep/species_patterns/species_group_delta_auprc.png`
+  - `data/ebird/locality_season_top100/latent_models/diagnostics/run_comparisons/latent_e200_mrate_srate_sweep/species_patterns/persistent_loss_scatter.png`
+- Broad species-group pattern:
+  - water/coastal: 22 species; mean AUPRC delta versus bridge -0.00756; 16
+    persistent-loss species; mean latent underprediction 0.01587; mean
+    availability minus observed-positive rate 0.10636
+  - urban/generalist: 7 species; mean delta -0.00746; 5 persistent-loss
+    species; mean underprediction 0.03373; availability minus observed-positive
+    rate 0.08326
+  - open/agricultural: 16 species; mean delta -0.00664; 8 persistent-loss
+    species; mean underprediction 0.01802; availability minus observed-positive
+    rate 0.12563
+  - raptor/scavenger: 7 species; mean delta -0.00645; 4 persistent-loss
+    species; mean underprediction 0.01084; availability minus observed-positive
+    rate 0.20666
+  - forest/woodland: 29 species; mean delta -0.00245; 15 persistent-loss
+    species; mean underprediction 0.01392; availability minus observed-positive
+    rate 0.14362
+  - other: 19 species; mean delta +0.00315; 8 persistent-loss species; mean
+    underprediction 0.01277; availability minus observed-positive rate 0.16176
+- Worst persistent losses across all six latent sensitivity runs:
+  - Red-breasted Nuthatch: mean AUPRC delta -0.05078
+  - Tree Swallow: -0.04987
+  - Hooded Merganser: -0.04296
+  - White-throated Sparrow: -0.03214
+  - Laughing Gull: -0.03081
+  - Mallard: -0.02983
+  - Bald Eagle: -0.02969
+  - Swamp Sparrow: -0.02247
+  - Bufflehead: -0.02081
+  - Double-crested Cormorant: -0.02049
+- Best persistent gains across all six latent sensitivity runs:
+  - Great Black-backed Gull: mean AUPRC delta +0.04024
+  - White-eyed Vireo: +0.02796
+  - Royal Tern: +0.02555
+  - Boat-tailed Grackle: +0.02269
+  - American Herring Gull: +0.02013
+  - Golden-crowned Kinglet: +0.01897
+  - Ruby-throated Hummingbird: +0.01894
+  - Blue-gray Gnatcatcher: +0.01846
+  - Dark-eyed Junco: +0.01795
+  - Hooded Warbler: +0.01766
+- Worst focus-species season errors across latent runs:
+  - Eastern Towhee late breeding: mean latent calibration error 0.05359
+  - Northern Cardinal fall migration: 0.04969
+  - Double-crested Cormorant fall migration: 0.04638
+  - Double-crested Cormorant spring migration: 0.04598
+  - Northern Cardinal spring migration: 0.04324
+  - Double-crested Cormorant winter: 0.04186
+  - Double-crested Cormorant late breeding: 0.04166
+- Interpretation:
+  - the remaining failures are not isolated to one broad species group; water,
+    open, urban, raptor, and woodland species all contain persistent losses
+  - the latent model is still generally underpredicting prior marginal
+    checklist detections, especially in high-detection resident/focus seasons
+    and some waterbird seasons
+  - predicted availability being higher than the observed-positive rate should
+    not be treated as automatically wrong, because observed positives are a
+    lower bound on true availability under imperfect detection
+  - additional scalar marginal-rate penalties are unlikely to solve this
+    pattern
+  - the next useful model change is explicit species-season/phenology structure
+    in the latent model, ideally with a partial-pooling option so the method
+    remains portable rather than hand-tuned to these NC species
+
+Implemented optional species-season latent offsets:
+
+- Updated `exp/ebird_locality_season_latent_model.py` with:
+  - `--species-season-mode none`
+  - `--species-season-mode availability`
+  - `--species-season-mode detection`
+  - `--species-season-mode both`
+  - `--species-season-l2`
+- The new parameters default to off, so earlier commands and saved runs remain
+  reproducible.
+- A tiny smoke run passed for the default path and for
+  `--species-season-mode detection`.
+- Interpretation:
+  - the detection-side mode is the first full test because the strongest
+    persistent diagnostic is underpredicted prior marginal detection within
+    species-season pockets
+  - availability-side offsets are available, but should be treated as a second
+    test because they may absorb true seasonal availability and make the
+    availability/detection boundary less interpretable
+  - `both` is intentionally available for sensitivity analysis but should not be
+    the first promoted model; it is less identifiable
+
+First full species-season latent test command:
+
+```
+python exp/ebird_locality_season_latent_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --epochs 200 --run-name latent_repeated_visit_e200_mrate25_srate10_speciesseason_detection_l2_0p01 --marginal-rate-l2 25 --species-marginal-rate-l2 10 --species-season-mode detection --species-season-l2 0.01
+```
+
+Follow-up diagnostic command after that run:
+
+```
+python exp/diagnose_ebird_latent_repeated_visit.py --latent-dir data/ebird/locality_season_top100/latent_models --run-name latent_repeated_visit_e200_mrate25_srate10_speciesseason_detection_l2_0p01 --bridge-dir data/ebird/locality_season_top100/detection_models --bridge-run-name two_component_checklist_detection_e10_d20 --compare-run latent_repeated_visit_e200_mrate25_srate10
+```
+
+Completed species-season detection-offset probe:
+
+- Run:
+  `latent_repeated_visit_e200_mrate25_srate10_speciesseason_detection_l2_0p01`
+- Training:
+  - retained 450,699 of 661,979 checklists after locality-season filters
+  - train groups/checklists: 23,617 / 315,183
+  - test groups/checklists: 9,932 / 127,719
+  - epoch 200 train NLL: 3.60695
+  - epoch 200 objective: 3.61221
+  - epoch 200 rate penalty: 0.00285
+- Fair checklist-level prior marginal metrics:
+  - observed detection rate: 0.15359
+  - mean predicted detection rate: 0.13867
+  - calibration error: 0.01492
+  - BCE: 0.29630
+  - micro AUROC / AUPRC: 0.87270 / 0.56859
+  - ECE: 0.01838
+  - max bin error: 0.07662
+- Group-level availability diagnostics:
+  - observed positive rate: 0.32871
+  - mean predicted availability: 0.46768
+  - positive-triplet AUROC / AUPRC: 0.84545 / 0.71673
+  - calibration error versus observed positives: 0.13897
+  - this is still not a true occupancy calibration target, because observed
+    positives are a lower bound on true availability under imperfect detection
+- Diagnostic-only latent outputs:
+  - label-informed posterior marginal AUPRC: 0.60346
+  - label-informed posterior BCE: 0.25644
+  - known-available conditional detection AUPRC: 0.60524
+  - known-available conditional detection BCE: 0.54160
+- Change versus `latent_repeated_visit_e200_mrate25_srate10`:
+  - mean predicted detection rate: +0.00038
+  - calibration error: -0.00038
+  - BCE: -0.00094
+  - micro AUROC: +0.00106
+  - micro AUPRC: +0.00225
+  - ECE: -0.00021
+  - max bin error: -0.00166
+  - availability AUROC / AUPRC: -0.00096 / -0.00136
+  - availability calibration error versus observed positives: +0.00018
+- Comparison summary across latent references:
+  - compared runs:
+    - `latent_repeated_visit_e200`
+    - `latent_repeated_visit_e200_mrate25`
+    - `latent_repeated_visit_e200_mrate25_srate10`
+    - `latent_repeated_visit_e200_mrate25_srate10_speciesseason_detection_l2_0p01`
+  - the species-season detection-offset run has the best prior-marginal AUPRC
+    in this comparison set: 0.56859
+  - it also has the best BCE: 0.29630
+  - it has the lowest prior-marginal calibration error: 0.01492
+  - it has the lowest ECE: 0.01838
+  - it has the lowest focus-species season weighted absolute error: 0.01604
+  - it still does not beat the two-component bridge on fair prior-marginal
+    checklist prediction: bridge AUPRC 0.57670, BCE 0.29104, ECE 0.00664
+- Species-level gains versus the two-component bridge:
+  - Royal Tern: +0.04350 AUPRC
+  - Great Black-backed Gull: +0.04132
+  - Dark-eyed Junco: +0.04107
+  - White-eyed Vireo: +0.03654
+  - Brown Pelican: +0.03161
+  - Golden-crowned Kinglet: +0.02594
+  - Boat-tailed Grackle: +0.02467
+  - Hooded Warbler: +0.02246
+  - Eastern Wood-Pewee: +0.02020
+  - Blue-gray Gnatcatcher: +0.01916
+- Species-level losses versus the two-component bridge:
+  - Tree Swallow: -0.05218 AUPRC
+  - Hooded Merganser: -0.04731
+  - Mallard: -0.03218
+  - Bald Eagle: -0.03174
+  - Red-breasted Nuthatch: -0.02902
+  - Bufflehead: -0.02496
+  - Double-crested Cormorant: -0.02233
+  - White-throated Sparrow: -0.02219
+  - Pied-billed Grebe: -0.02112
+  - Swamp Sparrow: -0.02048
+- Saved-output comparison commands:
+
+```
+python exp/compare_ebird_latent_repeated_visit_runs.py --runs latent_repeated_visit_e200 latent_repeated_visit_e200_mrate25 latent_repeated_visit_e200_mrate25_srate10 latent_repeated_visit_e200_mrate25_srate10_speciesseason_detection_l2_0p01 --comparison-name latent_e200_speciesseason_detection_probe
+python exp/diagnose_ebird_latent_species_patterns.py --comparison-dir data/ebird/locality_season_top100/latent_models/diagnostics/run_comparisons/latent_e200_speciesseason_detection_probe
+```
+
+- Species-pattern diagnostic after adding the species-season detection offset:
+  - broad group means remain mixed or negative versus the bridge:
+    - urban/generalist: mean delta -0.00648
+    - raptor/scavenger: -0.00619
+    - open/agricultural: -0.00565
+    - water/coastal: -0.00553
+    - forest/woodland: -0.00121
+    - other: +0.00420
+  - persistent losses remain concentrated in several recurring species:
+    Tree Swallow, Hooded Merganser, Red-breasted Nuthatch, Mallard, Bald Eagle,
+    White-throated Sparrow, Swamp Sparrow, Bufflehead, Double-crested
+    Cormorant, and Downy Woodpecker
+  - this means the species-season detection offset is a real improvement, but
+    not a full solution to bridge-level species losses
+- Interpretation:
+  - this is the most encouraging latent-model result so far because it improves
+    the calibrated latent reference on several axes at once
+  - the improvement is small in pooled terms but directionally important because
+    it targets the diagnosed species-season underprediction without post-hoc
+    calibration
+  - the method remains generalizable: the offset is indexed by species and
+    biological season, not by NC-specific geography or hand-selected species
+    corrections
+  - the next test should bracket the species-season shrinkage strength before
+    adding availability-side offsets, GNN structure, or post-hoc calibration
+
+Completed looser species-season detection-offset sensitivity:
+
+- Run:
+  `latent_repeated_visit_e200_mrate25_srate10_speciesseason_detection_l2_0p0025`
+- Training:
+  - retained 450,699 of 661,979 checklists after locality-season filters
+  - train groups/checklists: 23,617 / 315,183
+  - test groups/checklists: 9,932 / 127,719
+  - epoch 200 train NLL: 3.60660
+  - epoch 200 objective: 3.61021
+  - epoch 200 rate penalty: 0.00283
+- Fair checklist-level prior marginal metrics:
+  - observed detection rate: 0.15359
+  - mean predicted detection rate: 0.13872
+  - calibration error: 0.01488
+  - BCE: 0.29629
+  - micro AUROC / AUPRC: 0.87269 / 0.56862
+  - ECE: 0.01834
+  - max bin error: 0.07662
+- Group-level availability diagnostics:
+  - observed positive rate: 0.32871
+  - mean predicted availability: 0.46759
+  - positive-triplet AUROC / AUPRC: 0.84534 / 0.71673
+  - calibration error versus observed positives: 0.13888
+- Change versus the `0.01` species-season detection-offset run:
+  - mean predicted detection rate: +0.00005
+  - calibration error: -0.00005
+  - BCE: -0.00001
+  - micro AUROC: -0.00001
+  - micro AUPRC: +0.00002
+  - ECE: -0.00004
+  - max bin error: 0.00000
+  - availability AUPRC: 0.00000
+  - focus-season weighted error in the full comparison: 0.01596 versus 0.01604
+    for `0.01`
+- Full comparison summary:
+  - `latent_repeated_visit_e200`: AUPRC 0.56802, BCE 0.29878, calibration
+    error 0.02558, ECE 0.02558, focus-season weighted error 0.02623
+  - `latent_repeated_visit_e200_mrate25`: AUPRC 0.56674, BCE 0.29737,
+    calibration error 0.01704, ECE 0.01955, focus-season weighted error 0.01871
+  - `latent_repeated_visit_e200_mrate25_srate10`: AUPRC 0.56634, BCE 0.29724,
+    calibration error 0.01530, ECE 0.01859, focus-season weighted error 0.01655
+  - `speciesseason_detection_l2_0p01`: AUPRC 0.56859, BCE 0.29630,
+    calibration error 0.01492, ECE 0.01838, focus-season weighted error 0.01604
+  - `speciesseason_detection_l2_0p0025`: AUPRC 0.56862, BCE 0.29629,
+    calibration error 0.01488, ECE 0.01834, focus-season weighted error 0.01596
+- Persistent species-pattern summary after including `0.0025`:
+  - group means versus the two-component bridge remain negative for:
+    - urban/generalist: -0.00627
+    - raptor/scavenger: -0.00618
+    - open/agricultural: -0.00561
+    - water/coastal: -0.00528
+    - forest/woodland: -0.00098
+  - the "other" group remains slightly positive: +0.00474
+  - worst persistent latent losses versus the bridge:
+    - Tree Swallow: -0.05131 mean AUPRC delta
+    - Hooded Merganser: -0.04422
+    - Red-breasted Nuthatch: -0.03975
+    - Mallard: -0.03202
+    - Bald Eagle: -0.03051
+    - White-throated Sparrow: -0.02562
+    - Bufflehead: -0.02224
+    - Swamp Sparrow: -0.02194
+    - Double-crested Cormorant: -0.02114
+    - Downy Woodpecker: -0.01973
+  - best persistent latent gains versus the bridge:
+    - Great Black-backed Gull: +0.04197 mean AUPRC delta
+    - Royal Tern: +0.03563
+    - White-eyed Vireo: +0.03231
+    - Dark-eyed Junco: +0.02667
+    - Boat-tailed Grackle: +0.02666
+    - Golden-crowned Kinglet: +0.02224
+- Interpretation:
+  - `0.0025` is technically the best saved latent prior-marginal run in the
+    current comparison, but only by tiny margins
+  - the `0.0025` versus `0.01` difference is not scientifically meaningful by
+    itself; both runs support the value of species-season detection structure
+  - more detection-side L2 tuning is unlikely to solve the persistent
+    species-level bridge losses
+  - the next structurally informative test is species-season availability
+    structure, because that asks whether the remaining error is partly true
+    seasonal availability/phenology rather than checklist-level seasonal
+    detection
+
+Completed species-season availability-offset sensitivity:
+
+- Run:
+  `latent_repeated_visit_e200_mrate25_srate10_speciesseason_availability_l2_0p01`
+- Training:
+  - retained 450,699 of 661,979 checklists after locality-season filters
+  - train groups/checklists: 23,617 / 315,183
+  - test groups/checklists: 9,932 / 127,719
+  - epoch 200 train NLL: 3.62816
+  - epoch 200 objective: 3.63220
+  - epoch 200 rate penalty: 0.00284
+- Fair checklist-level prior marginal metrics:
+  - observed detection rate: 0.15359
+  - mean predicted detection rate: 0.13846
+  - calibration error: 0.01513
+  - BCE: 0.29698
+  - micro AUROC / AUPRC: 0.87167 / 0.56623
+  - ECE: 0.01773
+  - max bin error: 0.07382
+- Group-level availability diagnostics:
+  - observed positive rate: 0.32871
+  - mean predicted availability: 0.46906
+  - positive-triplet AUROC / AUPRC: 0.84588 / 0.71865
+  - calibration error versus observed positives: 0.14035
+- Change versus the best detection-side species-season run
+  (`speciesseason_detection_l2_0p0025`):
+  - mean predicted detection rate: -0.00025
+  - calibration error: +0.00025
+  - BCE: +0.00069
+  - micro AUROC: -0.00102
+  - micro AUPRC: -0.00239
+  - ECE: -0.00061
+  - max bin error: -0.00280
+  - availability mean predicted availability: +0.00147
+  - availability positive-triplet AUROC / AUPRC: +0.00053 / +0.00192
+  - availability calibration error versus observed positives: +0.00147
+- Full comparison summary:
+  - `latent_repeated_visit_e200`: AUPRC 0.56802, BCE 0.29878, calibration
+    error 0.02558, ECE 0.02558, focus-season weighted error 0.02623
+  - `latent_repeated_visit_e200_mrate25`: AUPRC 0.56674, BCE 0.29737,
+    calibration error 0.01704, ECE 0.01955, focus-season weighted error 0.01871
+  - `latent_repeated_visit_e200_mrate25_srate10`: AUPRC 0.56634, BCE 0.29724,
+    calibration error 0.01530, ECE 0.01859, focus-season weighted error 0.01655
+  - `speciesseason_detection_l2_0p0025`: AUPRC 0.56862, BCE 0.29629,
+    calibration error 0.01488, ECE 0.01834, focus-season weighted error 0.01596
+  - `speciesseason_availability_l2_0p01`: AUPRC 0.56623, BCE 0.29698,
+    calibration error 0.01513, ECE 0.01773, focus-season weighted error 0.01708
+- Species-level gains versus the two-component bridge:
+  - Great Black-backed Gull: +0.04539 AUPRC
+  - Royal Tern: +0.03042
+  - Boat-tailed Grackle: +0.02936
+  - White-eyed Vireo: +0.02817
+  - American Herring Gull: +0.02239
+  - Golden-crowned Kinglet: +0.01944
+  - Ruby-throated Hummingbird: +0.01934
+  - Blue-gray Gnatcatcher: +0.01891
+  - Hooded Warbler: +0.01881
+  - Dark-eyed Junco: +0.01757
+- Species-level losses versus the two-component bridge:
+  - Tree Swallow: -0.04991 AUPRC
+  - Red-breasted Nuthatch: -0.04975
+  - Hooded Merganser: -0.04257
+  - White-throated Sparrow: -0.03198
+  - Bald Eagle: -0.03035
+  - Mallard: -0.02986
+  - Laughing Gull: -0.02456
+  - Swamp Sparrow: -0.02243
+  - Downy Woodpecker: -0.02169
+  - Double-crested Cormorant: -0.02092
+- Persistent species-pattern diagnostic after adding the availability-side run:
+  - group means versus the two-component bridge remain negative for:
+    - urban/generalist: -0.00672
+    - raptor/scavenger: -0.00628
+    - water/coastal: -0.00580
+    - open/agricultural: -0.00578
+    - forest/woodland: -0.00141
+  - the "other" group remains slightly positive: +0.00401
+  - worst persistent losses remain Tree Swallow, Red-breasted Nuthatch,
+    Hooded Merganser, Mallard, Bald Eagle, White-throated Sparrow,
+    Swamp Sparrow, Bufflehead, Double-crested Cormorant, and Downy Woodpecker
+  - the availability-side run helps some water/coastal species relative to the
+    detection-side run but worsens some woodland/seasonal species, especially
+    Red-breasted Nuthatch and focus-season errors
+- Interpretation:
+  - availability-side species-season structure is informative but not preferred
+    as a standalone replacement
+  - it improves availability ranking and pooled ECE/max-bin error, but the
+    project target is not availability ranking alone; fair prior-marginal
+    detection and focus-season plausibility matter
+  - the detection-side species-season model remains the better current latent
+    sensitivity for the main predictive/plausibility balance
+  - a `both` species-season sensitivity is now reasonable as a diagnostic, but
+    it should be treated cautiously because it gives both components seasonal
+    flexibility and can make the availability/detection boundary less
+    identifiable
+
+Completed combined availability-and-detection species-season sensitivity:
+
+- Run:
+  `latent_repeated_visit_e200_mrate25_srate10_speciesseason_both_l2_0p01`
+- Training:
+  - retained 450,699 of 661,979 checklists after locality-season filters
+  - train groups/checklists: 23,617 / 315,183
+  - test groups/checklists: 9,932 / 127,719
+  - epoch 200 train NLL: 3.60582
+  - epoch 200 objective: 3.61052
+  - epoch 200 rate penalty: 0.00250
+- Fair checklist-level prior marginal metrics:
+  - observed detection rate: 0.15359
+  - mean predicted detection rate: 0.13913
+  - calibration error: 0.01447
+  - BCE: 0.29593
+  - micro AUROC / AUPRC: 0.87282 / 0.56864
+  - ECE: 0.01753
+  - max bin error: 0.07167
+- Group-level availability diagnostics:
+  - observed positive rate: 0.32871
+  - mean predicted availability: 0.47124
+  - positive-triplet AUROC / AUPRC: 0.84435 / 0.71589
+  - descriptive calibration error versus observed positives: 0.14253
+- Change versus the detection-only species-season run at L2 `0.0025`:
+  - mean predicted detection rate: +0.00041
+  - calibration error: -0.00041
+  - BCE: -0.00035
+  - micro AUROC: +0.00013
+  - micro AUPRC: +0.00002
+  - ECE: -0.00080
+  - max bin error: -0.00495
+  - availability positive-triplet AUROC / AUPRC: -0.00099 / -0.00084
+  - availability descriptive calibration error: +0.00365
+- Full saved-output comparison:
+  - `latent_repeated_visit_e200`: AUPRC 0.56802, BCE 0.29878, calibration
+    error 0.02558, ECE 0.02558, availability AUPRC 0.71556, focus-season
+    weighted error 0.02623
+  - `latent_repeated_visit_e200_mrate25`: AUPRC 0.56674, BCE 0.29737,
+    calibration error 0.01704, ECE 0.01955, availability AUPRC 0.71755,
+    focus-season weighted error 0.01871
+  - `latent_repeated_visit_e200_mrate25_srate10`: AUPRC 0.56634, BCE 0.29724,
+    calibration error 0.01530, ECE 0.01859, availability AUPRC 0.71809,
+    focus-season weighted error 0.01655
+  - detection-only species-season `0.0025`: AUPRC 0.56862, BCE 0.29629,
+    calibration error 0.01488, ECE 0.01834, availability AUPRC 0.71673,
+    focus-season weighted error 0.01596
+  - availability-only species-season `0.01`: AUPRC 0.56623, BCE 0.29698,
+    calibration error 0.01513, ECE 0.01773, availability AUPRC 0.71865,
+    focus-season weighted error 0.01708
+  - both-components species-season `0.01`: AUPRC 0.56864, BCE 0.29593,
+    calibration error 0.01447, ECE 0.01753, availability AUPRC 0.71589,
+    focus-season weighted error 0.01604
+- Parameter-scale comparison:
+  - detection-only run: availability-season RMS 0.00000 and detection-season
+    RMS 0.55843
+  - both-components run: availability-season RMS 0.41067 and detection-season
+    RMS 0.52154
+  - the extra availability offset therefore absorbed substantial seasonal
+    variation without producing a meaningful ranking or species-level gain
+- Persistent losses remain broad. The worst six-run mean AUPRC deltas versus
+  the bridge are Tree Swallow -0.05111, Hooded Merganser -0.04401,
+  Red-breasted Nuthatch -0.04105, Mallard -0.03175, Bald Eagle -0.03059,
+  White-throated Sparrow -0.02661, Bufflehead -0.02207, Swamp Sparrow
+  -0.02198, Double-crested Cormorant -0.02114, and Downy Woodpecker -0.02023.
+- Interpretation and decision:
+  - the `both` run is a small pooled calibration/BCE sensitivity, not a new
+    preferred structural model
+  - it does not clearly beat the detection-only run because AUPRC is tied,
+    focus-season error is slightly worse, availability ranking is slightly
+    worse, and the target species failures persist
+  - allowing both components the same species-season degree of freedom makes
+    their boundary less identifiable; the parameter split confirms that the
+    two channels can redistribute the same seasonal signal
+  - close species-season placement and L2 tuning
+  - retain the detection-only `0.0025` run as the more parsimonious latent
+    sensitivity, and retain the `both` run only as evidence that its modest
+    calibration gain is available at the cost of greater component ambiguity
+  - proceed to component-by-replication-support diagnostics before changing
+    model form
+
+Completed component-by-replication-support run:
+
+- Run:
+  `latent_repeated_visit_e200_mrate25_srate10_speciesseason_detection_l2_0p0025_components`
+- The run exactly reproduced the preferred detection-only headline metrics:
+  prior-marginal AUPRC 0.56862, BCE 0.29629, calibration error 0.01488, and
+  ECE 0.01834.
+- Fair group any-detection calibration by checklist count:
+  - 1-3 checklists: +0.03440 signed error
+  - 4-5 checklists: +0.03775
+  - 6-10 checklists: +0.03914
+  - 11+ checklists: -0.01765
+- Fair group any-detection calibration by distinct-date count:
+  - 1-2 dates: +0.04992
+  - 3-4 dates: +0.03623
+  - 5-9 dates: +0.03563
+  - 10+ dates: -0.01823
+- Effort-diversity support is particularly informative:
+  - two duration bins: group any-detection error +0.04306
+  - three or more duration bins: +0.00704
+  - one protocol: +0.02624
+  - two or more protocols: +0.01514
+- Checklist-level prior marginal detection shows a different pattern. It is
+  nearly aligned in low-checklist strata but increasingly underpredicts in
+  intensively sampled groups:
+  - 1-3 checklists: +0.00290 signed error
+  - 6-10 checklists: -0.00347
+  - 11+ checklists: -0.02003
+  - 10+ dates: -0.02054
+  - 6+ unique observers: -0.02368
+- Known-positive conditional-detection diagnostics must be interpreted as
+  label-informed. Their apparent underprediction is strongest for groups with
+  few visits because conditioning on at least one detection mechanically
+  selects high realized detection rates. In the highest-support strata, this
+  diagnostic is approximately aligned:
+  - 11+ checklists: +0.00293 signed error
+  - 10+ dates: +0.00245
+  - three or more duration bins: -0.00413
+  - two or more protocols: +0.00202
+- The 6+ unique-observer stratum is a notable exception. Group any-detection is
+  underpredicted by 0.05943 and checklist marginal detection by 0.02368. This
+  likely combines observer-rich hotspots, locality quality, and observer
+  geography; it should be retained as a transfer stress regime rather than
+  filtered away.
+- Persistent-loss species show the same distinction. Mean absolute group
+  any-detection error across the ten main persistent-loss species improves from
+  0.05020 with two duration bins to 0.01075 with three or more, while
+  checklist-level error rises from 0.01363 to 0.02449. Stronger replication
+  therefore helps the group availability/detection decomposition, but it does
+  not by itself solve checklist-frequency prediction in intensively sampled
+  localities.
+- Interpretation and decision:
+  - the latent path remains supported; fair group-level predictions become
+    more stable with stronger date and effort diversity
+  - the evidence does not support simply discarding all low-checklist groups or
+    filtering by observer count
+  - conditional `p` appears broadly reasonable in the strongest support
+    strata, so the current bottleneck is more consistent with unmodeled
+    locality/ecological heterogeneity and observer-geography concentration than
+    with a global effort-response failure
+  - run one stricter-support sensitivity using at least five distinct dates and
+    three duration bins; this retains 11,243 training groups, 4,564 test groups,
+    250,466 training checklists, and 99,471 test checklists
+  - do not compare its pooled AUPRC directly with the full-support run as if
+    they shared a target population. Judge whether component calibration and
+    species-season behavior stabilize within the better-supported population
+    before deciding on the next model change
+
+Completed stricter replication-support sensitivity:
+
+- Run:
+  `latent_repeated_visit_e200_mrate25_srate10_speciesseason_detection_l2_0p0025_strictsupport`
+- Support criteria and retained data:
+  - minimum five distinct dates
+  - minimum three duration bins
+  - 11,243 training groups / 4,564 test groups
+  - 250,466 training checklists / 99,471 test checklists
+- Fair checklist-level prior marginal metrics on the changed strict-support
+  population:
+  - observed / predicted detection rate: 0.16115 / 0.14754
+  - calibration error: 0.01361
+  - BCE: 0.30566
+  - micro AUROC / AUPRC: 0.87046 / 0.57498
+  - ECE: 0.01741
+  - max bin error: 0.06245
+- Group-level availability diagnostics on the changed population:
+  - observed any-positive rate: 0.41331
+  - mean predicted availability: 0.50488
+  - positive-triplet AUROC / AUPRC: 0.85919 / 0.80630
+  - the apparent availability-versus-positive calibration gap is 0.09158, but
+    this remains a lower-bound detection comparison rather than true occupancy
+    calibration
+- Component results:
+  - 10+ dates: group any-detection signed error +0.00112
+  - 11+ checklists: +0.00175
+  - 5-9 dates: +0.05036
+  - 6-10 checklists: +0.05200
+  - overall strict-support group any-detection error: +0.02334
+  - 10+ dates checklist marginal error: -0.01641
+  - 11+ checklists checklist marginal error: -0.01597
+  - 5-9 dates checklist marginal error: +0.00137
+  - 6-10 checklists checklist marginal error: +0.00063
+- Observer strata remain asymmetric:
+  - one observer: group any-detection +0.07884, checklist marginal -0.00447
+  - 3-5 observers: group +0.01359, checklist -0.01613
+  - 6+ observers: group -0.03566, checklist -0.01936
+- The label-informed known-positive conditional-detection diagnostic improved
+  overall from 0.01535 to 0.00969 absolute rate error, but it cannot establish
+  fair calibration because conditioning on at least one detection selects on
+  the held-out labels.
+- The largest species-season checklist underpredictions remain concentrated in
+  common or strongly seasonal species, including American Robin winter,
+  American Goldfinch across several seasons, Yellow-rumped Warbler winter,
+  White-throated Sparrow spring, and Double-crested Cormorant fall.
+- Interpretation and decision:
+  - this run does not justify making strict support the default because the
+    target population changed and medium-support group errors did not improve
+    uniformly
+  - the strongest support strata show that the repeated-visit structure can
+    calibrate group any-detection well
+  - the combination of overpredicted any-detection with approximately matched
+    checklist frequency in medium-support groups, and matched any-detection
+    with underpredicted checklist frequency in high-support groups, is
+    consistent with excess positive correlation among repeated detections
+  - under the current conditional-independence assumption, changing `psi` or
+    `p` tends to move both checklist frequency and at-least-one probability in
+    the same direction, so it cannot naturally resolve these opposing errors
+  - stop tightening support thresholds for now
+  - directly test conditional independence with fair observed-versus-predicted
+    pairwise co-detection rates before implementing a detection random effect or
+    overdispersion term
+
+Completed pairwise co-detection diagnostic:
+
+- Run:
+  `latent_repeated_visit_e200_mrate25_srate10_speciesseason_detection_l2_0p0025_strictsupport_pairdiag`
+- This reproduced the strict-support population:
+  - retained 16,124 of 34,328 locality-seasons
+  - 11,243 training groups / 4,564 test groups
+  - 250,466 training checklists / 99,471 test checklists
+- Fair prior-marginal checklist metrics were unchanged from the strict-support
+  sensitivity:
+  - observed / predicted detection rate: 0.16115 / 0.14754
+  - calibration error: 0.01361
+  - BCE: 0.30566
+  - micro AUROC / AUPRC: 0.87046 / 0.57498
+- Pairwise co-detection by support showed consistent underprediction of
+  repeated co-detections:
+  - overall strict-support weighted pair error: -0.03335
+  - checklists 4-5: -0.02117
+  - checklists 6-10: -0.01732
+  - checklists 11+: -0.03360
+  - dates 5-9: -0.01505
+  - dates 10+: -0.03370
+  - protocols 1: -0.03568
+  - protocols 2+: -0.03284
+  - observers 1: -0.03464
+  - observers 2: -0.03955
+  - observers 3-5: -0.04230
+  - observers 6+: -0.03233
+- Interpretation and decision:
+  - the sign is consistent across every support stratum, so this is not only a
+    low-support artifact
+  - the model is predicting reasonable marginal detection rates in some strata
+    but spreading detections too evenly across repeated visits
+  - this supports adding a shared locality-season/species detection frailty, so
+    repeated detections can be positively correlated conditional on
+    availability and effort
+  - start with a global frailty scale because it is the simplest transferable
+    correction; only move to species-specific frailty if the global version
+    improves co-detection calibration but leaves structured species residuals
+
+Implemented detection-frailty option:
+
+- `exp/ebird_locality_season_latent_model.py` now supports:
+  - `--detection-frailty-mode none|global|species|hierarchical`
+  - `--detection-frailty-init`
+  - `--detection-frailty-l2`
+  - `--detection-frailty-deviation-l2`
+  - `--frailty-quadrature-points`
+- The frailty model uses Gauss-Hermite quadrature to integrate a
+  logistic-normal shared detection random effect within each
+  locality-season/species group.
+- Group any-detection probabilities, posterior availability diagnostics, and
+  pairwise co-detection predictions are computed under the same frailty model
+  rather than the old independent-visit approximation.
+- Each new run writes `<run_name>_frailty_species.csv` and records scale
+  standard deviation, minimum, quantiles, median, and maximum in its summary.
+  In `hierarchical` mode, species deviations are centered to mean zero so the
+  shared scale and departures remain identified.
+
+Completed global-frailty run:
+
+```
+python exp/ebird_locality_season_latent_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --epochs 200 --run-name latent_repeated_visit_e200_mrate25_srate10_speciesseason_detection_l2_0p0025_strictsupport_frailty_global --marginal-rate-l2 25 --species-marginal-rate-l2 10 --species-season-mode detection --species-season-l2 0.0025 --min-group-dates 5 --min-group-duration-bins 3 --detection-frailty-mode global --detection-frailty-init 0.5 --detection-frailty-l2 0.01 --frailty-quadrature-points 7
+```
+
+Global-frailty result:
+
+- learned frailty scale: 1.07439 logit units
+- fair checklist AUPRC / BCE: 0.57279 / 0.30519
+- calibration error / ECE / max-bin error: 0.00888 / 0.01337 / 0.04768
+- overall observed / predicted any-detection rate: 0.41331 / 0.41551
+- overall weighted pairwise error: -0.01562, improved from -0.03335
+- focus-season weighted absolute error: 0.01311, improved from 0.01498
+- species-level absolute pairwise error improved for 90 of 100 species, but
+  substantial under- and over-correction remains species-structured
+
+Completed independently regularized species-specific frailty run:
+
+```
+python exp/ebird_locality_season_latent_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --epochs 200 --run-name latent_repeated_visit_e200_mrate25_srate10_speciesseason_detection_l2_0p0025_strictsupport_frailty_species --marginal-rate-l2 25 --species-marginal-rate-l2 10 --species-season-mode detection --species-season-l2 0.0025 --min-group-dates 5 --min-group-duration-bins 3 --detection-frailty-mode species --detection-frailty-init 0.5 --detection-frailty-l2 0.01 --frailty-quadrature-points 7
+```
+
+Species-specific frailty result:
+
+- overall weighted pairwise error: -0.01566 versus -0.01562 for global
+- fair checklist AUPRC / BCE: 0.57249 / 0.30521
+- calibration error / ECE / max-bin error: 0.00907 / 0.01323 / 0.04727
+- overall observed / predicted any-detection rate: 0.41331 / 0.41656
+- focus-season weighted absolute error: 0.01355 versus 0.01311 for global
+- learned scale mean / RMS / maximum: 1.03631 / 1.04000 / 1.22293; implied
+  scale standard deviation was only 0.08755
+- absolute species-level pairwise error improved versus global for 37 of 100
+  species; the median species worsened slightly
+- interpretation: this independently shrunk parameterization is effectively
+  tied with global frailty and is not promoted
+
+Next hierarchical-frailty run:
+
+```
+python exp/ebird_locality_season_latent_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --epochs 200 --run-name latent_repeated_visit_e200_mrate25_srate10_speciesseason_detection_l2_0p0025_strictsupport_frailty_hierarchical_dev_l2_0p01 --marginal-rate-l2 25 --species-marginal-rate-l2 10 --species-season-mode detection --species-season-l2 0.0025 --min-group-dates 5 --min-group-duration-bins 3 --detection-frailty-mode hierarchical --detection-frailty-init 0.5 --detection-frailty-l2 0.01 --detection-frailty-deviation-l2 0.01 --frailty-quadrature-points 7
+```
+
 Cross-regime summary command:
 
 ```
@@ -5410,21 +8149,44 @@ Completed validation phases:
 
 Current validation priorities:
 
-1. Finish the locality-season binomial baseline and compare prevalence,
-   availability-only, effort-only, and combined models on held-out season-year
-   2023.
-2. Inspect focus-species season outputs for biological plausibility, especially
-   Wood Thrush and Green Heron seasonality versus resident/generalist species
-   such as Northern Cardinal and Eastern Towhee.
-3. Use the locality-season baseline to decide whether the next model should be
-   a latent availability/detection model, a checklist-level model with
-   locality-season availability features, or both.
-4. Keep cross-regime checklist-level validation for any new model family:
-   primary spatial holdout, coastal-stress holdout, effort strata, and
-   species-level calibration.
-5. Add ecological plausibility diagnostics that do not depend only on AUROC or
-   AUPRC: response curves by canopy/elevation/water/coast distance and
-   phenology curves for focus species.
+1. Treat the latent repeated-visit model as the active structural model family
+   and the two-component detector as its fair checklist-level predictive
+   benchmark.
+2. Evaluate the observable group-level target
+   `psi * (1 - product(1 - p_i))` against whether each species was detected at
+   least once in the locality-season. Do not treat any-detection as true
+   occupancy or use `psi` versus any-detection as literal occupancy
+   calibration.
+3. Diagnose component behavior by replication support: checklist count, date
+   count, duration-bin diversity, protocol diversity, and observer diversity.
+   Conditional-detection metrics inside known-positive groups are
+   label-informed diagnostics and must remain labeled as such.
+4. Carry focus-species season and environmental-response outputs forward as
+   biological plausibility checks, especially Wood Thrush and Green Heron
+   seasonality versus resident/generalist species such as Northern Cardinal
+   and Eastern Towhee.
+5. Keep temporal and cross-regime transfer validation for any promoted model:
+   held-out season year, primary spatial holdout, coastal-stress holdout,
+   low-observer-density regimes, effort strata, and species-level calibration.
+6. Treat the completed five-date/three-duration-bin run as a support
+   sensitivity, not the new default population. It confirms that the strongest
+   support strata can be well calibrated but does not solve medium-support or
+   observer-geography errors uniformly.
+7. Treat the pairwise co-detection diagnostic as completed evidence against
+   the independent repeated-visit detection assumption. The completed global
+   frailty model reduced but did not eliminate co-detection underprediction,
+   improved fair checklist calibration, and preserved or improved aggregate
+   focus-season error. Independently regularized species scales did not improve
+   on the global model. The next validation question is whether hierarchical
+   partial pooling can resolve species-structured errors while retaining the
+   global effect, bounded scales, transfer, and biological plausibility.
+8. Interpret availability-vs-observed-positive metrics only as lower-bound
+   diagnostics. Fair group any-detection probabilities and held-out
+   ecological/temporal plausibility are the relevant checks because true
+   occupancy is unobserved.
+9. Defer post-hoc calibration and additional species-season flexibility. Both
+   can improve pooled probabilities while obscuring whether availability and
+   detection are scientifically separated.
 
 Spatial-stratified baseline commands:
 
@@ -5461,24 +8223,425 @@ Completed implementation phases:
    regime-support, split-candidate, and cross-regime summary diagnostics.
 6. Built the locality-season replication dataset and replication-support
    diagnostics.
-7. Added the first locality-season binomial baseline script.
+7. Added and ran the first locality-season binomial baseline script.
+8. Added the first two-component checklist detection bridge script that combines
+   aggregate locality-season availability with checklist-level effort/timing
+   detection features.
+9. Ran the first two-component checklist detection bridge and confirmed that it
+   improves held-out checklist-level BCE, micro AUPRC, and mean species AUPRC
+   over the one-component availability-only and effort-only baselines.
+10. Added and ran the first saved-output diagnostics for the two-component
+    bridge, including metric deltas, species AUPRC deltas, calibration-bin
+    checks, and focus-species/season error comparisons.
+11. Added direct effort/locality stratum diagnostics to the two-component bridge
+    training script. These write compact stratum-level metrics and deltas while
+    predictions are still in memory.
+12. Ran the effort/locality stratum diagnostics. The two-component bridge
+    improved micro-AUPRC in every reported large stratum, with remaining
+    concerns concentrated in county/regime calibration rather than ranking.
+13. Extended the saved-output detection diagnostic script so it also summarizes
+    stratum deltas and worst stratum calibration when the stratum CSVs exist.
+14. Added the next compact calibration layer to the two-component bridge:
+    county-season metrics/deltas, county-season probability-bin reliability,
+    and focus-species season probability-bin reliability. These are generated
+    inside the training run while predictions are still in memory.
+15. Added `--min-bin-pairs` to the saved-output detection diagnostic script.
+    Use this before interpreting ranked probability-bin calibration outputs;
+    otherwise tiny bins with only a few pairs can dominate the table.
+16. Added focus-species monthly phenology and environmental-response diagnostic
+    outputs to the two-component training script. These are written while
+    predictions are still in memory and avoid saving the full checklist-by-
+    species prediction matrix.
+17. Reran the stable 10/20 two-component model with the updated script. It
+    reproduced the headline metrics (`two_component` BCE 0.2910, micro AUROC
+    0.8762, micro AUPRC 0.5767, mean species AUROC 0.8154, mean species AUPRC
+    0.3881) and generated 120 monthly phenology rows plus 320 environmental-
+    response rows.
+18. Reran the saved-output diagnostics with `--min-bin-pairs 100`, removing
+    tiny-bin artifacts from the ranked county-season and focus-species tables.
+19. Added `exp/plot_ebird_locality_season_plausibility.py` to create phenology
+    plots, four-panel species response plots, response-error heatmaps, and
+    compact summary CSVs from the new diagnostic outputs.
+20. Reviewed the generated plausibility plots and confirmed that the dominant
+    issue is probability-level drift rather than reversed ecological response
+    shapes.
+21. Added optional two-component neutral-point penalties:
+    - `--two-component-residual-l2` shrinks species checklist intercepts and
+      species-specific effort coefficients toward zero
+    - `--two-component-availability-weight-l2` shrinks species availability
+      multipliers toward one
+    Both default to zero, preserving all prior commands and results.
+22. Ran the first combined `0.01 / 0.01` shrinkage model. Calibration improved
+    materially with a small pooled ranking loss, but monthly phenology and
+    species-level effects were mixed.
+23. Added `exp/compare_ebird_locality_season_runs.py` for reproducible pooled,
+    species, phenology, and environmental-response comparisons across saved
+    model runs.
+24. Ran the residual-only `0.01` ablation. It produced nearly the same tradeoff
+    as combined shrinkage and showed that residual/effort shrinkage drives most
+    of the calibration improvement and ranking loss.
+25. Fixed the comparison script's Windows filename-length failure by using
+    compact hashed output stems and adding `--comparison-name`.
+26. Ran the availability-weight-only `0.01` ablation and the complete four-run
+    comparison. Availability shrinkage alone was effectively neutral, confirming
+    that residual shrinkage drives both the calibration gain and its ranking and
+    phenology tradeoffs.
+27. Ran residual-only shrinkage at `0.0025` and compared it with the
+    unregularized and `0.01` endpoints. It retained most of the useful
+    calibration/response improvement with roughly half the ranking and
+    phenology cost.
+28. Ran residual-only shrinkage at `0.005`. The complete sequence confirmed a
+    smooth Pareto tradeoff and closed scalar L2 tuning, with `0.0025` retained
+    as the conservative regularized sensitivity run.
+29. Added shared and partially pooled effort-response modes to the
+    locality-season checklist model. Partial mode uses a shared effort response
+    plus centered species deviations and applies residual shrinkage only to
+    species-specific corrections.
+30. Ran the first partial-pooling effort-response model at residual L2 `0.0025`
+    and compared it against the unregularized two-component run and the
+    species-specific residual-only `0.0025` run. It produced nearly the same
+    ranking as weak species-specific shrinkage, weaker calibration than that
+    shrinkage run, and no clear evidence that partial pooling is the next
+    preferred model.
+31. Ran the fully shared effort-response ablation at residual L2 `0.0025`.
+    It reduced micro AUPRC from 0.57670 to 0.56023 and mean species AUPRC from
+    0.38812 to 0.36940 relative to the unregularized two-component run, while
+    slightly worsening pooled ECE. This confirms that species-specific
+    detection/effort responses are necessary in the current framework.
+32. Added `exp/ebird_locality_season_latent_model.py`, the first direct latent
+    repeated-visit availability/detection model. A small smoke run passed and
+    wrote checklist-level marginal detection plus group-level availability
+    diagnostics.
+33. Added latent-diagnostic outputs that split fair prior-predictive checklist
+    metrics from label-informed posterior and known-available diagnostics.
+34. Ran the first full 20-epoch latent repeated-visit model. It is underfit as a
+    checklist detector but promising as an availability model, with strong
+    group-level positive-triplet ranking and clear marginal detection
+    underprediction that motivates a longer run.
+35. Ran the 100-epoch latent repeated-visit model. It improved strongly over
+    e20 and now sits close to the two-component bridge on checklist ranking,
+    but the fair prior marginal probabilities remain undercalibrated.
+36. Added `exp/diagnose_ebird_latent_repeated_visit.py` and ran it against e100,
+    e20, and the two-component bridge. The diagnostic confirms that the
+    label-informed posterior latent prediction is strong, while prior marginal
+    prediction still needs component-scale calibration.
+37. Ran the 200-epoch latent repeated-visit model. It improved prior marginal
+    AUPRC and BCE only modestly over e100, with persistent underprediction and
+    a small decline in availability ranking.
+38. Added optional latent marginal-rate moment penalties:
+    `--marginal-rate-l2` for overall prior marginal detection-rate anchoring and
+    `--species-marginal-rate-l2` for species-wise rate anchoring. A smoke run
+    passed, and defaults preserve all prior latent results.
+39. Ran `latent_repeated_visit_e100_mrate100` and diagnosed it against e200 and
+    the two-component bridge. It improved pooled marginal calibration but reduced
+    AUPRC/BCE and worsened several species deltas, especially coastal/waterbird
+    species.
+40. Ran `latent_repeated_visit_e200_mrate100` and diagnosed it against
+    unconstrained e200 and the bridge. The 200-epoch moment run retained the
+    calibration gain with a much smaller ranking penalty and less severe
+    species-level degradation than the 100-epoch moment run.
+41. Added and ran `exp/diagnose_ebird_latent_species_patterns.py` against the
+    full e200 latent sensitivity set. It writes persistent species summaries,
+    broad species-group summaries, best/worst persistent deltas, focus-species
+    season persistent errors, and two diagnostic plots.
+42. Added optional species-by-season offsets to the latent repeated-visit model
+    and smoke-tested both the default path and the detection-offset path. These
+    offsets are off by default and can be applied to availability, detection, or
+    both components.
+43. Ran and diagnosed the first full detection-side species-season offset at
+    L2 `0.01`, then the looser L2 `0.0025` sensitivity. Both were positive
+    relative to the balanced calibrated latent reference; `0.0025` is the best
+    saved latent prior-marginal run by tiny margins, but persistent species
+    losses remain.
+44. Ran and diagnosed the first availability-side species-season offset at
+    L2 `0.01`. It improved availability ranking and pooled ECE/max-bin error,
+    but hurt fair prior-marginal AUPRC/BCE and worsened focus-season weighted
+    error relative to the best detection-side run. It is not promoted as the
+    preferred latent sensitivity.
+45. Ran and diagnosed the combined availability-and-detection species-season
+    offset at L2 `0.01`. It tied the detection-only run on pooled AUPRC and
+    modestly improved BCE/calibration, but slightly worsened focus-season error
+    and availability ranking and did not fix persistent species losses. This
+    closes the current species-season offset axis.
+46. Added compact latent component diagnostics to
+    `exp/ebird_locality_season_latent_model.py`. Future runs now write:
+    - component metrics by replication-support stratum
+    - component metrics by species and biological season
+    - component metrics by species and replication-support stratum
+    These distinguish fair prior group/checklist predictions from
+    known-positive-group conditional-detection diagnostics.
+47. Reran the preferred detection-only latent sensitivity with component
+    outputs. Group any-detection calibration improves with stronger date and
+    duration-bin support, while checklist marginal detection is underpredicted
+    in the most intensively sampled groups. High-support known-positive
+    conditional detection is approximately aligned, pointing toward
+    locality/ecological heterogeneity rather than a global effort-response
+    failure.
+48. Added optional minimum group-support arguments to the latent model:
+    `--min-group-checklists`, `--min-group-dates`,
+    `--min-group-duration-bins`, `--min-group-protocols`, and
+    `--min-group-observers`. They default to no additional filtering, preserving
+    earlier commands and results.
+49. Ran the five-date/three-duration-bin strict-support sensitivity. The
+    strongest support strata achieved nearly exact group any-detection
+    calibration, but medium-support group errors and high-support checklist
+    underprediction persisted. Further threshold tightening is not the next
+    preferred direction.
+50. Added pairwise co-detection diagnostics to the latent model. These compare
+    observed ordered detection pairs with model-implied pair probabilities by
+    support stratum and species-season, providing a direct fair check of the
+    conditional-independence assumption.
+51. Ran the pairwise co-detection diagnostic on the strict-support latent run.
+    Observed repeated co-detections exceeded the model-implied independent
+    prediction in every support stratum, confirming a broad repeated-detection
+    dependence problem.
+52. Added optional logistic-normal detection frailty to the latent repeated-
+    visit model. It integrates a shared locality-season/species detection
+    random effect with Gauss-Hermite quadrature and updates any-detection,
+    posterior availability, and pairwise co-detection diagnostics to use the
+    same model-implied probabilities.
+53. Ran the global-frailty strict-support sensitivity. It reduced overall
+    weighted pairwise co-detection error from -0.03335 to -0.01562, improved
+    absolute species-level pairwise error for 90 of 100 species, improved fair
+    checklist calibration and focus-season error, and left pooled ranking
+    nearly unchanged. The learned frailty scale was 1.07439 logit units.
+54. Confirmed that the remaining pairwise error is species-structured: one
+    global scale still under-corrects several waterbirds and common species
+    while over-correcting others. This meets the pre-specified condition for a
+    regularized species-specific frailty sensitivity.
+55. Ran the independently regularized species-frailty sensitivity. It was
+    effectively tied with global frailty, improved absolute pairwise error for
+    only 37 of 100 species, slightly worsened fair AUPRC and focus-season
+    error, and learned a narrow scale distribution. This formulation is not
+    promoted.
+56. Added hierarchical frailty with a shared global scale plus zero-centered,
+    L2-regularized species deviations. Added a per-species frailty-scale CSV
+    and scale-distribution summaries so partial-pooling stability can be
+    diagnosed directly.
 
-Active implementation steps:
+Current decisions and immediate implementation steps:
 
-1. Run the full locality-season binomial baseline:
+1. Treat the unregularized two-component bridge as the current checklist-level
+   detection benchmark:
+   - primary ranking reference: `two_component_checklist_detection_e10_d20`
+   - conservative calibration sensitivity:
+     `two_component_checklist_detection_shrink_r0p0025_a0`
+   - fully shared effort is retired as too restrictive
+2. Treat `latent_repeated_visit_e200` as the current unconstrained latent
+   repeated-visit baseline:
+   - e200 improves over e100, but only modestly
+   - the posterior diagnostic is strong
+   - fair prior marginal detection remains underpredicted
+   - availability ranking is useful but availability-vs-observed-positive
+     calibration is not true occupancy calibration
+3. Treat `latent_repeated_visit_e200_mrate25` as the best diagnosed
+   global-rate-only latent sensitivity run from that completed sweep:
+   - prior marginal calibration and BCE improve relative to unconstrained e200
+   - pooled AUPRC declines only slightly
+   - it preserves more ranking than `mrate100`
+   - several species still lose ground versus the two-component bridge
+   - the result is a Pareto tradeoff, not a strict replacement
+4. Treat `latent_repeated_visit_e200_mrate50` as a viable midpoint sensitivity:
+   - prior marginal calibration is stronger than `mrate25`
+   - pooled BCE is slightly better than `mrate25`
+   - pooled AUPRC is slightly lower than `mrate25`
+   - species effects are mixed and do not justify replacing `mrate25`
+5. Use latent outputs carefully:
+   - `latent_marginal_all_pairs` is the fair prior-predictive checklist metric
+   - `latent_posterior_marginal_all_pairs_label_informed` is diagnostic only
+     because it conditions on held-out group detections
+   - `latent_conditional_detection_known_available_pairs` is diagnostic only
+     because it evaluates detection inside groups confirmed to be available
+6. Treat the global marginal-rate sweep as closed for now. Do not run another
+   scalar `marginal-rate-l2` value unless a later biological plausibility check
+   points to a specific need.
+7. The completed global-rate comparison carried two calibrated sensitivities
+   into the later species-wise tests:
+   - conservative calibrated latent sensitivity: `mrate25`
+   - stronger calibrated latent sensitivity: `mrate50`
+   - neither became the final preferred latent sensitivity after the later
+     species-wise and species-season diagnostics
+8. Treat `latent_repeated_visit_e200_mrate25_srate10` as a balanced sensitivity
+   run:
+   - slightly better BCE, calibration, availability AUPRC, and focus-season
+     error than `mrate25`
+   - slightly lower pooled AUPRC than `mrate25`
+   - it motivated the stronger species-wise anchor; that axis is now closed by
+     the subsequent `srate50` result
+9. Treat `latent_repeated_visit_e200_mrate25_srate50` as a stronger calibrated
+   sensitivity run:
+   - focus-season error and pooled calibration improve further
+   - pooled AUPRC declines more
+   - recurring species losses remain
+   - therefore scalar rate-penalty tuning is closed for now
+10. The saved-output species-pattern diagnostic is complete. It shows that
+   recurring latent losses are broad rather than confined to one ecological
+   group. Rate-penalty tuning is therefore closed for now.
 
 ```
-python exp/ebird_locality_season_baseline.py --dataset-dir data/ebird/locality_season_top100 --epochs 30
+python exp/diagnose_ebird_latent_species_patterns.py --comparison-dir data/ebird/locality_season_top100/latent_models/diagnostics/run_comparisons/latent_e200_mrate_srate_sweep
 ```
 
-2. Review the overall, species-level, and focus-species season outputs. Decide
-   whether availability, effort, or their combination explains most of the
-   locality-season detection-rate signal.
-3. If the binomial baseline behaves sensibly, implement the first explicit
-   two-component model:
-   `locality-season availability + checklist-level detection`.
-4. Keep the frozen-access spatial GNN as the checklist-level benchmark while
+11. Treat the completed species-season detection-offset run
+   (`latent_repeated_visit_e200_mrate25_srate10_speciesseason_detection_l2_0p01`)
+   as a positive latent-model sensitivity:
+   - it improves `latent_repeated_visit_e200_mrate25_srate10` on AUPRC, BCE,
+     calibration error, ECE, max-bin error, and focus-season weighted error
+   - it is the first latent variant in this sequence to improve ranking and
+     calibration together relative to the balanced calibrated reference
+   - it still trails the two-component bridge on fair prior-marginal checklist
+     prediction
+   - persistent species-level bridge losses remain, especially Tree Swallow,
+     Hooded Merganser, Mallard, Bald Eagle, Red-breasted Nuthatch,
+     Bufflehead, Double-crested Cormorant, White-throated Sparrow,
+     Pied-billed Grebe, and Swamp Sparrow
+12. Treat the looser species-season detection-offset run
+   (`latent_repeated_visit_e200_mrate25_srate10_speciesseason_detection_l2_0p0025`)
+   as the current best saved latent prior-marginal run by tiny margins:
+   - AUPRC 0.56862
+   - BCE 0.29629
+   - calibration error 0.01488
+   - ECE 0.01834
+   - focus-season weighted error 0.01596
+   - the deltas versus `0.01` are negligible, so the detection-side
+     species-season L2 axis is closed for now
+13. Treat the availability-side species-season run
+   (`latent_repeated_visit_e200_mrate25_srate10_speciesseason_availability_l2_0p01`)
+   as an informative but non-preferred sensitivity:
+   - it improves availability positive-triplet AUPRC to 0.71865
+   - it improves pooled ECE/max-bin error relative to the best detection-side
+     run
+   - it worsens prior-marginal AUPRC from 0.56862 to 0.56623
+   - it worsens BCE from 0.29629 to 0.29698
+   - it worsens focus-season weighted error from 0.01596 to 0.01708
+   - it does not remove persistent species losses
+14. The completed `both` species-season sensitivity is not promoted:
+   - AUPRC is effectively tied with the detection-only run: 0.56864 versus
+     0.56862
+   - BCE, calibration error, ECE, and max-bin error improve modestly
+   - focus-season weighted error slightly worsens: 0.01604 versus 0.01596
+   - availability AUPRC slightly worsens: 0.71589 versus 0.71673
+   - persistent species losses remain
+   - parameter magnitudes show seasonal signal being redistributed across
+     availability and detection, increasing component ambiguity
+15. Reproducibility command for the completed `both` run:
+
+```
+python exp/ebird_locality_season_latent_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --epochs 200 --run-name latent_repeated_visit_e200_mrate25_srate10_speciesseason_both_l2_0p01 --marginal-rate-l2 25 --species-marginal-rate-l2 10 --species-season-mode both --species-season-l2 0.01
+```
+
+16. Reproducibility command for its pairwise diagnostic:
+
+```
+python exp/diagnose_ebird_latent_repeated_visit.py --latent-dir data/ebird/locality_season_top100/latent_models --run-name latent_repeated_visit_e200_mrate25_srate10_speciesseason_both_l2_0p01 --bridge-dir data/ebird/locality_season_top100/detection_models --bridge-run-name two_component_checklist_detection_e10_d20 --compare-run latent_repeated_visit_e200_mrate25_srate10_speciesseason_detection_l2_0p0025
+```
+
+17. Completed full saved-output comparison and species-pattern diagnostics:
+
+```
+python exp/compare_ebird_latent_repeated_visit_runs.py --runs latent_repeated_visit_e200 latent_repeated_visit_e200_mrate25 latent_repeated_visit_e200_mrate25_srate10 latent_repeated_visit_e200_mrate25_srate10_speciesseason_detection_l2_0p0025 latent_repeated_visit_e200_mrate25_srate10_speciesseason_availability_l2_0p01 latent_repeated_visit_e200_mrate25_srate10_speciesseason_both_l2_0p01 --comparison-name latent_e200_speciesseason_both_probe
+python exp/diagnose_ebird_latent_species_patterns.py --comparison-dir data/ebird/locality_season_top100/latent_models/diagnostics/run_comparisons/latent_e200_speciesseason_both_probe
+```
+
+18. The species-season offset axis is closed. The parsimonious detection-only
+   `0.0025` model was reproduced with the new component diagnostics:
+
+```
+python exp/ebird_locality_season_latent_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --epochs 200 --run-name latent_repeated_visit_e200_mrate25_srate10_speciesseason_detection_l2_0p0025_components --marginal-rate-l2 25 --species-marginal-rate-l2 10 --species-season-mode detection --species-season-l2 0.0025
+```
+
+19. The component outputs show:
+   - `*_component_support_metrics.csv`
+   - `*_component_species_season_metrics.csv`
+   - `*_component_species_support_metrics.csv`
+   - fair group any-detection calibration improves materially with at least
+     three duration bins and generally improves with stronger date support
+   - checklist marginal detection remains underpredicted in high-support groups
+   - known-positive conditional `p` is approximately aligned in the strongest
+     support strata but is label-informed
+   - the 6+ observer stratum remains a meaningful observer-geography stress
+     regime and should not be filtered away
+20. Completed stricter replication-support sensitivity using at least five
+   distinct dates and three duration bins:
+
+```
+python exp/ebird_locality_season_latent_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --epochs 200 --run-name latent_repeated_visit_e200_mrate25_srate10_speciesseason_detection_l2_0p0025_strictsupport --marginal-rate-l2 25 --species-marginal-rate-l2 10 --species-season-mode detection --species-season-l2 0.0025 --min-group-dates 5 --min-group-duration-bins 3
+```
+
+21. Strict-support interpretation:
+   - strongest-support group any-detection calibration is nearly exact
+   - medium-support any-detection remains overpredicted
+   - high-support checklist detection remains underpredicted
+   - strict filtering is informative but is not promoted as the default
+   - opposing group/checklist errors point to residual dependence among
+     repeated detections rather than another support-threshold choice
+22. Completed pairwise co-detection diagnostic for the strict-support run:
+
+```
+python exp/ebird_locality_season_latent_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --epochs 200 --run-name latent_repeated_visit_e200_mrate25_srate10_speciesseason_detection_l2_0p0025_strictsupport_pairdiag --marginal-rate-l2 25 --species-marginal-rate-l2 10 --species-season-mode detection --species-season-l2 0.0025 --min-group-dates 5 --min-group-duration-bins 3
+```
+
+23. Pairwise co-detection result:
+   - every replication-support stratum had negative signed error, meaning
+     observed repeated co-detection exceeded the conditionally independent
+     prediction
+   - overall strict-support weighted pair error was -0.03335
+   - this confirms that the next model test should be detection
+     overdispersion/frailty rather than stricter filters or more seasonal
+     offsets
+24. Completed global logistic-normal detection frailty on the same
+   strict-support population:
+
+```
+python exp/ebird_locality_season_latent_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --epochs 200 --run-name latent_repeated_visit_e200_mrate25_srate10_speciesseason_detection_l2_0p0025_strictsupport_frailty_global --marginal-rate-l2 25 --species-marginal-rate-l2 10 --species-season-mode detection --species-season-l2 0.0025 --min-group-dates 5 --min-group-duration-bins 3 --detection-frailty-mode global --detection-frailty-init 0.5 --detection-frailty-l2 0.01 --frailty-quadrature-points 7
+```
+
+25. After the frailty run, compare:
+   - fair checklist AUPRC changed from 0.57498 to 0.57279, while calibration
+     error improved from 0.01361 to 0.00888
+   - overall observed / predicted group any-detection was 0.41331 / 0.41551
+   - overall weighted pairwise error improved from -0.03335 to -0.01562
+   - focus-season weighted absolute error improved from 0.01498 to 0.01311
+   - learned global frailty scale was 1.07439 logit units
+   - observed-positive availability metrics remain lower-bound diagnostics,
+     not true occupancy calibration metrics
+26. Completed the regularized species-specific frailty sensitivity because the
+   global model improved absolute pairwise error for 90 of 100 species but
+   left clear species-structured under- and over-correction:
+
+```
+python exp/ebird_locality_season_latent_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --epochs 200 --run-name latent_repeated_visit_e200_mrate25_srate10_speciesseason_detection_l2_0p0025_strictsupport_frailty_species --marginal-rate-l2 25 --species-marginal-rate-l2 10 --species-season-mode detection --species-season-l2 0.0025 --min-group-dates 5 --min-group-duration-bins 3 --detection-frailty-mode species --detection-frailty-init 0.5 --detection-frailty-l2 0.01 --frailty-quadrature-points 7
+```
+
+27. Species-specific result:
+   - overall pairwise error was -0.01566 versus -0.01562 for global
+   - fair checklist AUPRC was 0.57249 versus 0.57279 for global
+   - overall any-detection error was 0.00325 versus 0.00220 for global
+   - focus-season weighted error was 0.01355 versus 0.01311 for global
+   - absolute species pairwise error improved for only 37 of 100 species
+   - scales remained narrowly distributed around the global result, so this
+     parameterization is closed as a non-promoted sensitivity
+28. Run hierarchical frailty with the same global penalty and a separate
+   penalty on zero-centered species deviations:
+
+```
+python exp/ebird_locality_season_latent_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --epochs 200 --run-name latent_repeated_visit_e200_mrate25_srate10_speciesseason_detection_l2_0p0025_strictsupport_frailty_hierarchical_dev_l2_0p01 --marginal-rate-l2 25 --species-marginal-rate-l2 10 --species-season-mode detection --species-season-l2 0.0025 --min-group-dates 5 --min-group-duration-bins 3 --detection-frailty-mode hierarchical --detection-frailty-init 0.5 --detection-frailty-l2 0.01 --detection-frailty-deviation-l2 0.01 --frailty-quadrature-points 7
+```
+
+29. Promote hierarchical frailty only if it materially improves held-out
+   species-level pairwise error beyond global frailty while preserving fair
+   group any-detection calibration, checklist BCE/AUPRC, focus-season
+   plausibility, and a bounded species-scale distribution. If it remains tied,
+   retain global frailty and stop this variance-parameter axis.
+30. Do not apply post-hoc probability calibration yet. It could improve numeric
+   calibration while obscuring whether availability and detection are
+   scientifically separated.
+31. Keep the frozen-access spatial GNN as the checklist-level benchmark while
    the locality-season model is developed. Do not add more spatial-GNN
    architecture variants unless a diagnostic points to a specific failure mode.
-5. Add phenology and species-environment response diagnostics for the
-   locality-season model before expanding to broader geography or more species.
+32. Decide whether to rerun the bridge with 30/30 epochs only after the
+   response/phenology diagnostics show the current 10/20 result is stable
+   enough to justify the longer run.
+33. Revisit House Sparrow and Red-breasted Nuthatch. House Sparrow improved in
+   the checklist-level two-component bridge, but Red-breasted Nuthatch remains a
+   small negative-delta species.
