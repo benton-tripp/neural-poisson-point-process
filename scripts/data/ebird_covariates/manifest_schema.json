@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ebird-covariates:manifest:schema:v1",
+  "title": "eBird covariate build manifest",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "build_id",
+    "created_at_utc",
+    "grid",
+    "sources",
+    "bands"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "build_id": {"type": "string", "minLength": 1},
+    "created_at_utc": {"type": "string", "format": "date-time"},
+    "config_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "source_registry_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "grid": {
+      "type": "object",
+      "required": ["crs", "resolution_m", "bounds_m", "width", "height", "nodata"],
+      "properties": {
+        "crs": {"type": "string"},
+        "resolution_m": {"type": "number", "exclusiveMinimum": 0},
+        "bounds_m": {
+          "type": "array",
+          "prefixItems": [
+            {"type": "number"},
+            {"type": "number"},
+            {"type": "number"},
+            {"type": "number"}
+          ],
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "width": {"type": "integer", "minimum": 1},
+        "height": {"type": "integer", "minimum": 1},
+        "nodata": {"type": "number"}
+      }
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "channel", "official_url", "version", "artifacts"],
+        "properties": {
+          "id": {"type": "string"},
+          "channel": {"enum": ["availability", "access", "evaluation"]},
+          "official_url": {"type": "string", "format": "uri"},
+          "version": {"type": "string"},
+          "retrieved_at_utc": {"type": "string", "format": "date-time"},
+          "artifacts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["path", "sha256"],
+              "properties": {
+                "path": {"type": "string"},
+                "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                "request": {"type": ["object", "null"]}
+              }
+            }
+          }
+        }
+      }
+    },
+    "bands": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "index",
+          "id",
+          "channel",
+          "source_id",
+          "variable",
+          "statistic",
+          "unit",
+          "dtype",
+          "nodata",
+          "physical_path",
+          "coverage_fraction"
+        ],
+        "properties": {
+          "index": {"type": "integer", "minimum": 1},
+          "id": {"type": "string", "minLength": 1},
+          "channel": {"enum": ["availability", "access", "evaluation"]},
+          "source_id": {"type": "string"},
+          "variable": {"type": "string"},
+          "statistic": {"type": "string"},
+          "unit": {"type": "string"},
+          "kind": {"enum": ["categorical", "continuous", "fraction", "flag"]},
+          "dtype": {"type": "string"},
+          "nodata": {"type": "number"},
+          "source_resolution_m": {"type": ["number", "null"]},
+          "output_resolution_m": {"type": "number", "exclusiveMinimum": 0},
+          "neighborhood_radius_m": {"type": ["number", "null"]},
+          "source_date": {"type": ["string", "null"]},
+          "valid_from": {"type": ["string", "null"]},
+          "valid_to": {"type": ["string", "null"]},
+          "selection_rule": {"type": "string"},
+          "aggregation": {"type": "string"},
+          "resampling": {"type": "string"},
+          "physical_path": {"type": "string"},
+          "physical_sha256": {"type": ["string", "null"]},
+          "coverage_fraction": {"type": "number", "minimum": 0, "maximum": 1}
+        }
+      }
+    }
+  }
+}

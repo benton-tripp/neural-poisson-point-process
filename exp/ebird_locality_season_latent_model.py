@@ -35,6 +35,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
+from sklearn.model_selection import ShuffleSplit
 from torch import nn
 
 from ebird_joint_tabular_baseline import auc_roc, average_precision
@@ -66,6 +67,17 @@ DEFAULT_OUTPUT_DIR_NAME = "latent_models"
 SEED = 19
 EPS = 1e-7
 WINDOWS_MAX_PATH_LENGTH = 259
+REGIME_FEATURES = (
+    "canopy_median",
+    "elevation_median",
+    "distance_to_waterbody_m_median",
+    "distance_to_coastline_m_median",
+    "n_checklists",
+    "n_dates",
+    "unique_observers",
+    "duration_bin_count",
+    "protocol_count",
+)
 OUTPUT_SUFFIXES = [
     "_metrics.csv",
     "_species_metrics.csv",
@@ -81,6 +93,7 @@ OUTPUT_SUFFIXES = [
     "_pair_codetection_support_metrics.csv",
     "_pair_codetection_species_season_metrics.csv",
     "_frailty_species.csv",
+    "_availability_history_weights.csv",
     "_summary.json",
 ]
 
@@ -114,6 +127,72 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=2023,
         help="Season year held out for testing. Defaults to 2023.",
+    )
+    parser.add_argument(
+        "--split-mode",
+        choices=["temporal", "temporal-locality", "temporal-regime"],
+        default="temporal",
+        help=(
+            "Evaluation split. 'temporal' trains before --test-season-year and "
+            "tests all groups in that year. 'temporal-locality' additionally "
+            "holds representative established localities out of training and "
+            "tests only their groups in the test year. 'temporal-regime' holds "
+            "an extreme tail of established localities out according to a "
+            "pre-test historical locality profile. Defaults to temporal."
+        ),
+    )
+    parser.add_argument(
+        "--test-locality-fraction",
+        type=float,
+        default=0.2,
+        help=(
+            "Fraction of eligible established test-year localities held out in "
+            "temporal-locality mode. Defaults to 0.2."
+        ),
+    )
+    parser.add_argument(
+        "--locality-split-candidates",
+        type=int,
+        default=100,
+        help=(
+            "Random locality-holdout candidates scored for covariate and effort "
+            "balance in temporal-locality mode. Defaults to 100."
+        ),
+    )
+    parser.add_argument(
+        "--split-seed",
+        type=int,
+        default=37,
+        help="Random seed for temporal-locality split selection. Defaults to 37.",
+    )
+    parser.add_argument(
+        "--test-regime-feature",
+        choices=REGIME_FEATURES,
+        default="distance_to_coastline_m_median",
+        help=(
+            "Historical locality-profile feature defining the held-out tail in "
+            "temporal-regime mode. Defaults to distance_to_coastline_m_median."
+        ),
+    )
+    parser.add_argument(
+        "--test-regime-tail",
+        choices=["low", "high"],
+        default="low",
+        help=(
+            "Feature tail held out in temporal-regime mode. Use low coastline "
+            "distance for coastal transfer, high elevation for mountain "
+            "transfer, or low observer support for observer-density transfer. "
+            "Defaults to low."
+        ),
+    )
+    parser.add_argument(
+        "--test-regime-fraction",
+        type=float,
+        default=0.2,
+        help=(
+            "Fraction of eligible established localities in the selected "
+            "historical feature tail. Defaults to 0.2."
+        ),
     )
     parser.add_argument(
         "--include-inadequate",
@@ -218,6 +297,32 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.0,
         help="Optional L2 penalty on species-by-season offsets. Defaults to 0.",
+    )
+    parser.add_argument(
+        "--availability-history-mode",
+        choices=["none", "shared"],
+        default="none",
+        help=(
+            "Optional prior-year same-season history correction on availability. "
+            "'shared' learns one portable coefficient per history feature across "
+            "species; groups without prior same-season support receive exactly "
+            "zero correction. Defaults to none."
+        ),
+    )
+    parser.add_argument(
+        "--availability-history-l2",
+        type=float,
+        default=0.0,
+        help="Optional L2 penalty on shared availability-history weights. Defaults to 0.",
+    )
+    parser.add_argument(
+        "--availability-history-support-scale",
+        type=float,
+        default=20.0,
+        help=(
+            "Prior same-season checklist count at which history support reaches "
+            "1-exp(-1). Defaults to 20."
+        ),
     )
     parser.add_argument(
         "--detection-frailty-mode",
@@ -332,6 +437,8 @@ class LatentRepeatedVisitModel(nn.Module):
         species_count: int,
         season_count: int,
         species_season_mode: str,
+        availability_history_mode: str,
+        availability_history_feature_count: int,
         detection_frailty_mode: str,
         detection_frailty_init: float,
         frailty_quadrature_points: int,
@@ -341,6 +448,7 @@ class LatentRepeatedVisitModel(nn.Module):
         super().__init__()
         self.species_count = species_count
         self.species_season_mode = species_season_mode
+        self.availability_history_mode = availability_history_mode
         self.detection_frailty_mode = detection_frailty_mode
         self.availability_weights = nn.Parameter(
             torch.zeros(availability_feature_count, species_count)
@@ -366,6 +474,20 @@ class LatentRepeatedVisitModel(nn.Module):
             )
         else:
             self.detection_season_bias = None
+        if availability_history_mode == "none":
+            self.availability_history_weights = None
+        elif availability_history_mode == "shared":
+            if availability_history_feature_count < 1:
+                raise ValueError(
+                    "Shared availability history requires at least one history feature."
+                )
+            self.availability_history_weights = nn.Parameter(
+                torch.zeros(availability_history_feature_count)
+            )
+        else:
+            raise ValueError(
+                f"Unknown availability history mode: {availability_history_mode}"
+            )
         if detection_frailty_mode == "none":
             self.detection_frailty_raw = None
             self.detection_frailty_deviation_raw = None
@@ -392,7 +514,7 @@ class LatentRepeatedVisitModel(nn.Module):
         self.register_buffer("frailty_nodes", torch.as_tensor(nodes))
         self.register_buffer("frailty_weights", torch.as_tensor(weights))
 
-    def availability_logits(
+    def portable_availability_logits(
         self,
         features: torch.Tensor,
         season_index: torch.Tensor | None = None,
@@ -403,6 +525,32 @@ class LatentRepeatedVisitModel(nn.Module):
                 raise ValueError("season_index is required for availability season offsets.")
             logits = logits + self.availability_season_bias[season_index]
         return logits
+
+    def availability_history_adjustment(
+        self,
+        history_features: torch.Tensor | None,
+        reference_logits: torch.Tensor,
+    ) -> torch.Tensor:
+        if self.availability_history_weights is None:
+            return torch.zeros_like(reference_logits)
+        if history_features is None:
+            raise ValueError(
+                "history_features are required when availability history is enabled."
+            )
+        return torch.einsum(
+            "gsk,k->gs", history_features, self.availability_history_weights
+        )
+
+    def availability_logits(
+        self,
+        features: torch.Tensor,
+        season_index: torch.Tensor | None = None,
+        history_features: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        portable_logits = self.portable_availability_logits(features, season_index)
+        return portable_logits + self.availability_history_adjustment(
+            history_features, portable_logits
+        )
 
     def detection_logits(
         self,
@@ -470,6 +618,15 @@ class LatentRepeatedVisitModel(nn.Module):
             penalty = penalty / terms
         return penalty
 
+    def availability_history_penalty(self) -> torch.Tensor:
+        if self.availability_history_weights is None:
+            return torch.zeros(
+                (),
+                dtype=self.availability_weights.dtype,
+                device=self.availability_weights.device,
+            )
+        return self.availability_history_weights.square().mean()
+
     def detection_frailty_penalty(self) -> torch.Tensor:
         if self.detection_frailty_mode == "hierarchical":
             return nn.functional.softplus(self.detection_frailty_raw).square().mean()
@@ -479,35 +636,305 @@ class LatentRepeatedVisitModel(nn.Module):
         return self.centered_detection_frailty_deviations().square().mean()
 
 
-def sample_groups_for_smoke(
+LOCALITY_BALANCE_COLUMNS = [
+    "x",
+    "y",
+    "canopy_median",
+    "elevation_median",
+    "distance_to_waterbody_m_median",
+    "distance_to_coastline_m_median",
+    "n_checklists",
+    "n_dates",
+    "unique_observers",
+    "duration_bin_count",
+    "protocol_count",
+]
+LOCALITY_BALANCE_LOG1P_COLUMNS = {
+    "distance_to_waterbody_m_median",
+    "distance_to_coastline_m_median",
+    "n_checklists",
+    "n_dates",
+    "unique_observers",
+    "duration_bin_count",
+    "protocol_count",
+}
+
+
+def locality_balance_score(
+    candidate: pd.DataFrame,
+    pool: pd.DataFrame,
+    target_fraction: float,
+) -> tuple[float, dict[str, float]]:
+    numeric_errors = []
+    for column in LOCALITY_BALANCE_COLUMNS:
+        pool_values = pd.to_numeric(pool[column], errors="coerce").to_numpy(float)
+        candidate_values = pd.to_numeric(
+            candidate[column], errors="coerce"
+        ).to_numpy(float)
+        if column in LOCALITY_BALANCE_LOG1P_COLUMNS:
+            pool_values = np.log1p(np.clip(pool_values, 0.0, None))
+            candidate_values = np.log1p(np.clip(candidate_values, 0.0, None))
+        scale = float(np.nanstd(pool_values))
+        if not np.isfinite(scale) or scale <= EPS:
+            continue
+        error = abs(float(np.nanmean(candidate_values) - np.nanmean(pool_values)))
+        numeric_errors.append(error / scale)
+
+    categorical_errors = []
+    for column in ("season_name", "locality_type"):
+        pool_values = pool[column].astype("string").fillna("missing")
+        candidate_values = candidate[column].astype("string").fillna("missing")
+        levels = sorted(pool_values.unique())
+        pool_distribution = pool_values.value_counts(normalize=True)
+        candidate_distribution = candidate_values.value_counts(normalize=True)
+        total_variation = 0.5 * sum(
+            abs(
+                float(candidate_distribution.get(level, 0.0))
+                - float(pool_distribution.get(level, 0.0))
+            )
+            for level in levels
+        )
+        categorical_errors.append(total_variation)
+
+    numeric_error = float(np.mean(numeric_errors)) if numeric_errors else 0.0
+    categorical_error = (
+        float(np.mean(categorical_errors)) if categorical_errors else 0.0
+    )
+    actual_fraction = len(candidate) / len(pool)
+    fraction_error = abs(actual_fraction - target_fraction)
+    components = {
+        "numeric_mean_standardized_error": numeric_error,
+        "categorical_mean_total_variation": categorical_error,
+        "test_group_fraction_error": float(fraction_error),
+    }
+    return numeric_error + categorical_error + fraction_error, components
+
+
+def make_group_split(
     groups: pd.DataFrame,
-    test_season_year: int,
+    args: argparse.Namespace,
+) -> tuple[np.ndarray, np.ndarray, dict]:
+    years = groups["season_year"].astype(int)
+    temporal_train = years.lt(args.test_season_year).to_numpy()
+    temporal_test = years.eq(args.test_season_year).to_numpy()
+    if args.split_mode == "temporal":
+        train_localities = set(groups.loc[temporal_train, "locality_id"])
+        test_localities = set(groups.loc[temporal_test, "locality_id"])
+        return temporal_train, temporal_test, {
+            "mode": "temporal",
+            "test_season_year": int(args.test_season_year),
+            "train_localities": int(len(train_localities)),
+            "test_localities": int(len(test_localities)),
+            "test_localities_seen_in_training": int(
+                len(train_localities.intersection(test_localities))
+            ),
+            "excluded_groups": int((~(temporal_train | temporal_test)).sum()),
+        }
+
+    if args.split_mode == "temporal-regime":
+        if not 0.0 < args.test_regime_fraction < 1.0:
+            raise ValueError("--test-regime-fraction must be between 0 and 1.")
+
+        feature = args.test_regime_feature
+        test_year_localities = set(groups.loc[temporal_test, "locality_id"])
+        historical_profiles = groups.loc[
+            temporal_train & groups["locality_id"].isin(test_year_localities),
+            ["locality_id", feature],
+        ].copy()
+        historical_profiles[feature] = pd.to_numeric(
+            historical_profiles[feature], errors="coerce"
+        )
+        historical_profiles = (
+            historical_profiles.dropna(subset=[feature])
+            .groupby("locality_id", as_index=False, observed=True)[feature]
+            .median()
+        )
+        if len(historical_profiles) < 2:
+            raise ValueError(
+                "Temporal-regime split requires at least two test-year "
+                "localities with finite pre-test feature profiles."
+            )
+
+        ascending = args.test_regime_tail == "low"
+        ordered_profiles = historical_profiles.assign(
+            _locality_sort=historical_profiles["locality_id"].astype(str)
+        ).sort_values(
+            [feature, "_locality_sort"],
+            ascending=[ascending, True],
+            kind="mergesort",
+        )
+        target_count = max(
+            1,
+            int(math.ceil(len(ordered_profiles) * args.test_regime_fraction)),
+        )
+        threshold = float(ordered_profiles.iloc[target_count - 1][feature])
+        if args.test_regime_tail == "low":
+            heldout_profiles = historical_profiles.loc[
+                historical_profiles[feature] <= threshold
+            ]
+        else:
+            heldout_profiles = historical_profiles.loc[
+                historical_profiles[feature] >= threshold
+            ]
+        if len(heldout_profiles) >= len(historical_profiles):
+            raise ValueError(
+                "Temporal-regime feature does not distinguish a non-empty "
+                "training complement at the requested tail fraction."
+            )
+
+        heldout_localities = set(heldout_profiles["locality_id"])
+        heldout_mask = groups["locality_id"].isin(heldout_localities).to_numpy()
+        train_mask = temporal_train & ~heldout_mask
+        test_mask = temporal_test & heldout_mask
+        if not train_mask.any() or not test_mask.any():
+            raise ValueError(
+                "Temporal-regime split failed to retain both training and "
+                "test groups."
+            )
+
+        eligible_localities = set(historical_profiles["locality_id"])
+        established_test_pool = groups.loc[
+            temporal_test & groups["locality_id"].isin(eligible_localities)
+        ]
+        retained_profiles = historical_profiles.loc[
+            ~historical_profiles["locality_id"].isin(heldout_localities)
+        ]
+
+        def profile_summary(frame: pd.DataFrame) -> dict[str, float]:
+            values = frame[feature].to_numpy(dtype=float)
+            return {
+                "minimum": float(np.min(values)),
+                "median": float(np.median(values)),
+                "maximum": float(np.max(values)),
+            }
+
+        return train_mask, test_mask, {
+            "mode": "temporal-regime",
+            "test_season_year": int(args.test_season_year),
+            "regime_feature": feature,
+            "regime_tail": args.test_regime_tail,
+            "historical_profile_statistic": "locality_median",
+            "regime_threshold_inclusive": threshold,
+            "test_regime_fraction_requested": float(args.test_regime_fraction),
+            "test_locality_fraction_actual": float(
+                len(heldout_localities) / len(eligible_localities)
+            ),
+            "test_group_fraction_actual": float(
+                test_mask.sum() / len(established_test_pool)
+            ),
+            "eligible_established_test_localities": int(
+                len(eligible_localities)
+            ),
+            "heldout_localities": int(len(heldout_localities)),
+            "heldout_locality_ids": sorted(map(str, heldout_localities)),
+            "heldout_profile_summary": profile_summary(heldout_profiles),
+            "retained_profile_summary": profile_summary(retained_profiles),
+            "excluded_groups": int((~(train_mask | test_mask)).sum()),
+        }
+
+    if not 0.0 < args.test_locality_fraction < 1.0:
+        raise ValueError("--test-locality-fraction must be between 0 and 1.")
+    if args.locality_split_candidates < 1:
+        raise ValueError("--locality-split-candidates must be at least 1.")
+
+    historical_localities = set(groups.loc[temporal_train, "locality_id"])
+    established_test_pool = groups.loc[
+        temporal_test & groups["locality_id"].isin(historical_localities)
+    ].copy()
+    eligible_localities = np.asarray(
+        sorted(established_test_pool["locality_id"].dropna().unique(), key=str),
+        dtype=object,
+    )
+    if len(eligible_localities) < 2:
+        raise ValueError(
+            "Temporal-locality split requires at least two test-year localities "
+            "with pre-test history."
+        )
+
+    splitter = ShuffleSplit(
+        n_splits=args.locality_split_candidates,
+        test_size=args.test_locality_fraction,
+        random_state=args.split_seed,
+    )
+    best = None
+    for candidate_index, (_, test_indices) in enumerate(
+        splitter.split(eligible_localities)
+    ):
+        heldout = set(eligible_localities[test_indices])
+        candidate_groups = established_test_pool.loc[
+            established_test_pool["locality_id"].isin(heldout)
+        ]
+        score, components = locality_balance_score(
+            candidate_groups,
+            established_test_pool,
+            args.test_locality_fraction,
+        )
+        key = (score, candidate_index)
+        if best is None or key < best[0]:
+            best = (key, heldout, candidate_groups, components)
+
+    _, heldout_localities, heldout_test_groups, balance_components = best
+    heldout_mask = groups["locality_id"].isin(heldout_localities).to_numpy()
+    train_mask = temporal_train & ~heldout_mask
+    test_mask = temporal_test & heldout_mask
+    if not train_mask.any() or not test_mask.any():
+        raise ValueError(
+            "Temporal-locality split failed to retain both training and test groups."
+        )
+
+    test_group_fraction = len(heldout_test_groups) / len(established_test_pool)
+    return train_mask, test_mask, {
+        "mode": "temporal-locality",
+        "test_season_year": int(args.test_season_year),
+        "test_locality_fraction_requested": float(args.test_locality_fraction),
+        "test_locality_fraction_actual": float(
+            len(heldout_localities) / len(eligible_localities)
+        ),
+        "test_group_fraction_actual": float(test_group_fraction),
+        "split_seed": int(args.split_seed),
+        "candidate_splits_scored": int(args.locality_split_candidates),
+        "eligible_established_test_localities": int(len(eligible_localities)),
+        "heldout_localities": int(len(heldout_localities)),
+        "heldout_locality_ids": sorted(map(str, heldout_localities)),
+        "balance_score": float(sum(balance_components.values())),
+        "balance_components": balance_components,
+        "excluded_groups": int((~(train_mask | test_mask)).sum()),
+    }
+
+
+def select_split_groups(
+    groups: pd.DataFrame,
+    train_group_mask: np.ndarray,
+    test_group_mask: np.ndarray,
     max_groups_per_split: int | None,
-) -> pd.DataFrame:
-    if max_groups_per_split is None:
-        return groups
+) -> tuple[pd.DataFrame, set[int], set[int]]:
     rng = np.random.default_rng(SEED)
     pieces = []
-    for mask in [
-        groups["season_year"].astype(int) < test_season_year,
-        groups["season_year"].astype(int) == test_season_year,
-    ]:
+    selected_ids = []
+    for mask in (train_group_mask, test_group_mask):
         subset = groups.loc[mask]
-        if len(subset) > max_groups_per_split:
+        if max_groups_per_split is not None and len(subset) > max_groups_per_split:
             subset = subset.sample(
                 n=max_groups_per_split,
                 random_state=int(rng.integers(0, 2**31 - 1)),
             )
         pieces.append(subset)
+        selected_ids.append(set(subset["locality_season_id"].astype(int)))
     selected = pd.concat(pieces, ignore_index=True)
-    if selected.empty:
-        raise ValueError("Group smoke sample is empty.")
-    return selected.sort_values("locality_season_id").reset_index(drop=True)
+    if selected.empty or not selected_ids[0] or not selected_ids[1]:
+        raise ValueError("Group split selection requires non-empty train and test groups.")
+    return (
+        selected.sort_values("locality_season_id").reset_index(drop=True),
+        selected_ids[0],
+        selected_ids[1],
+    )
 
 
 def build_groups(checklists: pd.DataFrame) -> pd.DataFrame:
     grouped = checklists.groupby("locality_season_id", observed=True, sort=True)
     groups = grouped.agg(
+        locality_id=("locality_id", "first"),
+        locality_type=("locality_type", "first"),
         season_year=("season_year", "first"),
         season_name=("season_name", "first"),
         n_checklists=("sampling_event_identifier", "nunique"),
@@ -593,6 +1020,140 @@ def group_detection_counts(
     return counts
 
 
+AVAILABILITY_HISTORY_FEATURE_NAMES = [
+    "latest_prior_year_detected",
+    "never_detected_same_season",
+    "past_detection_recent_zero",
+]
+
+
+def build_availability_history_features(
+    dataset_dir: Path,
+    groups: pd.DataFrame,
+    species_count: int,
+    mode: str,
+    support_scale: float,
+) -> tuple[np.ndarray | None, dict]:
+    """Build leakage-safe prior-year, same-season group/species features.
+
+    The three states are mutually exclusive when prior same-season support
+    exists. Each state is multiplied by a bounded checklist-support strength;
+    all features are exactly zero for a locality/species/season with no history.
+    """
+    if mode == "none":
+        return None, {
+            "mode": "none",
+            "feature_names": [],
+            "support_scale": float(support_scale),
+        }
+    if mode != "shared":
+        raise ValueError(f"Unknown availability history mode: {mode}")
+    if support_scale <= 0.0:
+        raise ValueError("--availability-history-support-scale must be positive.")
+
+    history_path = dataset_dir / "locality_season_species.parquet"
+    if not history_path.exists():
+        raise FileNotFoundError(
+            "Availability history requires locality_season_species.parquet under "
+            f"{dataset_dir}"
+        )
+    columns = [
+        "locality_season_id",
+        "locality_id",
+        "season_year",
+        "season_name",
+        "species_index",
+        "n_checklists",
+        "n_detections",
+    ]
+    history = pd.read_parquet(history_path, columns=columns)
+    history = history.loc[
+        history["locality_id"].isin(groups["locality_id"].unique())
+    ].copy()
+    history["season_name"] = history["season_name"].astype("string")
+    history = history.sort_values(
+        [
+            "locality_id",
+            "season_name",
+            "species_index",
+            "season_year",
+            "locality_season_id",
+        ]
+    ).reset_index(drop=True)
+    key_columns = ["locality_id", "season_name", "species_index"]
+    if history.duplicated([*key_columns, "season_year"]).any():
+        raise ValueError(
+            "Availability history requires one locality/species/season row per year."
+        )
+    history_groups = history.groupby(key_columns, observed=True, sort=False)
+    history["prior_same_season_groups"] = history_groups.cumcount()
+    history["prior_same_season_checklists"] = (
+        history_groups["n_checklists"].cumsum() - history["n_checklists"]
+    )
+    history["prior_same_season_detections"] = (
+        history_groups["n_detections"].cumsum() - history["n_detections"]
+    )
+    history["latest_prior_year_detections"] = (
+        history_groups["n_detections"].shift(1).fillna(0)
+    )
+
+    group_index = pd.Series(
+        np.arange(len(groups), dtype=np.int64),
+        index=groups["locality_season_id"].astype(np.int64),
+    )
+    target = history.loc[
+        history["locality_season_id"].isin(group_index.index)
+    ].copy()
+    target["group_index"] = target["locality_season_id"].map(group_index)
+    if target.duplicated(["group_index", "species_index"]).any():
+        raise ValueError("Availability history contains duplicate target group/species rows.")
+
+    expected_pairs = len(groups) * species_count
+    if len(target) != expected_pairs:
+        raise ValueError(
+            "Availability history did not cover every selected group/species pair: "
+            f"expected {expected_pairs:,}, found {len(target):,}."
+        )
+    species_indices = target["species_index"].to_numpy(dtype=np.int64)
+    if species_indices.min() < 0 or species_indices.max() >= species_count:
+        raise ValueError("Availability history contains an out-of-range species index.")
+
+    prior_groups = target["prior_same_season_groups"].to_numpy(dtype=np.int64)
+    prior_checklists = target["prior_same_season_checklists"].to_numpy(dtype=float)
+    prior_detections = target["prior_same_season_detections"].to_numpy(dtype=float)
+    latest_detections = target["latest_prior_year_detections"].to_numpy(dtype=float)
+    support = -np.expm1(-np.clip(prior_checklists, 0.0, None) / support_scale)
+    has_history = prior_groups > 0
+    state_masks = [
+        has_history & (latest_detections > 0),
+        has_history & (prior_detections <= 0),
+        has_history & (prior_detections > 0) & (latest_detections <= 0),
+    ]
+    feature_rows = np.column_stack(
+        [support * state_mask.astype(float) for state_mask in state_masks]
+    ).astype(np.float32)
+    features = np.zeros(
+        (len(groups), species_count, len(AVAILABILITY_HISTORY_FEATURE_NAMES)),
+        dtype=np.float32,
+    )
+    features[
+        target["group_index"].to_numpy(dtype=np.int64),
+        species_indices,
+    ] = feature_rows
+    metadata = {
+        "mode": mode,
+        "feature_names": AVAILABILITY_HISTORY_FEATURE_NAMES,
+        "support_scale": float(support_scale),
+        "pairs": int(expected_pairs),
+        "pairs_with_prior_same_season_support": int(has_history.sum()),
+        "pairs_by_history_state": {
+            name: int(mask.sum())
+            for name, mask in zip(AVAILABILITY_HISTORY_FEATURE_NAMES, state_masks)
+        },
+    }
+    return features, metadata
+
+
 def initial_availability_logits(
     positive_groups: np.ndarray,
     train_group_mask: np.ndarray,
@@ -622,6 +1183,7 @@ def remap_train_group_indices(
 def latent_negative_log_likelihood(
     model: LatentRepeatedVisitModel,
     availability_features: torch.Tensor,
+    availability_history_features: torch.Tensor | None,
     detection_features: torch.Tensor,
     labels: torch.Tensor,
     checklist_group_index: torch.Tensor,
@@ -629,7 +1191,11 @@ def latent_negative_log_likelihood(
     checklist_season_index: torch.Tensor,
     positive_groups: torch.Tensor,
 ) -> torch.Tensor:
-    psi_logits = model.availability_logits(availability_features, group_season_index)
+    psi_logits = model.availability_logits(
+        availability_features,
+        group_season_index,
+        availability_history_features,
+    )
     base_detection_logits = model.detection_logits(
         detection_features, checklist_season_index
     )
@@ -689,6 +1255,7 @@ def latent_negative_log_likelihood(
 def marginal_rate_penalty(
     model: LatentRepeatedVisitModel,
     availability_features: torch.Tensor,
+    availability_history_features: torch.Tensor | None,
     detection_features: torch.Tensor,
     labels: torch.Tensor,
     checklist_group_index: torch.Tensor,
@@ -700,7 +1267,13 @@ def marginal_rate_penalty(
     if marginal_rate_l2 <= 0.0 and species_marginal_rate_l2 <= 0.0:
         return torch.zeros((), dtype=labels.dtype, device=labels.device)
 
-    psi = torch.sigmoid(model.availability_logits(availability_features, group_season_index))
+    psi = torch.sigmoid(
+        model.availability_logits(
+            availability_features,
+            group_season_index,
+            availability_history_features,
+        )
+    )
     detection_logits = model.detection_logits(detection_features, checklist_season_index)
     conditional_detection = model.mean_detection_probability(detection_logits)
     marginal_detection = conditional_detection * psi[checklist_group_index]
@@ -719,6 +1292,7 @@ def marginal_rate_penalty(
 
 def fit_latent_model(
     availability_features: np.ndarray,
+    availability_history_features: np.ndarray | None,
     detection_features: np.ndarray,
     labels: np.ndarray,
     checklist_group_index: np.ndarray,
@@ -743,6 +1317,12 @@ def fit_latent_model(
         labels.shape[1],
         int(group_season_index.max()) + 1,
         args.species_season_mode,
+        args.availability_history_mode,
+        (
+            availability_history_features.shape[2]
+            if availability_history_features is not None
+            else 0
+        ),
         args.detection_frailty_mode,
         args.detection_frailty_init,
         args.frailty_quadrature_points,
@@ -755,6 +1335,13 @@ def fit_latent_model(
 
     availability_tensor = torch.from_numpy(
         availability_features[train_group_mask].astype(np.float32)
+    )
+    availability_history_tensor = (
+        torch.from_numpy(
+            availability_history_features[train_group_mask].astype(np.float32)
+        )
+        if availability_history_features is not None
+        else None
     )
     detection_tensor = torch.from_numpy(
         detection_features[train_checklist_mask].astype(np.float32)
@@ -775,6 +1362,7 @@ def fit_latent_model(
         nll = latent_negative_log_likelihood(
             model,
             availability_tensor,
+            availability_history_tensor,
             detection_tensor,
             labels_tensor,
             group_index_tensor,
@@ -789,6 +1377,15 @@ def fit_latent_model(
             objective = objective + args.detection_l2 * model.detection_weights.square().mean()
         if args.species_season_l2 > 0.0 and args.species_season_mode != "none":
             objective = objective + args.species_season_l2 * model.species_season_penalty()
+        if (
+            args.availability_history_l2 > 0.0
+            and args.availability_history_mode != "none"
+        ):
+            objective = (
+                objective
+                + args.availability_history_l2
+                * model.availability_history_penalty()
+            )
         if args.detection_frailty_l2 > 0.0 and args.detection_frailty_mode != "none":
             objective = (
                 objective
@@ -806,6 +1403,7 @@ def fit_latent_model(
         rate_penalty = marginal_rate_penalty(
             model,
             availability_tensor,
+            availability_history_tensor,
             detection_tensor,
             labels_tensor,
             group_index_tensor,
@@ -829,27 +1427,44 @@ def fit_latent_model(
 def predict_latent(
     model: LatentRepeatedVisitModel,
     availability_features: np.ndarray,
+    availability_history_features: np.ndarray | None,
     detection_features: np.ndarray,
     checklist_group_index: np.ndarray,
     group_season_index: np.ndarray,
     checklist_season_index: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     model.eval()
     with torch.no_grad():
         availability_tensor = torch.from_numpy(availability_features.astype(np.float32))
+        availability_history_tensor = (
+            torch.from_numpy(availability_history_features.astype(np.float32))
+            if availability_history_features is not None
+            else None
+        )
         detection_tensor = torch.from_numpy(detection_features.astype(np.float32))
         group_season_tensor = torch.from_numpy(group_season_index.astype(np.int64))
         checklist_season_tensor = torch.from_numpy(checklist_season_index.astype(np.int64))
-        psi = torch.sigmoid(
-            model.availability_logits(availability_tensor, group_season_tensor)
-        ).numpy()
+        portable_logits = model.portable_availability_logits(
+            availability_tensor, group_season_tensor
+        )
+        history_adjustment = model.availability_history_adjustment(
+            availability_history_tensor, portable_logits
+        )
+        portable_psi = torch.sigmoid(portable_logits).numpy()
+        psi = torch.sigmoid(portable_logits + history_adjustment).numpy()
         detection_logits = model.detection_logits(
             detection_tensor,
             checklist_season_tensor,
         )
         conditional_detection = model.mean_detection_probability(detection_logits).numpy()
     marginal_detection = conditional_detection * psi[checklist_group_index]
-    return psi.astype(np.float32), conditional_detection.astype(np.float32), marginal_detection.astype(np.float32)
+    return (
+        psi.astype(np.float32),
+        portable_psi.astype(np.float32),
+        history_adjustment.numpy().astype(np.float32),
+        conditional_detection.astype(np.float32),
+        marginal_detection.astype(np.float32),
+    )
 
 
 def predict_group_detection_components(
@@ -1519,8 +2134,12 @@ def build_focus_species_group_predictions(
     group_mask: np.ndarray,
     positive_groups: np.ndarray,
     psi: np.ndarray,
+    portable_psi: np.ndarray,
+    availability_history_adjustment: np.ndarray,
+    availability_history_features: np.ndarray | None,
     conditional_any_detection: np.ndarray,
     prior_any_detection: np.ndarray,
+    portable_prior_any_detection: np.ndarray,
     focus_species: list[str],
 ) -> pd.DataFrame:
     focus = species.loc[
@@ -1546,12 +2165,30 @@ def build_focus_species_group_predictions(
         frame["predicted_availability"] = psi[
             group_indices, species_index
         ].astype(float)
+        frame["predicted_availability_portable"] = portable_psi[
+            group_indices, species_index
+        ].astype(float)
+        frame["availability_history_logit_delta"] = availability_history_adjustment[
+            group_indices, species_index
+        ].astype(float)
+        if availability_history_features is not None:
+            for feature_index, feature_name in enumerate(
+                AVAILABILITY_HISTORY_FEATURE_NAMES
+            ):
+                frame[f"availability_history_{feature_name}"] = (
+                    availability_history_features[
+                        group_indices, species_index, feature_index
+                    ].astype(float)
+                )
         frame["conditional_any_detection_probability"] = conditional_any_detection[
             group_indices, species_index
         ].astype(float)
         frame["prior_any_detection_probability"] = prior_any_detection[
             group_indices, species_index
         ].astype(float)
+        frame["portable_prior_any_detection_probability"] = (
+            portable_prior_any_detection[group_indices, species_index].astype(float)
+        )
         frames.append(frame)
     return pd.concat(frames, ignore_index=True)
 
@@ -1573,6 +2210,7 @@ def write_outputs(
     pair_codetection_support: pd.DataFrame,
     pair_codetection_species_season: pd.DataFrame,
     frailty_species: pd.DataFrame,
+    availability_history_weights: pd.DataFrame,
     summary: dict,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1617,6 +2255,9 @@ def write_outputs(
     frailty_species.to_csv(
         output_dir / f"{run_name}_frailty_species.csv", index=False
     )
+    availability_history_weights.to_csv(
+        output_dir / f"{run_name}_availability_history_weights.csv", index=False
+    )
     (output_dir / f"{run_name}_summary.json").write_text(
         json.dumps(summary, indent=2), encoding="utf-8"
     )
@@ -1645,8 +2286,14 @@ def main() -> None:
     )
     groups = build_groups(checklists)
     groups = filter_groups_by_support(groups, args)
-    groups = sample_groups_for_smoke(
-        groups, args.test_season_year, args.max_groups_per_split
+    initial_train_group_mask, initial_test_group_mask, split_metadata = (
+        make_group_split(groups, args)
+    )
+    groups, train_group_ids, test_group_ids = select_split_groups(
+        groups,
+        initial_train_group_mask,
+        initial_test_group_mask,
+        args.max_groups_per_split,
     )
     checklists = checklists.loc[
         checklists["locality_season_id"].isin(groups["locality_season_id"])
@@ -1657,13 +2304,32 @@ def main() -> None:
         groups, checklist_group_index
     )
 
-    group_years = groups["season_year"].astype(int).to_numpy()
-    train_group_mask = group_years < args.test_season_year
-    test_group_mask = group_years == args.test_season_year
+    train_group_mask = groups["locality_season_id"].isin(train_group_ids).to_numpy()
+    test_group_mask = groups["locality_season_id"].isin(test_group_ids).to_numpy()
     if not train_group_mask.any() or not test_group_mask.any():
         raise ValueError(
             "Latent split failed: need at least one train and one test locality-season."
         )
+    train_localities = set(groups.loc[train_group_mask, "locality_id"])
+    groups["locality_seen_in_training"] = groups["locality_id"].isin(
+        train_localities
+    )
+    split_metadata.update(
+        {
+            "train_groups_selected": int(train_group_mask.sum()),
+            "test_groups_selected": int(test_group_mask.sum()),
+            "train_localities_selected": int(len(train_localities)),
+            "test_localities_selected": int(
+                groups.loc[test_group_mask, "locality_id"].nunique()
+            ),
+            "test_localities_seen_in_selected_training": int(
+                groups.loc[
+                    test_group_mask & groups["locality_seen_in_training"],
+                    "locality_id",
+                ].nunique()
+            ),
+        }
+    )
     train_checklist_mask = train_group_mask[checklist_group_index]
     test_checklist_mask = test_group_mask[checklist_group_index]
 
@@ -1679,6 +2345,15 @@ def main() -> None:
     availability_features, availability_metadata = standardize(
         availability_frame, train_group_mask
     )
+    availability_history_features, availability_history_metadata = (
+        build_availability_history_features(
+            dataset_dir,
+            groups,
+            len(species),
+            args.availability_history_mode,
+            args.availability_history_support_scale,
+        )
+    )
     effort_frame = build_effort_features(checklists)
     detection_features, detection_metadata = standardize_checklist_features(
         effort_frame, train_checklist_mask
@@ -1692,9 +2367,38 @@ def main() -> None:
         f"test={int(test_checklist_mask.sum()):,}; "
         f"species={len(species)}"
     )
+    if args.split_mode == "temporal-locality":
+        print(
+            "Controlled locality transfer: "
+            f"held out {split_metadata['heldout_localities']:,} of "
+            f"{split_metadata['eligible_established_test_localities']:,} "
+            "eligible established localities; "
+            f"test group fraction={split_metadata['test_group_fraction_actual']:.3f}; "
+            f"balance score={split_metadata['balance_score']:.4f}."
+        )
+    elif args.split_mode == "temporal-regime":
+        print(
+            "Controlled regime transfer: "
+            f"held out {split_metadata['heldout_localities']:,} of "
+            f"{split_metadata['eligible_established_test_localities']:,} "
+            "eligible established localities in the "
+            f"{split_metadata['regime_tail']} tail of historical "
+            f"{split_metadata['regime_feature']}; "
+            "inclusive threshold="
+            f"{split_metadata['regime_threshold_inclusive']:.4f}; "
+            f"test group fraction="
+            f"{split_metadata['test_group_fraction_actual']:.3f}."
+        )
+    if availability_history_features is not None:
+        print(
+            "Availability history: "
+            f"{availability_history_metadata['pairs_with_prior_same_season_support']:,} "
+            "group/species pairs have prior same-season support."
+        )
 
     model = fit_latent_model(
         availability_features,
+        availability_history_features,
         detection_features,
         labels,
         checklist_group_index,
@@ -1705,9 +2409,16 @@ def main() -> None:
         train_checklist_mask,
         args,
     )
-    psi, conditional_detection, marginal_detection = predict_latent(
+    (
+        psi,
+        portable_psi,
+        availability_history_adjustment,
+        conditional_detection,
+        marginal_detection,
+    ) = predict_latent(
         model,
         availability_features,
+        availability_history_features,
         detection_features,
         checklist_group_index,
         group_season_index,
@@ -1724,6 +2435,7 @@ def main() -> None:
         )
     )
     prior_any_detection = psi * conditional_any_detection
+    portable_prior_any_detection = portable_psi * conditional_any_detection
     posterior = posterior_availability(
         psi,
         conditional_detection,
@@ -1801,8 +2513,12 @@ def main() -> None:
         test_group_mask,
         positive_groups,
         psi,
+        portable_psi,
+        availability_history_adjustment,
+        availability_history_features,
         conditional_any_detection,
         prior_any_detection,
+        portable_prior_any_detection,
         args.focus_species,
     )
     component_support = summarize_component_support(
@@ -1870,6 +2586,21 @@ def main() -> None:
         ["species_index", "species_key", "common_name", "scientific_name"]
     ].copy()
     frailty_species["detection_frailty_scale"] = frailty_scales
+    if model.availability_history_weights is None:
+        availability_history_weights = pd.DataFrame(
+            columns=["feature", "shared_logit_weight"]
+        )
+        history_weights = np.zeros(0, dtype=float)
+    else:
+        history_weights = (
+            model.availability_history_weights.detach().cpu().numpy().astype(float)
+        )
+        availability_history_weights = pd.DataFrame(
+            {
+                "feature": AVAILABILITY_HISTORY_FEATURE_NAMES,
+                "shared_logit_weight": history_weights,
+            }
+        )
 
     parameter_summary = {
         "availability_weight_rms": float(
@@ -1894,6 +2625,11 @@ def main() -> None:
             if model.detection_season_bias is not None
             else 0.0
         ),
+        "availability_history_weight_rms": (
+            float(np.sqrt(np.mean(np.square(history_weights))))
+            if len(history_weights)
+            else 0.0
+        ),
         "detection_frailty_scale_mean": float(np.mean(frailty_scales)),
         "detection_frailty_scale_std": float(np.std(frailty_scales)),
         "detection_frailty_scale_rms": float(
@@ -1915,6 +2651,7 @@ def main() -> None:
         "dataset_dir": str(dataset_dir),
         "processed_dir": str(processed_dir),
         "test_season_year": int(args.test_season_year),
+        "split": split_metadata,
         "epochs": int(args.epochs),
         "groups": {
             "total": int(len(groups)),
@@ -1934,6 +2671,11 @@ def main() -> None:
             "species_marginal_rate_l2": float(args.species_marginal_rate_l2),
             "species_season_mode": args.species_season_mode,
             "species_season_l2": float(args.species_season_l2),
+            "availability_history_mode": args.availability_history_mode,
+            "availability_history_l2": float(args.availability_history_l2),
+            "availability_history_support_scale": float(
+                args.availability_history_support_scale
+            ),
             "detection_frailty_mode": args.detection_frailty_mode,
             "detection_frailty_init": float(args.detection_frailty_init),
             "detection_frailty_l2": float(args.detection_frailty_l2),
@@ -1952,6 +2694,7 @@ def main() -> None:
         },
         "feature_metadata": {
             "availability": availability_metadata,
+            "availability_history": availability_history_metadata,
             "detection": detection_metadata,
             "species_season": season_metadata,
         },
@@ -1989,6 +2732,7 @@ def main() -> None:
         pair_codetection_support,
         pair_codetection_species_season,
         frailty_species,
+        availability_history_weights,
         summary,
     )
 

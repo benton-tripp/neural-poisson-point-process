@@ -263,17 +263,20 @@ def enrich_cases_with_history(
             f"locality_season_species.parquet under {dataset_dir}"
         )
 
-    locality_columns = [
-        "locality_season_id",
-        "locality_id",
-        "locality",
-        "locality_type",
-        "county",
+    locality_detail_columns = ["locality_id", "locality", "locality_type", "county"]
+    missing_locality_columns = [
+        column for column in locality_detail_columns if column not in cases.columns
     ]
-    localities = pd.read_parquet(locality_path, columns=locality_columns)
-    enriched = cases.merge(localities, on="locality_season_id", how="left")
+    if missing_locality_columns:
+        localities = pd.read_parquet(
+            locality_path,
+            columns=["locality_season_id", *missing_locality_columns],
+        )
+        enriched = cases.merge(localities, on="locality_season_id", how="left")
+    else:
+        enriched = cases.copy()
     if enriched["locality_id"].isna().any():
-        raise ValueError("Some high-support cases did not map to a locality.")
+        raise ValueError("Some diagnostic cases did not map to a locality.")
 
     history_columns = [
         "locality_season_id",

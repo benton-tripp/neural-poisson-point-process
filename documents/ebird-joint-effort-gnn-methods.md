@@ -2,9 +2,11 @@
 
 ## Goal
 
-Build a North Carolina eBird 2020-2023 modeling dataset and baseline workflow for
-joint species distribution modeling that explicitly represents observer effort.
-The first target is a reusable intermediate dataset, not a final model:
+Develop a generally applicable U.S. eBird workflow for joint species
+distribution modeling that explicitly represents observer effort and imperfect
+detection. North Carolina eBird 2020-2023 is the initial development and
+validation testbed, not the geographic scope of the intended method. The first
+target is a reusable intermediate dataset, not a final model:
 
 - checklist/location-time nodes with effort, temporal, spatial, and environmental features
 - species nodes with taxonomic identifiers and summary frequencies
@@ -170,18 +172,510 @@ species or this geography. The current decision is:
 - High-support averages are mostly bounded, but individual zero-detection
   groups expose severe localized errors. Some Northern Cardinal, Eastern
   Towhee, Great Egret, and Double-crested Cormorant groups with many visits
-  receive prior any-detection probabilities above 0.9. One audited Northern
+  receive prior any-detection probabilities above 0.9. Across the ten focus
+  species, 130 high-support zero-detection groups exceed 0.8 and 21 exceed
+  0.9; the latter are concentrated in Northern Cardinal (9), Eastern Towhee
+  (7), Great Egret (3), and Double-crested Cormorant (2). One audited Northern
   Cardinal case had 61 test visits on 54 dates, zero detections, and predicted
   any detection near 0.996; the same locality and observer had historical
   same-season detections, but the immediately preceding year also had zero.
   This points to temporal/locality and observer-history structure that the
   current ecology-plus-effort predictors do not represent.
-- Continue the repeated-visit path with guardrails. Do not add a GNN to
-  `psi` yet. First classify high-confidence high-support non-detections by
-  prior locality-season history, then test meaningful temporal, ecological
-  regime, spatial, and observer-density transfer. The diagnostic script now
-  writes this historical-support audit as well as aggregate environmental
-  shape and extreme-zero summaries.
+- The historical-support audit of the 200 most confident zero-detection cases
+  shows two comparably important mechanisms. Eighty cases (40%) had prior
+  same-season support but had never detected the species, indicating
+  ecological/locality overgeneralization or missing habitat predictors.
+  Seventy-six (38%) had previously detected the species in the same season,
+  and another six had prior detections in other seasons, indicating temporal
+  availability change or observer/reporting nonstationarity. Nineteen (9.5%)
+  were genuinely unsupported localities. The remaining 19 had prior locality
+  support but no historical detection in any season.
+- Personal locations account for 128 of the 200 cases and generally have one
+  observer, but 72 cases are hotspots with many observers. Both historical
+  failure classes occur in both locality types, so observer identity alone
+  cannot explain the pattern.
+- Continue the repeated-visit path with guardrails. The general framework
+  should preserve a portable ecology-based availability model for unseen
+  localities and may later add partially pooled locality/observer dynamics for
+  revisited sites, falling back to the portable component when history is
+  absent. Do not add a GNN to `psi` yet.
+- The next diagnostic evaluates all held-out focus-species pairs, not only the
+  selected failures, across seen/unseen localities, recent same-season
+  detection history, observer diversity, locality type, and season. This is
+  needed before deciding whether to implement the dynamic locality/observer
+  layer or move directly to explicit locality-held-out transfer training.
+- The full transfer-strata diagnostic is now complete across 45,640 held-out
+  focus-species/locality-season pairs. Seen localities are well calibrated in
+  aggregate (observed/predicted any-detection 0.3609/0.3632, signed error
+  +0.0023), while naturally unseen localities are overpredicted
+  (0.2865/0.3350, signed error +0.0486). Macro AUPRC falls from 0.6293 at seen
+  localities to 0.5087 at unseen localities, and mean absolute species
+  calibration error rises from 0.0157 to 0.0647. The portable component
+  therefore has a real locality-transfer gap that pooled temporal metrics hide.
+- Historical state is independently important within previously sampled
+  localities. Species detected in the latest prior same-season year are
+  strongly underpredicted (observed/predicted 0.8231/0.6376, signed error
+  -0.1855), while species never detected despite prior same-season sampling are
+  strongly overpredicted (0.0879/0.1985, signed error +0.1106). The
+  past-detection/recent-zero stratum is nearly calibrated in aggregate
+  (-0.0067) but has high BCE (0.6709), so its pooled mean conceals difficult
+  case-level transitions.
+- Effort and locality type do not explain the pattern alone. One-observer
+  groups are overpredicted by +0.0517 while 6+ observer groups are
+  underpredicted by -0.0400; personal locations are overpredicted by +0.0508
+  while hotspots are underpredicted by -0.0241. These opposing errors support
+  an ecological/locality-history interpretation rather than a single global
+  observer-density correction.
+- Both mechanisms matter, but portability must be measured before adding an
+  adaptive history layer. The next fixed-likelihood run therefore uses a
+  controlled temporal-locality split: choose representative established
+  localities using only non-outcome geography, environment, replication,
+  effort-diversity, season, and locality-type balance; remove all of their
+  pre-2023 groups from training; and evaluate only their 2023 groups. Historical
+  detections remain unavailable to the portable fit. A later shared history
+  component may adapt predictions at revisited localities while falling back
+  to the portable model when history is unavailable; species deviations are a
+  later sensitivity only if the shared effect underfits consistently.
+- The controlled temporal-locality run
+  (`latent_strict_frailty_global_localityxfer_s37`) is complete. It trained on
+  9,650 groups from non-held-out pre-2023 localities and tested 706 2023 groups
+  from 269 held-out established localities (17,827 checklists), with no
+  locality overlap. The selected test set represented 19.8% of eligible
+  test-year groups and retained a low non-outcome balance score of 0.0335.
+- Portable ranking transfers well. Checklist micro AUROC is 0.87117 versus
+  0.87018 under the broader temporal test, while mean species AUROC is
+  0.80962 versus 0.80923. Raw micro AUPRC rises from 0.57279 to 0.59619 because
+  controlled-holdout prevalence is higher (0.17509 versus 0.16115); AUPRC lift
+  over prevalence is slightly lower (3.405 versus 3.554), and mean
+  species-level AUPRC lift is essentially unchanged (3.723 versus 3.731).
+  Therefore the higher raw AUPRC is not evidence of model improvement, but the
+  stable normalized ranking is evidence against catastrophic locality
+  memorization.
+- Probability transfer is weaker than ranking transfer. Checklist marginal
+  calibration error increases from 0.00888 to 0.01583, ECE from 0.01337 to
+  0.01972, and mean absolute species calibration error from 0.01049 to 0.02359.
+  Fair group any-detection changes from a +0.00220 signed error to -0.01442.
+  The controlled model underpredicts 6+ observer groups by -0.05359 and
+  overpredicts one-observer groups by +0.04137, reproducing the opposing
+  support pattern seen in the earlier transfer audit.
+- Detection dependence also transfers imperfectly: weighted pairwise
+  co-detection error changes from -0.01562 to -0.02477, with the largest
+  controlled-holdout error in one-observer groups (-0.04115). The fitted global
+  frailty scale is nevertheless almost identical (1.07715 versus 1.07439), so
+  this does not justify reopening the frailty-variance sweep. It instead points
+  to locality/observer heterogeneity not represented by a single global scale.
+- Treat the controlled run as a qualified portable-baseline pass. The next
+  diagnostic applies the same historical-state strata to these held-out
+  localities. All are unseen by the fitted model, but their pre-2023 records
+  remain available for diagnosis and for a later adaptive model. This cleanly
+  separates portable prediction from the potential gain of history-aware
+  adaptation before either component receives graph structure.
+- The controlled transfer-strata diagnostic is now complete. Across all 7,060
+  held-out focus-species pairs, observed and predicted any-detection rates are
+  almost identical (0.3636 versus 0.3634; signed error -0.0002), but this pooled
+  result again hides large, opposed history errors. Latest-prior-year
+  detections are underpredicted by -0.1849 (0.8163 observed versus 0.6314
+  predicted), while species never detected despite prior same-season sampling
+  are overpredicted by +0.1058 (0.0951 versus 0.2009). These are nearly the
+  same errors as in the broader temporal test (-0.1855 and +0.1106).
+- The historical-state result is not driven by one or two focus species. All
+  ten focus species have a negative signed error after a latest-prior-year
+  detection and a positive signed error in the never-detected same-season
+  stratum. The controlled split therefore turns prior same-season history into
+  a supported transferable predictor, rather than a post-hoc locality patch or
+  evidence of training leakage.
+- Opposing observer/locality errors also reproduce: one-observer and personal
+  locations are overpredicted by +0.0599 and +0.0579, while 6+ observer and
+  hotspot groups are underpredicted by -0.0470 and -0.0307. These should remain
+  diagnostics; adding a single observer-density offset would average over the
+  problem rather than explain it.
+- Implement the first adaptive availability bridge as a deliberately small
+  shared history correction, not a species-specific lookup. For each target
+  locality/species/biological-season, it uses only earlier years and encodes
+  three mutually exclusive states: detected in the latest prior year, sampled
+  but never detected in prior same-season years, and detected historically but
+  zero in the latest prior year. Each state is attenuated by bounded prior
+  checklist support. No prior same-season support produces an exactly zero
+  history-logit correction, preserving the model's portable ecological
+  fallback structurally.
+- Save both the portable and history-adapted availability predictions. The
+  transfer diagnostic compares both surfaces on identical held-out pairs, so
+  the history term is promoted only if it reduces the two demonstrated
+  history-state errors without degrading no-history transfer, fair checklist
+  calibration, phenology, or environmental-response plausibility. The base
+  coefficients are still estimated jointly in this first test, so "zero
+  fallback" means no direct history correction; it does not claim numerical
+  identity to the separately fitted non-history checkpoint.
+- The shared adaptive-history run
+  (`latent_xfer_s37_histshared_l2_0p01`) is complete on the identical seed-37
+  controlled locality split. Relative to the controlled no-history fit,
+  checklist micro AUROC improved from 0.87117 to 0.88239, micro AUPRC from
+  0.59619 to 0.60996, and BCE from 0.31874 to 0.30811. Mean-rate calibration
+  error improved from 0.01583 to 0.01301, while ECE changed slightly from
+  0.01972 to 0.02077. The global frailty scale remained stable at 1.07325, so
+  the gain is attributable to history structure rather than a changed
+  repeated-detection variance estimate.
+- The within-run portable ablation confirms that the history term addresses its
+  intended target. For latest-prior-year detections, signed any-detection error
+  improved from -0.2076 to -0.1225 and BCE from 0.5446 to 0.4463. For prior
+  same-season sampling with no detections, signed error improved from +0.1042
+  to +0.0557 and BCE from 0.3166 to 0.2823. Nine of ten focus species improved
+  in absolute calibration in the first stratum and all ten improved in the
+  second. No-prior-same-season predictions were identical, verifying the zero
+  direct-correction fallback.
+- Learned shared history-logit weights are coherent: +0.94448 for detection in
+  the latest prior same-season year, -0.73091 for prior same-season sampling
+  that never detected the species, and +0.04576 for an older detection followed
+  by a latest-year zero. The near-zero third weight is useful evidence that the
+  model is not treating every historical detection as persistent occupancy.
+- Focus-species transfer improved materially: within-run portable versus
+  adapted AUPRC is 0.8222 versus 0.8642, macro AUPRC 0.6154 versus 0.7187,
+  BCE 0.4201 versus 0.3693, and mean absolute species calibration error 0.0348
+  versus 0.0279. The adapted pooled signed error is -0.0080.
+- Important limitations remain. Across all 100 species, fair group
+  any-detection underprediction worsened from -0.01442 in the independently
+  fitted no-history model to -0.02281 in the adaptive model, although weighted
+  pairwise co-detection underprediction improved from -0.02477 to -0.02125.
+  The two targeted history errors are reduced but remain substantial, and
+  House Sparrow remains overpredicted in every season. High-confidence
+  zero-detection cases remain for Northern Cardinal and Eastern Towhee, which
+  is expected when a latest prior detection is followed by a real state
+  transition that the static history summary cannot foresee.
+- Treat the shared history component as the promoted adaptive branch for
+  previously sampled locality/species/seasons, while retaining the controlled
+  no-history model as the explicit portable branch. Do not add species-specific
+  history deviations: the shared direction is consistent and the added
+  complexity is not currently justified. Before broader transfer tests, run
+  the same availability diagnostic on the controlled no-history checkpoint for
+  a direct phenology, environmental-response, and high-support comparison.
+- The controlled apples-to-apples availability comparison is complete and is a
+  qualified plausibility pass for shared history. Relative to the independently
+  fitted no-history checkpoint, the adaptive run reduced the largest
+  high-support signed errors for House Sparrow (+0.1413 to +0.1266),
+  Double-crested Cormorant (-0.1263 to -0.1130), Wood Thrush (-0.0812 to
+  -0.0722), Red-headed Woodpecker (-0.0712 to -0.0599), and Eastern Towhee
+  (-0.0482 to -0.0337). Smaller near-zero errors for Eastern Meadowlark, Great
+  Egret, Northern Cardinal, and Black-and-white Warbler moved modestly in the
+  wrong direction, so the result is not uniformly better.
+- Environmental-response plausibility improved rather than trading off against
+  the history gain. Mean weighted observable MAE fell for canopy (0.0437 to
+  0.0419), coastline distance (0.0451 to 0.0410), waterbody distance (0.0483 to
+  0.0435), and elevation (0.0481 to 0.0455). Observable-response shape
+  Spearman increased from 0.67/0.86/0.72/0.82 to
+  0.76/0.88/0.80/0.89 respectively; latent-availability shape was retained or
+  improved for all four covariates.
+- Broad phenology remains recognizable, but the comparison is mixed at the
+  species-season level. House Sparrow and Eastern Towhee errors improved;
+  Wood Thrush was broadly stable with one improved and two nearly unchanged
+  migration/breeding bins; Green Heron, Eastern Meadowlark, and
+  Double-crested Cormorant worsened modestly in several bins. This is a reason
+  to retain the portable surface and repeat the test in another year, not a
+  reason to add species-specific history coefficients.
+- High-confidence zero-detection behavior improved on average for most focus
+  species, including lower mean prior any-detection probabilities for Northern
+  Cardinal, Double-crested Cormorant, Eastern Towhee, Great Egret, Green
+  Heron, Wood Thrush, and Red-headed Woodpecker. A few upper-tail cases became
+  more extreme, notably for Eastern Towhee, House Sparrow, Green Heron,
+  Black-and-white Warbler, and Eastern Meadowlark. Shared history therefore
+  reduces the dominant systematic bias but does not solve abrupt state changes
+  or every locality-specific failure.
+- Advance to a paired 2022 temporal-locality replication with all likelihood,
+  support, split-selection, and history hyperparameters fixed. Fit both the
+  portable no-history model and the shared-history model on the same seed-37
+  split. The separately fitted portable run is required because the adaptive
+  run's zero-history ablation shares jointly estimated base coefficients and is
+  not an independent baseline.
+- The independently fitted 2022 portable checkpoint
+  (`latent_xfer22_s37_nohist`) is complete. It trained on 5,885 pre-2022
+  groups and tested 633 groups from 235 held-out established localities
+  (16,097 checklists), with no locality overlap. The test group fraction was
+  0.198 and the non-outcome split-balance score was 0.0446, so the controlled
+  design remains acceptably representative despite the smaller earlier-year
+  training set.
+- Raw checklist AUPRC declined from the 2023 portable result's 0.59619 to
+  0.54669, but prevalence also declined from 0.17509 to 0.15885. AUPRC lift
+  over prevalence is therefore 3.4415 versus 3.405 in 2023, while AUROC is
+  0.85787 versus 0.87117. This is a qualified ranking-transfer pass rather
+  than evidence of a major deterioration.
+- Probability and dependence diagnostics are stronger in 2022. Checklist
+  mean-rate error is 0.00231 and ECE 0.00486, versus 0.01583 and 0.01972 in
+  the 2023 portable run. Fair group any-detection remains mildly
+  underpredicted (-0.01756 versus -0.01442), while weighted pairwise
+  co-detection underprediction improves to -0.00606 from -0.02477. The global
+  frailty scale is effectively unchanged at 1.07885 versus 1.07715.
+- The same observer-support structure reproduces: one-observer groups are
+  overpredicted by +0.04548 and 6+ observer groups are underpredicted by
+  -0.06273, close to +0.04137 and -0.05359 in 2023. Large Pine Siskin and
+  Red-breasted Nuthatch winter/seasonal errors expose interannual ecological
+  dynamics rather than a failure of the controlled split. Proceed with the
+  fixed 2022 shared-history run; do not retune the likelihood or split.
+- The fixed 2022 shared-history checkpoint
+  (`latent_xfer22_s37_histshared_l2_0p01`) is complete on the identical 633
+  groups and 235 held-out localities. Relative to the independent 2022
+  portable fit, checklist AUROC improved from 0.85787 to 0.86844, AUPRC from
+  0.54669 to 0.55758, and BCE from 0.31219 to 0.30391. Mean-rate error improved
+  from 0.00231 to 0.00116 and max-bin error from 0.03224 to 0.02378; ECE
+  increased slightly from 0.00486 to 0.00647 but remains small.
+- The 2023 tradeoff also replicated. Fair all-species group any-detection
+  underprediction worsened from -0.01756 to -0.02522, while weighted pairwise
+  co-detection error improved from -0.00606 to -0.00137. The global frailty
+  scale remained effectively fixed (1.07885 versus 1.07660), again attributing
+  the change to availability history rather than detection dependence.
+- Observer-support errors mostly narrowed: one-observer error improved from
+  +0.04548 to +0.02692, two-observer error from +0.02670 to +0.00850, and 6+
+  observer error from -0.06273 to -0.05984; the 3-5 observer stratum worsened
+  from -0.01726 to -0.03169. Several negative species-season checklist errors
+  improved, but Pine Siskin and Red-breasted Nuthatch overprediction worsened.
+  Treat this as a replicated aggregate adaptive gain with a replicated
+  group-calibration cost, not final promotion evidence. Run the history-strata
+  comparison next to verify that the intended historical states improved and
+  that no-history fallback remained unchanged.
+- The paired 2022 transfer-strata comparison is complete and confirms
+  mechanistic replication. Within the adaptive fit, latest-prior-year
+  any-detection error improved from -0.2146 to -0.1375, BCE from 0.5423 to
+  0.4394, and mean absolute species calibration error from 0.2906 to 0.1942.
+  Prior same-season sampling with no detections improved from +0.0812 to
+  +0.0518, BCE from 0.3214 to 0.3056, and species calibration error from
+  0.0978 to 0.0680.
+- No-prior-same-season predictions were exactly unchanged within the adaptive
+  fit, confirming the structural portable fallback in a second held-out year.
+  The past-detection/recent-zero stratum was also unchanged, consistent with
+  the near-zero weight learned for that ambiguous transition in 2023 rather
+  than indiscriminate persistence of every historical detection.
+- Relative to the independently fitted 2022 portable checkpoint, adapted
+  latest-prior-year error improved from -0.1928 to -0.1375 and
+  never-detected error from +0.0877 to +0.0518. Overall focus-species transfer
+  AUPRC improved from 0.8347 to 0.8675, macro AUPRC from 0.6523 to 0.7503,
+  and BCE from 0.4152 to 0.3757. Pooled signed error changed slightly from
+  -0.0132 to -0.0160 and species calibration MAE from 0.0215 to 0.0222, so
+  ranking and subgroup corrections improved without eliminating aggregate
+  calibration tension.
+- Observer and locality-type behavior also moved in the intended direction:
+  one-observer error improved from +0.0581 to +0.0438, 2-5 observers from
+  +0.0134 to +0.0024, 6+ observers from -0.0713 to -0.0629, hotspots from
+  -0.0497 to -0.0463, and personal locations from +0.0588 to +0.0438.
+  Shared history is therefore promoted as a replicated adaptive component for
+  revisited locality/species/seasons, with the independent no-history surface
+  retained for portability. The remaining 2022 gate is availability
+  plausibility, especially the year-sensitive species and high-confidence
+  zero-detection tails.
+- The paired 2022 availability diagnostic is complete and is another qualified
+  pass. Shared history reduced mean weighted observable-response MAE for
+  canopy (0.0456 to 0.0433), coastline distance (0.0445 to 0.0403),
+  waterbody distance (0.0389 to 0.0368), and elevation (0.0494 to 0.0447).
+  Observable-response shape improved for canopy and coastline, was unchanged
+  for waterbody distance, and declined slightly for elevation (0.76 to 0.74);
+  latent-availability shape improved for canopy, coastline, and elevation and
+  was unchanged for waterbody distance.
+- Eight of ten focus species improved their absolute high-support observable
+  error. The largest gains were Double-crested Cormorant (-0.1499 to
+  -0.1112), Eastern Towhee (-0.1370 to -0.1039), Eastern Meadowlark (-0.1126
+  to -0.0932), Red-headed Woodpecker (-0.1077 to -0.0918), and Northern
+  Cardinal (-0.0586 to -0.0400). Wood Thrush and Black-and-white Warbler
+  worsened modestly. Broad seasonal patterns remained recognizable, with mixed
+  species-bin changes rather than a systematic phenology collapse.
+- Mean predicted any-detection probability among high-support zero-detection
+  groups fell for all ten focus species. Several maxima nevertheless increased,
+  including Eastern Towhee, Double-crested Cormorant, Wood Thrush,
+  Black-and-white Warbler, House Sparrow, and Green Heron. This repeats the
+  2023 conclusion: shared history reduces systematic error but redistributes
+  some abrupt-transition risk into a smaller extreme tail.
+- The paired 2022 gate is passed. Retain a two-surface framework: the
+  independent ecology/season model is the portable estimate for unsupported
+  locality/species/seasons, and shared history is the adaptive estimate where
+  earlier same-season records exist. Do not add species-specific history or
+  post-hoc calibration. Proceed to directional ecological-regime transfer with
+  both surfaces and the likelihood fixed.
+- A generic leakage-safe `temporal-regime` split is now implemented for that
+  transfer phase. It derives a locality's regime value only from pre-test-year
+  groups, holds an inclusive low or high tail of established localities out of
+  all training years, and tests those localities only in the requested year.
+  The first test is the low historical distance-to-coastline tail. This is a
+  directional extrapolation stress test, not a representative benchmark or an
+  NC-specific ecological-region definition.
+- The portable 2023 coastal-tail stress test is complete. It held out 269 of
+  1,343 established localities at an inclusive pre-2023 median coastline-
+  distance threshold of 4,852 EPSG:3857 map meters, representing 20.6% of eligible test groups,
+  with zero held-out locality overlap in training.
+- Relative to the representative seed-37 locality holdout, checklist AUROC fell
+  from 0.8712 to 0.8021 and prevalence-normalized AUPRC from 3.405 to 2.916.
+  Availability any-positive AUROC fell from 0.8528 to 0.8071, while its AUPRC
+  lift was more stable at 1.847 versus 1.820. Fair group any-detection error
+  widened from -0.0144 to -0.0499, checklist ECE rose from 0.0197 to 0.0255,
+  and maximum bin error rose from 0.0624 to 0.1424.
+- The loss is also species-level, not only a pooled prevalence effect.
+  Checklist macro AUROC/AUPRC fell from 0.8096/0.4214 to 0.7542/0.2690,
+  mean absolute species calibration error rose from 0.0236 to 0.0497, and
+  availability macro AUROC/AUPRC fell from 0.7769/0.6465 to 0.6943/0.5372.
+- The global frailty scale remained stable at 1.0715 and weighted pairwise
+  co-detection error narrowed to -0.0013. The largest remaining errors are
+  concentrated in coastal specialists, especially Laughing Gull,
+  Boat-tailed Grackle, Brown Pelican, and Royal Tern. This is a real portable
+  ecological-regime transfer gap rather than evidence that the repeated-visit
+  likelihood or frailty component failed. Run the matching shared-history
+  checkpoint to measure recoverable adaptation separately from portability.
+- The matching shared-history coastal run is complete. Relative to the
+  independently fitted portable coastal model, checklist AUROC/AUPRC improved
+  from 0.8021/0.3626 to 0.8295/0.3950, BCE improved from 0.3120 to 0.2951,
+  and ECE improved from 0.0255 to 0.0199. Checklist macro AUROC/AUPRC improved
+  from 0.7542/0.2690 to 0.7973/0.3076, and mean absolute species calibration
+  error improved from 0.0497 to 0.0456. Checklist AUPRC improved for 93 of 100
+  species.
+- Availability ranking improved more strongly: pooled any-positive
+  AUROC/AUPRC rose from 0.8071/0.7035 to 0.8618/0.7841, and macro
+  AUROC/AUPRC rose from 0.6943/0.5372 to 0.7980/0.6735. Mean absolute
+  species availability error against the observed-positive lower bound fell
+  from 0.0716 to 0.0627. The learned shared logit weights were coherent:
+  +0.9346 for a latest-prior-year detection, -0.6898 for never detected in
+  the same season, and +0.0396 for a past detection followed by a recent zero.
+- The adaptive gain does not close the coastal transfer problem. Fair group
+  any-detection error widened slightly from -0.0499 to -0.0547 and maximum
+  checklist-bin error changed from 0.1424 to 0.1437. Large negative errors
+  remain for Laughing Gull, Boat-tailed Grackle, Brown Pelican, and other
+  coastal specialists, although many are smaller than in the portable fit.
+  Frailty remained stable at 1.0676 and weighted pairwise co-detection error
+  remained near zero at +0.0005. Shared history is therefore useful adaptive
+  information at revisited coastal localities, not a substitute for portable
+  coastal habitat representation.
+- A preprocessing audit found no evidence that barrier-island observations
+  were simply omitted or assigned distance to the mainland/state boundary.
+  The coastline band is built from the USGS Small-scale 1:1,000,000 Coastline
+  layer, and direct raster samples near Emerald Isle, Fort Macon, and Ocracoke
+  had coastline distances of approximately 660 m, 30 m, and 812 m. The final
+  checklist table has 661,979 rows with no missing values in the four retained
+  raster covariates; 114,820 rows are within the 4,852-map-meter coastal-tail
+  threshold. The selected tail is geographically confined to eastern NC.
+- The same audit identified important limitations. The distance raster is on
+  an EPSG:3857 template, so values called meters are Web-Mercator map meters
+  and are inflated at NC latitude; this affects physical interpretation more
+  than rank order. More importantly, the generalized Waterbody layer gives
+  multi-kilometer waterbody distances at barrier-island examples and does not
+  adequately encode ocean, sound, estuary, salt-marsh, dune, or barrier-island
+  habitat. Canopy gaps were also filled before stacking, and
+  `--drop-missing-raster-covariates any` makes the raster footprint an implicit
+  sample-selection filter without preserving stage-specific retention counts.
+  The README additionally used the obsolete `--valid-footprint intersection`
+  option; the current stack script uses `--extent intersection`.
+- Accordingly, retain the run as a valid **generalized-coastline proximity
+  stress test**, but do not describe it as a complete coastal-habitat transfer
+  test. The evidence is inconsistent with the failure being only a malformed
+  eBird preprocessing artifact. It is consistent with a combination of real
+  extrapolation, sparse coastal analogs, and under-specified coastal ecological
+  covariates. Before drawing stronger coastal conclusions, audit raw-to-final
+  retention by coastal distance and rebuild a sensitivity covariate stack in
+  an appropriate metric CRS with explicit ocean/sound, estuarine/tidal
+  wetland, land-cover, and barrier-island context. Do not overwrite the current
+  dataset; preserve it as the coarse-covariate baseline.
+
+- The paired coastal diagnostics reinforce that interpretation. Shared history
+  improved unseen-locality focus-pair AUPRC from 0.7692 to 0.8263 and macro
+  AUPRC from 0.5505 to 0.6825. It reduced the latest-prior-detection signed
+  error from -0.2855 to -0.2027 and the never-detected-same-season error from
+  +0.0955 to +0.0463. Ranking also improved in every observer-diversity and
+  locality-type stratum. These are coherent adaptive-history gains.
+- History still does not solve portable coastal extrapolation. Unseen-locality
+  mean prediction remained low by 0.0568, hotspot localities remained low by
+  0.0692, and some species moved in the wrong direction. The environmental
+  response audit improved mean observable MAE for canopy, coastline distance,
+  waterbody distance, and elevation from 0.0885/0.0848/0.0891/0.0952 to
+  0.0815/0.0778/0.0803/0.0848, but absolute errors remain much larger than on
+  representative locality transfer. Shared history should remain the adaptive
+  branch; it is not a replacement for richer portable ecological covariates.
+- The next data change should therefore be a versioned national covariate
+  feature pipeline, first piloted in NC and then reused without state-specific
+  logic. Authoritative national source layers should supply the raw geography;
+  this project should derive consistent point and multi-scale neighborhood
+  features from them. NC-specific hand labels are not the intended solution.
+
+### Current Promoted Latent Model
+
+For species `j`, locality-season-year group `g`, and checklist visit `i` within
+that group, the model has a latent availability state
+
+$$
+z_{jg} \sim \operatorname{Bernoulli}(\psi_{jg}).
+$$
+
+The portable availability surface is a species-specific logistic regression:
+
+$$
+\operatorname{logit}(\psi^{(0)}_{jg})
+  = \alpha^{\psi}_j + x_g^\mathsf{T}\beta^{\psi}_j,
+$$
+
+where `x_g` contains the biological-season indicators, season year, canopy,
+elevation, log distance to the generalized waterbody layer, and log distance
+to the generalized coastline layer. Coordinates are not included in the
+promoted runs. The adaptive surface adds a small shared history correction:
+
+$$
+\operatorname{logit}(\psi^{(H)}_{jg})
+  = \operatorname{logit}(\psi^{(0)}_{jg}) + h_{jg}^\mathsf{T}\gamma.
+$$
+
+The three mutually exclusive entries of `h_jg` encode latest-prior-year
+detection, never detected in prior same-season visits, and a past detection
+followed by a recent zero. They use only earlier years and are attenuated by
+`1 - exp(-n_prior_checklists / 20)`; all are exactly zero when no prior
+same-season history exists. `gamma` is shared across species. The portable and
+adaptive estimates are separately fitted models; the adaptive model's
+zero-history ablation is not used as a replacement for the independent
+portable checkpoint.
+
+Conditional detection is also species-specific:
+
+$$
+\operatorname{logit}(p_{ijg}(u))
+  = \alpha^p_j + w_i^\mathsf{T}\beta^p_j
+    + \delta^p_{j,s(g)} + \sigma u_{jg},
+\qquad u_{jg} \sim \mathcal{N}(0,1).
+$$
+
+The checklist vector `w_i` contains log duration, log travel distance, log
+observer count, stationary/traveling indicators, and cyclic day-of-year,
+day-of-week, and start-time terms. `delta` is the L2-regularized
+species-by-biological-season detection offset. The promoted frailty uses one
+shared scale `sigma` across species but integrates a latent detection
+propensity within each locality-season/species group; the coastal adaptive run
+estimated `sigma = 1.0676` logit units. Seven-point Gauss-Hermite quadrature is
+used for this integral.
+
+Given availability and frailty, checklist outcomes follow
+
+$$
+y_{ijg} \mid z_{jg},u_{jg}
+  \sim \operatorname{Bernoulli}\left(z_{jg}p_{ijg}(u_{jg})\right).
+$$
+
+For a group with at least one detection, its species likelihood is
+
+$$
+L_{jg}
+  = \psi_{jg}\int \phi(u)
+      \prod_{i\in g}p_{ijg}(u)^{y_{ijg}}
+      [1-p_{ijg}(u)]^{1-y_{ijg}}\,du.
+$$
+
+For an all-zero group, the likelihood retains both biological absence and
+present-but-missed explanations:
+
+$$
+L_{jg}
+  = (1-\psi_{jg})
+    + \psi_{jg}\int \phi(u)\prod_{i\in g}[1-p_{ijg}(u)]\,du.
+$$
+
+The fair prior-marginal checklist prediction is
+`P(y_ijg = 1) = psi_jg * E_u[p_ijg(u)]`. The fair group any-detection prediction
+is `psi_jg * {1 - E_u[product_i(1 - p_ijg(u))]}`. Training minimizes mean
+negative log likelihood with pooled and species-level marginal-rate penalties
+(weights 25 and 10), species-season L2 0.0025, frailty L2 0.01, adaptive-history
+L2 0.01 when enabled, and AdamW weight decay 0.0001.
+
+This current model is deliberately **not a GNN**. It is the structural,
+interpretable baseline against which a later availability-side GNN must show
+transferable ecological gain after effort, repeated visits, history, and
+within-group detection dependence have already been represented.
 
 This is still the right path, but success is no longer defined as squeezing a
 few additional points of checklist AUPRC from the NC testbed. The purpose of
@@ -190,6 +684,94 @@ while preserving a separately testable observation process. The bridge remains
 ahead on raw checklist prediction, which is acceptable unless component
 diagnostics show that the latent separation is unstable or biologically
 implausible.
+
+### National Covariate Enrichment Strategy
+
+There is no single national bird-habitat dataset that should replace the
+current four ecological predictors. The portable design is a **national core
+plus optional regional modules**, with all derived features generated by one
+versioned pipeline.
+
+National ecological core:
+
+- [USGS Annual NLCD](https://www.usgs.gov/centers/eros/science/about-annual-nlcd)
+  provides annual 30 m CONUS land cover and fractional imperviousness from
+  1985 through 2025. Derive class fractions, imperviousness, fragmentation,
+  and recent land-cover change at multiple neighborhood scales rather than
+  using only the class at the checklist point.
+- [LANDFIRE existing vegetation](https://landfire.gov/vegetation) provides
+  30 m Existing Vegetation Type, Cover, and Height products with full-extent
+  CONUS downloads. These add vegetation composition and vertical structure
+  that canopy percentage alone cannot represent.
+- [USGS 3DEP](https://www.usgs.gov/3d-elevation-program) is the national
+  elevation source. Derive elevation, slope, transformed aspect, topographic
+  position, relief, and terrain heterogeneity in an equal-area metric CRS.
+- [USGS 3DHP](https://www.usgs.gov/3d-hydrography-program/access-3dhp-data-products)
+  is replacing NHD, WBD, and NHDPlus HR. During the transition, retain a
+  versioned fallback to legacy NHDPlus HR where 3DHP coverage is incomplete.
+  Derive separate stream, river, lake/reservoir, and waterbody distances,
+  densities, and neighborhood fractions instead of one generalized water
+  distance.
+- [Daymet](https://daymet.ornl.gov/) provides daily 1 km temperature,
+  precipitation, vapor pressure, radiation, snow-water equivalent, and day
+  length across continental North America. Derive season-matched normals,
+  anomalies, heat/cold, and precipitation summaries; these are ecological
+  availability predictors, not checklist effort variables.
+- [USFWS National Wetlands Inventory](https://www.fws.gov/program/national-wetlands-inventory/wetlands-data)
+  provides Cowardin-classified wetland and deepwater polygons by state or HUC8.
+  Derive wetland-system fractions and distances, but preserve source-project
+  date and coverage metadata because NWI vintages vary and are updated
+  incrementally.
+
+Coastal module:
+
+- [NOAA C-CAP Regional Land Cover](https://www.coast.noaa.gov/digitalcoast/data/ccapregional.html)
+  supplies nationally consistent 30 m coastal land cover, including coastal
+  wetland classes, for U.S. coastal zones. It is a regional supplement, not a
+  CONUS core predictor.
+- [NOAA CUSP shoreline](https://nsde.ngs.noaa.gov/) supplies a contemporary
+  national shoreline. Combine it with NWI/C-CAP and hydrography to distinguish
+  ocean shoreline, estuary/sound, tidal wetland, freshwater, and inland water.
+- For barrier-island and narrow-coastal-land contexts, derive neutral geometry
+  features rather than an NC-specific island flag: distance to ocean-facing
+  shoreline, distance to back-barrier/estuarine water, surrounding open-water
+  fraction, local land-strip width, tidal-wetland fraction, and dune/barren or
+  beach land-cover fraction where the source classification supports it.
+
+Evaluation and observation-process layers:
+
+- [EPA ecoregions](https://www.epa.gov/eco-research/ecoregions) should first be
+  used to construct and report transfer splits, not as a shortcut predictor.
+- [USGS PAD-US](https://www.usgs.gov/programs/gap-analysis-project/science/pad-us-data-download),
+  Census population/geographies, and
+  [TIGER/Line roads](https://www.census.gov/geographies/mapping-files/time-series/geo/tiger-line-file.html)
+  can represent public access, urbanization, and travel accessibility. Keep
+  these in the effort/observer-access component by default so the availability
+  model is not rewarded for reproducing where people bird.
+
+Implementation rules for portability:
+
+1. Use one analysis grid in CONUS Albers (`EPSG:5070`) for metric distances and
+   areas. Preserve source rasters/vectors and their native metadata separately.
+2. Do not create a monolithic native-resolution CONUS raster stack. Process by
+   state/HUC/tile and write a compact locality/checklist feature table.
+3. Derive the same point and buffered summaries everywhere. Initial scales
+   should be approximately 250 m, 1 km, and 5 km, with source-specific tests
+   before adding more scales.
+4. Match dynamic layers to the observation year when available. Store source
+   name, version, acquisition/map year, coverage status, and distance from the
+   nearest valid source observation as model-auditable fields.
+5. Keep the existing four-variable dataset unchanged as the coarse baseline.
+   Build an enriched NC sensitivity dataset beside it and change covariates
+   while holding the latent likelihood, split, support rules, and optimizer
+   fixed.
+6. Add sources in interpretable blocks and ablate them: land cover/vegetation,
+   wetland/hydrography, terrain/climate, then the coastal supplement. A source
+   is promoted only if it improves transfer across species and regimes without
+   degrading phenology, environmental plausibility, and fair calibration.
+7. After the NC pilot, validate the same feature definitions in at least one
+   additional region before a full CONUS build. State-specific data may be
+   used for auditing but not as required model input.
 
 ## Historical Analysis Checkpoints
 
@@ -885,6 +1467,37 @@ How to maintain this document going forward:
   passing component can affect a prediction.
 - **Species-level diagnostics**: Per-species metrics and calibration checks used to identify which species improve or degrade under a model.
 - **Aggregate metrics**: Metrics computed across many species-checklist pairs or averaged across species. Aggregate improvements can hide species-specific failures, so they should be interpreted alongside species-level diagnostics.
+
+## Portable CONUS Covariate Pipeline
+
+The next controlled modeling stage replaces the current coarse NC ecological
+covariate block with a date-aware, multi-scale U.S. covariate system while
+holding the promoted repeated-visit likelihood and transfer diagnostics fixed.
+Architecture, source decisions, implementation status, exact commands, and NC
+build results are maintained in
+[ebird-conus-covariate-pipeline.md](ebird-conus-covariate-pipeline.md).
+
+Phases 1-2 are complete: the checked-in registry contains 17 ecological, climate,
+coastal, access, fallback, and evaluation source blocks, and the executable NC
+plan resolves a 250 m `EPSG:5070` grid with 27 intersecting 100 km tiles. This
+work is an input-data intervention, not another latent-model hyperparameter
+search. Source blocks will be promoted by transfer and ecological-plausibility
+evidence, with access variables kept out of availability unless an explicit
+ablation justifies them. The generic COG/VRT engine has also passed a synthetic
+four-tile seam-equivalence test. The Annual NLCD Collection 1.2 metadata
+adapter is now complete and release-pinned. The NC pilot selects 2019-2023 land
+cover and 2020-2023 fractional imperviousness (nine archives, 10.2 GiB before
+subsetting); 2019 supplies the non-future predecessor for 2020 change. Raster
+acquisition remains pending because ScienceBase large-file links are request
+pages, so the production adapter will support authenticated requester-pays AWS,
+official MRLC downloads, and already acquired local archives without changing
+the downstream normalization contract.
+
+```text
+python scripts/data/ebird-covariates.py plan --config config/ebird_covariates/nc_2020_2023_v1.json
+
+python scripts/data/ebird-covariates.py catalog-nlcd --plan data/ebird/covariates/builds/nc_2020_2023_covariates_v1/build_plan.json
+```
 
 ## Data Preparation
 
@@ -8297,23 +8910,65 @@ Current validation priorities:
    call `psi` validated because Black-and-white Warbler winter availability,
    Great Egret seasonal overprediction, Wood Thrush underprediction, and
    high-confidence zero-detection cases remain unresolved.
-10. Complete the historical-support audit for high-confidence, high-support
-    non-detections. Separate cases with prior same-season detections from
-    historically unsupported localities and inspect whether the immediately
-    preceding year also changed. This distinguishes temporal/observer
-    instability from missing ecological or locality predictors.
-11. Then run meaningful transfer tests with the likelihood fixed: held-out
-    year, ecological region, coastal/inland or mountain/piedmont direction,
-    unseen or low-density localities, and observer-density regimes. Report
-    fair checklist detection, fair group any-detection, focus-species
-    phenology/environment response, and high-support failure counts together.
-12. Add graph structure only to the availability component after those tests
+10. The selected-failure historical audit is complete. About 40% of the top
+    200 cases indicate historical ecological/locality overgeneralization, 41%
+    had some prior detection and indicate temporal/observer nonstationarity,
+    and 9.5% are unsupported localities. Both major mechanisms occur at
+    personal locations and multi-observer hotspots.
+11. The all-pair transfer-strata diagnostic is complete. It identifies both a
+    portable locality-transfer gap and a separate historical-state gap. Seen
+    localities calibrate well only after averaging over strongly opposed
+    same-season-history errors; naturally unseen localities have materially
+    worse species calibration and macro AUPRC.
+12. The controlled `temporal-locality` run is complete. Portable ranking is
+    stable, but calibration and pairwise repeated-detection agreement weaken at
+    held-out localities. Treat this as a qualified transfer pass, not proof that
+    probability surfaces are portable without adaptation.
+13. The shared adaptive-history correction is a qualified success. It improves
+    both demonstrated history-state errors, checklist ranking/BCE, focus-species
+    transfer, and pairwise co-detection while leaving no-history predictions
+    directly unmodified. Promote it as the adaptive branch, retain the
+    no-history model as the portable branch, and do not add species deviations.
+14. Add graph structure only to the availability component after those tests
     define a stable non-graph latent baseline. Keep checklist detection and
     effort explicit, and compare the latent availability GNN directly with
     this same model without graph structure.
-13. Defer post-hoc calibration and additional species-season flexibility. Both
+15. Defer post-hoc calibration and additional species-season flexibility. Both
     can improve pooled probabilities while obscuring whether availability and
     detection are scientifically separated.
+16. The controlled no-history versus adaptive-history availability comparison
+    is a qualified pass: dominant high-support errors and all four
+    environmental-response summaries improved, broad phenology was retained,
+    and a minority of species-season and extreme zero-detection cases worsened.
+    Both fitted halves of the paired 2022 temporal-locality replication are now
+    complete. History-strata diagnostics confirm the intended mechanism with
+    exact no-history fallback, and availability diagnostics preserve or improve
+    aggregate environmental response while retaining broad phenology. Proceed
+    to paired ecological-region, coastal/inland or mountain/piedmont direction,
+    and low-observer-density tests with the model fixed.
+17. Use the new `temporal-regime` split for directional transfer tests. Define
+    each held-out locality from its pre-test historical median only, exclude
+    those localities from all training years, and do not use species outcomes
+    to choose the tail. Begin with low distance to coastline, then reuse the
+    same machinery for high elevation and low observer support. Report these as
+    stress tests alongside, not instead of, the representative temporal and
+    controlled-locality evaluations. The portable coastal run confirms a
+    material ranking and group-calibration transfer gap while retaining a
+    stable frailty estimate. Shared history recovers substantial ranking and
+    availability performance at revisited localities, but does not improve the
+    fair group any-detection error; report that gain only as adaptive value.
+    Because the existing coastline and waterbody bands are coarse proximity
+    features rather than a complete coastal-habitat representation, complete
+    paired diagnostics and a coastal preprocessing/covariate sensitivity audit
+    before making a stronger coastal-transfer claim. Then continue with high
+    elevation and low observer support using the fixed likelihood.
+18. The paired coastal diagnostics are complete. Shared history improves the
+    intended historical states and broad ranking but does not remove portable
+    coastal underprediction. Treat this as evidence for missing ecological
+    representation rather than evidence for another likelihood or history
+    variant. Build a national-core covariate pipeline with optional regional
+    modules, pilot it as a controlled NC sensitivity, and preserve access and
+    observer-geography predictors in the observation process.
 
 Spatial-stratified baseline commands:
 
@@ -8576,6 +9231,141 @@ Completed implementation phases:
       positive year, and a compact history-class summary
     These outputs are designed to separate temporal/observer instability from
     missing ecological or locality predictors before transfer testing.
+62. Completed the high-confidence failure-history audit. Of the 200 selected
+    cases, 80 had prior same-season support with no historical detection, 76
+    had prior same-season detections, 19 had prior locality support but no
+    detection in any season, six had detections in other seasons, and 19 had
+    no prior locality support. Personal locations contributed 128 cases and
+    hotspots 72, so neither observer identity nor missing ecology alone is an
+    adequate explanation.
+63. Added `exp/diagnose_ebird_latent_transfer_strata.py`. It reuses the saved
+    held-out focus-species predictions and reports fair observable metrics by
+    seen/unseen locality, recent same-season history, observer diversity,
+    locality type, and season. It writes pooled and per-species CSVs without
+    retraining the latent model.
+64. Completed the all-pair transfer-strata diagnostic. Naturally unseen
+    localities had +0.0486 signed any-detection error, macro AUPRC 0.5087, and
+    mean absolute species calibration error 0.0647 versus +0.0023, 0.6293, and
+    0.0157 at seen localities. Within sampled localities, latest-prior-year
+    detections were underpredicted by -0.1855 and never-detected same-season
+    histories were overpredicted by +0.1106. Added a controlled
+    `temporal-locality` split to the latent model so portable locality transfer
+    can be tested without using held-out locality history during fitting.
+65. Completed the controlled temporal-locality promoted-likelihood run. Ranking
+    transferred with nearly unchanged micro and macro AUROC and nearly
+    unchanged species AUPRC lift, while checklist and species calibration,
+    group any-detection calibration, and pairwise co-detection weakened. The
+    global frailty scale remained stable. Retain this as a qualified portable
+    baseline and diagnose historical-state strata on the same held-out
+    localities before adding a small shared adaptive-history component.
+66. Completed the controlled transfer-strata diagnostic. Pooled focus-species
+    any-detection calibration was nearly exact, but latest-prior-year detections
+    were underpredicted by -0.1849 and never-detected same-season histories were
+    overpredicted by +0.1058. Every focus species had the same error direction
+    in both strata, closely reproducing the broader temporal diagnostic.
+67. Added an optional shared availability-history correction to
+    `exp/ebird_locality_season_latent_model.py`. It uses only earlier-year
+    same-season records, support-attenuates three history states, and has no
+    intercept so absent history yields zero direct correction. Saved focus
+    predictions now retain portable and adapted availability surfaces, and
+    `exp/diagnose_ebird_latent_transfer_strata.py` writes a within-run
+    portable-versus-adapted comparison. One-epoch controlled-split smoke tests,
+    output-path preflight, compilation, and diagnostic generation passed.
+68. Completed the seed-37 shared adaptive-history run. Checklist AUROC/AUPRC
+    improved to 0.88239/0.60996, BCE to 0.30811, and weighted pairwise error to
+    -0.02125. The shared term reduced the two targeted history-state errors for
+    nearly every focus species and left the no-history stratum unchanged.
+69. Promoted shared history as the adaptive branch with the no-history fit kept
+    as the portable branch. Species-specific history deviations are deferred.
+    The remaining guardrail is an apples-to-apples availability-plausibility
+    comparison, because all-species group any-detection underprediction
+    worsened to -0.02281 and several focus-species/high-support failures remain.
+70. Completed the controlled no-history versus adaptive-history availability
+    comparison. Shared history reduced the largest high-support signed errors,
+    improved weighted environmental-response MAE for all four tested
+    covariates, and retained the major phenology contrasts. Some small
+    species-season errors and extreme zero-detection tails worsened, so the
+    result promotes a two-surface framework rather than replacing the portable
+    model. The next validation is a paired, fixed-design 2022
+    temporal-locality replication.
+71. Completed the independently fitted 2022 portable temporal-locality run.
+    Prevalence-normalized AUPRC was stable, checklist calibration improved,
+    pairwise co-detection error narrowed, and the global frailty scale remained
+    unchanged relative to the 2023 portable run. The opposing one-observer and
+    6+ observer group errors reproduced. Proceed to the matching fixed
+    shared-history run without retuning.
+72. Completed the fixed 2022 shared-history run. Checklist ranking and BCE
+    improved, pairwise co-detection error narrowed to -0.00137, and frailty
+    remained stable. As in 2023, overall fair group any-detection
+    underprediction worsened. Run the paired history-strata and availability
+    diagnostics before deciding whether the adaptive branch has replicated
+    mechanistically rather than only predictively.
+73. Completed the paired 2022 history-strata diagnostics. The two targeted
+    history-state errors improved substantially, no-prior predictions were
+    exactly unchanged, and observer/locality-type errors generally narrowed.
+    This is a second-year mechanistic replication of shared history. Promote it
+    as the adaptive branch while retaining the independently fitted portable
+    branch; run paired availability diagnostics before broader transfer tests.
+74. Completed the paired 2022 availability diagnostics. All four aggregate
+    environmental-response MAEs improved, eight of ten high-support
+    focus-species errors improved, broad phenology was retained, and average
+    confidence on high-support zero-detection groups fell for every focus
+    species. Several upper-tail extremes worsened, so retain both surfaces and
+    proceed to directional ecological-regime transfer without further tuning.
+75. Added a generic `temporal-regime` split to
+    `exp/ebird_locality_season_latent_model.py`. The split selects an inclusive
+    feature tail from established test-year localities using only their
+    pre-test historical medians, removes selected localities from every
+    training year, and records the threshold, requested and actual fractions,
+    locality IDs, and held-out/retained profile summaries. Compilation, CLI,
+    low-tail, high-tail, and tied-threshold synthetic checks passed. The first
+    fixed-design stress test holds out the 20% of established localities nearest
+    the coast by historical median coastline distance.
+76. Completed the portable coastal-tail stress test. The split held out 269
+    established localities with no training overlap and an actual test-group
+    fraction of 0.206. Checklist AUROC/AUPRC fell to 0.8021/0.3626 at 0.1244
+    prevalence, availability any-positive AUROC/AUPRC were 0.8071/0.7035 at
+    0.3865 prevalence, and fair group any-detection error widened to -0.0499.
+    Checklist macro AUPRC fell to 0.2690, species calibration MAE rose to
+    0.0497, and availability macro AUPRC fell to 0.5372 relative to 0.4214,
+    0.0236, and 0.6465 on the representative locality holdout.
+    Coastal specialists dominate the largest negative species-season errors.
+    Frailty remained stable and pairwise co-detection remained accurate, so
+    proceed to the identical shared-history run rather than changing the
+    likelihood or tuning the portable model on this stress set.
+77. Completed the identical shared-history coastal-tail run. Relative to the
+    portable fit, checklist AUROC/AUPRC improved from 0.8021/0.3626 to
+    0.8295/0.3950, checklist macro AUPRC improved from 0.2690 to 0.3076,
+    availability pooled AUPRC improved from 0.7035 to 0.7841, and availability
+    macro AUPRC improved from 0.5372 to 0.6735. Checklist AUPRC improved for
+    93 of 100 species. Fair group any-detection error worsened slightly from
+    -0.0499 to -0.0547, so this is promoted only as adaptive value at revisited
+    localities; it does not repair portable coastal extrapolation.
+78. Audited the coastal preprocessing path. Barrier-island points are present
+    and receive low generalized-coastline distances, but the hydrography source
+    is coarse, the stack uses EPSG:3857 map distances, and the Waterbody layer
+    does not adequately represent ocean/sound/estuarine habitat. Reclassify the
+    current evaluation as a generalized-coastline proximity stress test. Keep
+    it as the coarse-covariate baseline, audit raw-to-final coastal retention,
+    and build a metric-CRS coastal-habitat sensitivity branch before making a
+    stronger coastal-transfer claim.
+79. Completed the paired coastal transfer-strata diagnostics. Shared history
+    improved unseen-locality focus-pair AUPRC from 0.7692 to 0.8263 and macro
+    AUPRC from 0.5505 to 0.6825. It reduced the two targeted history-state
+    errors and improved ranking across every observer-diversity and locality-
+    type stratum. The coastal portable gap remains: the adapted model still
+    underpredicted unseen-locality prevalence by 0.0568 and hotspot prevalence
+    by 0.0692. Retain independent no-history as the portable surface and shared
+    history as adaptive value only.
+80. Completed the paired coastal availability audit. Shared history improved
+    mean observable-response MAE for all four current environmental covariates
+    and substantially reduced errors for Double-crested Cormorant, Green Heron,
+    Great Egret, Northern Cardinal, and Eastern Meadowlark. It worsened House
+    Sparrow and several smaller errors, and did not reduce the overall extreme
+    zero-detection tail. The result supports ecological covariate enrichment,
+    not another history or likelihood variant. Adopt a national-core plus
+    regional-module feature pipeline using authoritative U.S. land-cover,
+    vegetation, terrain, hydrography, climate, wetland, and shoreline sources.
 
 Current decisions and immediate implementation steps:
 
@@ -8806,36 +9596,205 @@ python exp/ebird_locality_season_latent_model.py --dataset-dir data/ebird/locali
 python exp/diagnose_ebird_latent_availability.py --latent-dir data/ebird/locality_season_top100/latent_models --run-name latent_strict_frailty_global_availdiag
 ```
 
-32. Rerun the now-extended diagnostic against the saved predictions. This does
-   not retrain the latent model:
+32. Completed the extended diagnostic against the saved predictions:
 
 ```
 python exp/diagnose_ebird_latent_availability.py --latent-dir data/ebird/locality_season_top100/latent_models --dataset-dir data/ebird/locality_season_top100 --run-name latent_strict_frailty_global_availdiag
 ```
 
-33. Use the new history summary to classify the highest-confidence
-   zero-detection cases:
+33. The history classification shows that the selected failures are split
+   between two major mechanisms:
    - prior same-season detections followed by recent zero years indicate
      temporal or observer/reporting instability
    - substantial historical same-season support with no detections indicates
      ecological/locality overgeneralization or missing habitat predictors
    - no prior locality support indicates genuine transfer/extrapolation
-34. After that classification, implement fixed-likelihood transfer tests rather
-   than another parameter sweep. Start with temporal and observer/locality
-   density transfer, then ecological-region and directional spatial transfer.
-35. Interpret availability as a latent ecological quantity, not as calibrated
+34. Completed the fair transfer-strata diagnostic across all saved held-out
+   focus-species pairs:
+
+```
+python exp/diagnose_ebird_latent_transfer_strata.py --latent-dir data/ebird/locality_season_top100/latent_models --dataset-dir data/ebird/locality_season_top100 --run-name latent_strict_frailty_global_availdiag
+```
+
+35. Completed the portable baseline under the controlled temporal-locality
+   split. Candidate locality sets were chosen without species outcomes, and
+   every held-out locality was absent from training:
+
+```
+python exp/ebird_locality_season_latent_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --epochs 200 --run-name latent_strict_frailty_global_localityxfer_s37 --split-mode temporal-locality --test-locality-fraction 0.2 --locality-split-candidates 100 --split-seed 37 --marginal-rate-l2 25 --species-marginal-rate-l2 10 --species-season-mode detection --species-season-l2 0.0025 --min-group-dates 5 --min-group-duration-bins 3 --detection-frailty-mode global --detection-frailty-init 0.5 --detection-frailty-l2 0.01 --frailty-quadrature-points 7
+```
+
+   Ranking remained stable, while checklist calibration error increased to
+   0.01583, fair group any-detection was underpredicted by 0.01442, and weighted
+   pairwise co-detection was underpredicted by 0.02477. The stable frailty scale
+   and stable prevalence-normalized ranking make this a qualified portability
+   pass rather than a reason to retune the likelihood.
+
+36. Completed the same fair transfer-strata diagnostic. The controlled test
+   contains only `unseen_locality`, and the same-season history errors closely
+   reproduce the broader temporal result:
+
+```
+python exp/diagnose_ebird_latent_transfer_strata.py --latent-dir data/ebird/locality_season_top100/latent_models --dataset-dir data/ebird/locality_season_top100 --run-name latent_strict_frailty_global_localityxfer_s37
+```
+
+37. Completed the first shared, leakage-safe history-adaptive availability
+   model on the identical controlled locality split:
+
+```
+python exp/ebird_locality_season_latent_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --epochs 200 --run-name latent_xfer_s37_histshared_l2_0p01 --split-mode temporal-locality --test-locality-fraction 0.2 --locality-split-candidates 100 --split-seed 37 --marginal-rate-l2 25 --species-marginal-rate-l2 10 --species-season-mode detection --species-season-l2 0.0025 --min-group-dates 5 --min-group-duration-bins 3 --detection-frailty-mode global --detection-frailty-init 0.5 --detection-frailty-l2 0.01 --frailty-quadrature-points 7 --availability-history-mode shared --availability-history-l2 0.01 --availability-history-support-scale 20
+```
+
+38. Completed the fitted history-adapted versus portable-ablation comparison on
+   the same held-out pairs. The diagnostic now writes
+   `history_adaptation_strata_summary.csv` and
+   `history_adaptation_strata_species.csv` in addition to the standard files:
+
+```
+python exp/diagnose_ebird_latent_transfer_strata.py --latent-dir data/ebird/locality_season_top100/latent_models --dataset-dir data/ebird/locality_season_top100 --run-name latent_xfer_s37_histshared_l2_0p01
+```
+
+39. Completed the adaptive-model availability plausibility battery:
+
+```
+python exp/diagnose_ebird_latent_availability.py --latent-dir data/ebird/locality_season_top100/latent_models --dataset-dir data/ebird/locality_season_top100 --run-name latent_xfer_s37_histshared_l2_0p01
+```
+
+40. Completed the same availability diagnostic against the controlled
+   no-history checkpoint:
+
+```
+python exp/diagnose_ebird_latent_availability.py --latent-dir data/ebird/locality_season_top100/latent_models --dataset-dir data/ebird/locality_season_top100 --run-name latent_strict_frailty_global_localityxfer_s37
+```
+
+41. The comparison is a qualified pass. Shared history improved the dominant
+   high-support errors and every aggregate environmental-response diagnostic;
+   broad phenology remained sensible, although Green Heron, Eastern Meadowlark,
+   Double-crested Cormorant, and several upper-tail zero-detection cases were
+   mixed. Retain both the portable and adaptive surfaces and do not add
+   species-specific history coefficients.
+42. Completed the independently estimated portable baseline with 2022 held
+   out:
+
+```
+python exp/ebird_locality_season_latent_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --test-season-year 2022 --epochs 200 --run-name latent_xfer22_s37_nohist --split-mode temporal-locality --test-locality-fraction 0.2 --locality-split-candidates 100 --split-seed 37 --marginal-rate-l2 25 --species-marginal-rate-l2 10 --species-season-mode detection --species-season-l2 0.0025 --min-group-dates 5 --min-group-duration-bins 3 --detection-frailty-mode global --detection-frailty-init 0.5 --detection-frailty-l2 0.01 --frailty-quadrature-points 7
+```
+
+   The controlled split retained 633 test groups from 235 held-out localities.
+   Checklist AUROC/AUPRC were 0.85787/0.54669 at prevalence 0.15885, giving
+   AUPRC lift 3.4415. Mean-rate error/ECE were 0.00231/0.00486, fair group
+   any-detection error was -0.01756, weighted pairwise error was -0.00606, and
+   the global frailty scale was 1.07885.
+43. Completed the fixed shared-history model on the identical 2022 split:
+
+```
+python exp/ebird_locality_season_latent_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --test-season-year 2022 --epochs 200 --run-name latent_xfer22_s37_histshared_l2_0p01 --split-mode temporal-locality --test-locality-fraction 0.2 --locality-split-candidates 100 --split-seed 37 --marginal-rate-l2 25 --species-marginal-rate-l2 10 --species-season-mode detection --species-season-l2 0.0025 --min-group-dates 5 --min-group-duration-bins 3 --detection-frailty-mode global --detection-frailty-init 0.5 --detection-frailty-l2 0.01 --frailty-quadrature-points 7 --availability-history-mode shared --availability-history-l2 0.01 --availability-history-support-scale 20
+```
+
+   Checklist AUROC/AUPRC improved to 0.86844/0.55758 and BCE to 0.30391.
+   Mean-rate error was 0.00116, ECE 0.00647, fair group any-detection error
+   -0.02522, weighted pairwise error -0.00137, and global frailty 1.07660.
+44. Completed the transfer diagnostics for both checkpoints:
+
+```
+python exp/diagnose_ebird_latent_transfer_strata.py --latent-dir data/ebird/locality_season_top100/latent_models --dataset-dir data/ebird/locality_season_top100 --run-name latent_xfer22_s37_nohist
+python exp/diagnose_ebird_latent_transfer_strata.py --latent-dir data/ebird/locality_season_top100/latent_models --dataset-dir data/ebird/locality_season_top100 --run-name latent_xfer22_s37_histshared_l2_0p01
+```
+
+   The adaptive within-run comparison improved latest-prior-year error from
+   -0.2146 to -0.1375 and never-detected error from +0.0812 to +0.0518.
+   No-prior and past-detection/recent-zero predictions were unchanged.
+   Independent portable versus adapted focus-species AUPRC improved from
+   0.8347 to 0.8675 and macro AUPRC from 0.6523 to 0.7503.
+
+   The paired availability diagnostics are complete:
+
+```
+python exp/diagnose_ebird_latent_availability.py --latent-dir data/ebird/locality_season_top100/latent_models --dataset-dir data/ebird/locality_season_top100 --run-name latent_xfer22_s37_nohist
+python exp/diagnose_ebird_latent_availability.py --latent-dir data/ebird/locality_season_top100/latent_models --dataset-dir data/ebird/locality_season_top100 --run-name latent_xfer22_s37_histshared_l2_0p01
+```
+
+   Shared history improved all four aggregate environmental-response MAEs and
+   eight of ten high-support focus-species errors while preserving broad
+   phenology. Mean confidence on high-support zero-detection groups fell for
+   every focus species, although several maxima increased. This passes the
+   second-year availability gate and promotes shared history only as the
+   adaptive surface; the independent no-history fit remains the portable
+   surface.
+45. Completed the first fixed-model directional transfer test on the portable
+   no-history model. It held out the low 20% tail of established localities by
+   pre-2023 median distance to coastline and excluded those localities from all
+   training years:
+
+```
+python exp/ebird_locality_season_latent_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --test-season-year 2023 --epochs 200 --run-name latent_xfer23_coastal20_nohist --split-mode temporal-regime --test-regime-feature distance_to_coastline_m_median --test-regime-tail low --test-regime-fraction 0.2 --marginal-rate-l2 25 --species-marginal-rate-l2 10 --species-season-mode detection --species-season-l2 0.0025 --min-group-dates 5 --min-group-duration-bins 3 --detection-frailty-mode global --detection-frailty-init 0.5 --detection-frailty-l2 0.01 --frailty-quadrature-points 7
+```
+
+   The inclusive threshold was 4,852 EPSG:3857 map meters, with 269 of 1,343 established
+   localities and 20.6% of eligible test groups held out. Checklist
+   AUROC/AUPRC were 0.8021/0.3626; AUPRC lift over prevalence was 2.916 versus
+   3.405 on the representative controlled-locality holdout. Fair group
+   any-detection error was -0.0499, ECE was 0.0255, and maximum bin error was
+   0.1424. Checklist macro AUPRC was 0.2690 versus 0.4214, species calibration
+   MAE was 0.0497 versus 0.0236, and availability macro AUPRC was 0.5372 versus
+   0.6465. Stable frailty and pairwise co-detection isolate the main failure to
+   portable coastal-regime prediction, especially for coastal specialists.
+46. Completed the same deterministic split with the shared adaptive-history
+   checkpoint. This measures the benefit of prior same-season locality history
+   for revisited localities; it does not change the portable no-history result:
+
+```
+python exp/ebird_locality_season_latent_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --test-season-year 2023 --epochs 200 --run-name latent_xfer23_coastal20_histshared_l2_0p01 --split-mode temporal-regime --test-regime-feature distance_to_coastline_m_median --test-regime-tail low --test-regime-fraction 0.2 --marginal-rate-l2 25 --species-marginal-rate-l2 10 --species-season-mode detection --species-season-l2 0.0025 --min-group-dates 5 --min-group-duration-bins 3 --detection-frailty-mode global --detection-frailty-init 0.5 --detection-frailty-l2 0.01 --frailty-quadrature-points 7 --availability-history-mode shared --availability-history-l2 0.01 --availability-history-support-scale 20
+```
+
+   Shared history improved checklist AUROC/AUPRC to 0.8295/0.3950 and
+   availability any-positive AUROC/AUPRC to 0.8618/0.7841. Macro checklist and
+   availability AUPRC improved to 0.3076 and 0.6735. It improved checklist
+   AUPRC for 93 of 100 species, but fair group any-detection error widened to
+   -0.0547. Promote this only as the adaptive surface for revisited localities;
+   the independently fitted no-history model remains the portable result.
+47. Completed the same transfer-strata and availability diagnostics on both
+   coastal checkpoints:
+
+```
+python exp/diagnose_ebird_latent_transfer_strata.py --latent-dir data/ebird/locality_season_top100/latent_models --dataset-dir data/ebird/locality_season_top100 --run-name latent_xfer23_coastal20_nohist
+python exp/diagnose_ebird_latent_transfer_strata.py --latent-dir data/ebird/locality_season_top100/latent_models --dataset-dir data/ebird/locality_season_top100 --run-name latent_xfer23_coastal20_histshared_l2_0p01
+python exp/diagnose_ebird_latent_availability.py --latent-dir data/ebird/locality_season_top100/latent_models --dataset-dir data/ebird/locality_season_top100 --run-name latent_xfer23_coastal20_nohist
+python exp/diagnose_ebird_latent_availability.py --latent-dir data/ebird/locality_season_top100/latent_models --dataset-dir data/ebird/locality_season_top100 --run-name latent_xfer23_coastal20_histshared_l2_0p01
+```
+
+   Shared history improved the intended historical states and broad ranking,
+   but it did not eliminate portable coastal underprediction. Aggregate
+   environmental-response errors improved while several species and extreme
+   zero-detection cases worsened. Close this diagnostic step without changing
+   the likelihood or adding species-specific history.
+48. Build the first versioned national covariate feature pipeline as a separate
+   NC pilot. Use `EPSG:5070`, preserve source/version/coverage metadata, and
+   derive point plus 250 m/1 km/5 km summaries. Stage sources in blocks:
+   Annual NLCD/LANDFIRE, NWI/3DHP, 3DEP/Daymet, then C-CAP/CUSP coastal features.
+   Keep roads, population, PAD-US/access, and observer geography in the
+   observation-process channel by default. Do not overwrite the current
+   processed or locality-season datasets.
+49. Rebuild a parallel enriched locality-season dataset and rerun the fixed
+   portable and shared-history coastal tests without retuning the likelihood.
+   Then run the already-supported high-elevation and low-observer-support
+   directional tests on both coarse and enriched covariates. These controlled
+   comparisons determine whether the transfer gap is coastal-covariate-specific
+   or a broader framework limitation. Only after that should the same feature
+   definitions be tested in another state or multi-state region.
+50. Interpret availability as a latent ecological quantity, not as calibrated
    occupancy. Require fair predicted-vs-observed any-detection agreement,
    biologically sensible phenology/environmental patterns, and bounded
    high-support non-detection behavior.
-36. Do not apply post-hoc probability calibration yet. It could improve numeric
+51. Do not apply post-hoc probability calibration yet. It could improve numeric
    calibration while obscuring whether availability and detection are
    scientifically separated.
-37. Keep the frozen-access spatial GNN as the checklist-level benchmark while
+52. Keep the frozen-access spatial GNN as the checklist-level benchmark while
    the locality-season model is developed. Do not add more spatial-GNN
    architecture variants unless a diagnostic points to a specific failure mode.
-38. Decide whether to rerun the bridge with 30/30 epochs only after the
+53. Decide whether to rerun the bridge with 30/30 epochs only after the
    response/phenology diagnostics show the current 10/20 result is stable
    enough to justify the longer run.
-39. Revisit House Sparrow and Red-breasted Nuthatch. House Sparrow improved in
+54. Revisit House Sparrow and Red-breasted Nuthatch. House Sparrow improved in
    the checklist-level two-component bridge, but Red-breasted Nuthatch remains a
    small negative-delta species.

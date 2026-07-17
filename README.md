@@ -19,6 +19,22 @@ Commands below assume they are run from the project root.
 
 ## Data Preparation Commands
 
+Portable U.S. eBird covariates are being developed as a versioned, tiled
+`EPSG:5070` pipeline. The architecture, source inventory, temporal rules, and
+implementation ledger are in
+[`documents/ebird-conus-covariate-pipeline.md`](documents/ebird-conus-covariate-pipeline.md).
+The current planner validates the NC pilot without downloading data. The
+Annual NLCD command then resolves pinned Collection 1.2 metadata only; it does
+not download the multi-gigabyte source archives:
+
+```text
+python scripts/data/ebird-covariates.py plan --config config/ebird_covariates/nc_2020_2023_v1.json
+python scripts/data/ebird-covariates.py catalog-nlcd --plan data/ebird/covariates/builds/nc_2020_2023_covariates_v1/build_plan.json
+```
+
+The older NC raster commands below remain the provenance for the current
+four-covariate dataset; they are not the target national pipeline.
+
 Point Process Datasets:
 
 ```
@@ -41,7 +57,7 @@ python scripts/data/usfs-tcc-canopy-bbox.py --south 33.85116926668266 --north 36
 python scripts/data/reproject-raster-to-template.py --input data/nc_usgs30m.tif --template data/nc_tcc_2020_2023.tif --output data/nc_usgs30m_match_tcc.tif
 python scripts/data/usgs-hydrography.py --south 33.85116926668266 --north 36.5881334409244 --west -84.32178200052 --east -75.45981513195132 --template data/nc_tcc_2020_2023.tif --output data/nc_hydro_distance_match_tcc.tif --boundary data/boundaries/nc_state_boundary.gpkg --search-buffer 10000
 python scripts/data/fill-tcc-raster.py --tcc data/nc_tcc_2020_2023.tif --hydro data/nc_hydro_distance_match_tcc.tif --output data/nc_tcc_2020_2023_filled.tif --water-distance-threshold 30 --overwrite
-python scripts/data/stack-rasters.py --inputs data/nc_tcc_2020_2023_filled.tif data/nc_usgs30m_match_tcc.tif data/nc_hydro_distance_match_tcc.tif --crs EPSG:3857 --boundary data/boundaries/nc_state_boundary.gpkg --resampling nearest bilinear bilinear --mask-tcc-above 100 --valid-footprint intersection --output data/nc_covariate_stack.tif --overwrite
+python scripts/data/stack-rasters.py --inputs data/nc_tcc_2020_2023_filled.tif data/nc_usgs30m_match_tcc.tif data/nc_hydro_distance_match_tcc.tif --crs EPSG:3857 --boundary data/boundaries/nc_state_boundary.gpkg --resampling nearest bilinear bilinear --mask-tcc-above 100 --extent intersection --output data/nc_covariate_stack.tif --overwrite
 python scripts/data/join-ebird-raster-covariates.py --points data/wood_thrush_nc_2020_2023.geojson --raster data/nc_covariate_stack.tif --output data/wood_thrush_nc_2020_2023_covariates.geojson --overwrite
 python exp/plot_raster_previews.py 
 ```

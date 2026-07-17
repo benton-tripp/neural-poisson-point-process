@@ -35,6 +35,7 @@ rasterio==1.5.0
 requests==2.33.1
 rpy2-rinterface==3.6.6
 rpy2-robjects==3.6.5
+scikit-learn==1.9.0
 scipy==1.17.1
 setuptools==70.2.0
 shapely==2.1.2

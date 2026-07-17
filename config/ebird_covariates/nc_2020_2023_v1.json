@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "build_id": "nc_2020_2023_covariates_v1",
+  "description": "North Carolina pilot of the portable CONUS ecological, climate, coastal, and observer-access covariate system.",
+  "aoi": {
+    "name": "North Carolina",
+    "path": "data/boundaries/nc_state_boundary.gpkg",
+    "layer": null
+  },
+  "grid": {
+    "crs": "EPSG:5070",
+    "resolution_m": 250,
+    "tile_size_m": 100000,
+    "origin_m": {
+      "x": 0,
+      "y": 0
+    },
+    "dtype": "float32",
+    "nodata": -9999.0
+  },
+  "temporal": {
+    "start_year": 2020,
+    "end_year": 2023,
+    "months": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+    "seasons": {
+      "DJF": [12, 1, 2],
+      "MAM": [3, 4, 5],
+      "JJA": [6, 7, 8],
+      "SON": [9, 10, 11]
+    },
+    "climate_normal_period": [1991, 2020],
+    "selection_rule": "latest_not_after"
+  },
+  "neighborhoods_m": [250, 1000, 5000],
+  "sources": [
+    {
+      "id": "annual_nlcd",
+      "collection": 1,
+      "version": 2,
+      "products": ["LndCov", "FctImp"],
+      "predecessor_land_cover_years": [2019]
+    },
+    "landfire",
+    "usgs_3dep",
+    "usgs_3dhp",
+    {"id": "nhdplus_hr", "fallback_for": "usgs_3dhp"},
+    "daymet",
+    "usfws_nwi",
+    "noaa_ccap",
+    "noaa_cusp",
+    "coastal_topology",
+    "census_acs",
+    "census_tiger",
+    "pad_us",
+    {"id": "ebird_sampling_history", "lag_years": 1, "availability_use": false},
+    "epa_ecoregions",
+    "usgs_wbd",
+    "census_boundaries"
+  ],
+  "output": {
+    "root": "data/ebird/covariates/builds",
+    "logical_raster": "covariates.vrt",
+    "manifest": "manifest.json",
+    "materialized_export": "nc_covariates_2020_2023_250m.tif"
+  }
+}

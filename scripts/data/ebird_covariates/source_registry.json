@@ -1,0 +1,251 @@
+{
+  "schema_version": 1,
+  "registry_version": "2026-07-17.1",
+  "description": "Authoritative U.S. source registry for the eBird CONUS covariate pipeline.",
+  "sources": [
+    {
+      "id": "annual_nlcd",
+      "name": "USGS Annual National Land Cover Database",
+      "channel": "availability",
+      "scope": "conus_core",
+      "cadence": "annual",
+      "adapter_status": "catalog_ready",
+      "official_url": "https://www.usgs.gov/centers/eros/science/annual-nlcd-data-access",
+      "planned_products": [
+        {"id": "land_cover_class_fractions", "bands": 16, "time_axis": "year", "spatial_scales": "neighborhoods"},
+        {"id": "impervious_fraction", "bands": 1, "time_axis": "year", "spatial_scales": "neighborhoods"},
+        {"id": "class_diversity", "bands": 1, "time_axis": "year", "spatial_scales": "neighborhoods"},
+        {"id": "fragmentation", "bands": 1, "time_axis": "year", "spatial_scales": "neighborhoods"},
+        {"id": "annual_change_fraction", "bands": 1, "time_axis": "year", "spatial_scales": "neighborhoods"},
+        {"id": "coverage", "bands": 1, "time_axis": "year", "spatial_scales": "single"}
+      ]
+    },
+    {
+      "id": "landfire",
+      "name": "LANDFIRE Existing Vegetation",
+      "channel": "availability",
+      "scope": "conus_core",
+      "cadence": "periodic",
+      "adapter_status": "planned",
+      "official_url": "https://landfire.gov/vegetation",
+      "planned_products": [
+        {"id": "physiognomy_class_fractions", "bands": 9, "time_axis": "release", "spatial_scales": "neighborhoods"},
+        {"id": "tree_shrub_herb_cover", "bands": 3, "time_axis": "release", "spatial_scales": "neighborhoods"},
+        {"id": "vegetation_height", "bands": 3, "time_axis": "release", "spatial_scales": "neighborhoods"},
+        {"id": "disturbance_fraction", "bands": 1, "time_axis": "release", "spatial_scales": "neighborhoods"},
+        {"id": "source_age_and_coverage", "bands": 2, "time_axis": "release", "spatial_scales": "single"}
+      ]
+    },
+    {
+      "id": "usgs_3dep",
+      "name": "USGS 3D Elevation Program",
+      "channel": "availability",
+      "scope": "conus_core",
+      "cadence": "snapshot",
+      "adapter_status": "planned",
+      "official_url": "https://www.usgs.gov/3d-elevation-program",
+      "planned_products": [
+        {"id": "terrain_metrics", "bands": 10, "time_axis": "release", "spatial_scales": "neighborhoods"},
+        {"id": "acquisition_age_and_coverage", "bands": 2, "time_axis": "release", "spatial_scales": "single"}
+      ]
+    },
+    {
+      "id": "usgs_3dhp",
+      "name": "USGS 3D Hydrography Program",
+      "channel": "availability",
+      "scope": "conus_core",
+      "cadence": "annual",
+      "adapter_status": "planned",
+      "official_url": "https://www.usgs.gov/3d-hydrography-program/access-3dhp-data-products",
+      "planned_products": [
+        {"id": "hydrography_distances", "bands": 4, "time_axis": "year", "spatial_scales": "single"},
+        {"id": "hydrography_context", "bands": 4, "time_axis": "year", "spatial_scales": "neighborhoods"},
+        {"id": "source_family_and_coverage", "bands": 2, "time_axis": "year", "spatial_scales": "single"}
+      ]
+    },
+    {
+      "id": "nhdplus_hr",
+      "name": "USGS NHDPlus High Resolution fallback",
+      "channel": "availability",
+      "scope": "conus_fallback",
+      "cadence": "snapshot",
+      "adapter_status": "planned",
+      "official_url": "https://www.usgs.gov/national-hydrography/nhdplus-high-resolution",
+      "planned_products": [
+        {"id": "fallback_source_flag", "bands": 1, "time_axis": "release", "spatial_scales": "single"}
+      ]
+    },
+    {
+      "id": "daymet",
+      "name": "ORNL Daymet",
+      "channel": "availability",
+      "scope": "conus_core",
+      "cadence": "monthly",
+      "adapter_status": "planned",
+      "official_url": "https://daymet.ornl.gov/",
+      "planned_products": [
+        {"id": "monthly_summaries", "bands": 10, "time_axis": "year_month", "spatial_scales": "single"},
+        {"id": "monthly_1991_2020_normals", "bands": 7, "time_axis": "month_normal", "spatial_scales": "single"},
+        {"id": "monthly_anomalies", "bands": 7, "time_axis": "year_month", "spatial_scales": "single"},
+        {"id": "seasonal_summaries", "bands": 10, "time_axis": "year_season", "spatial_scales": "single"},
+        {"id": "seasonal_anomalies", "bands": 7, "time_axis": "year_season", "spatial_scales": "single"},
+        {"id": "coverage", "bands": 1, "time_axis": "static", "spatial_scales": "single"}
+      ]
+    },
+    {
+      "id": "usfws_nwi",
+      "name": "USFWS National Wetlands Inventory",
+      "channel": "availability",
+      "scope": "conus_core",
+      "cadence": "snapshot",
+      "adapter_status": "planned",
+      "official_url": "https://www.fws.gov/program/national-wetlands-inventory/wetlands-data",
+      "planned_products": [
+        {"id": "cowardin_system_fractions", "bands": 6, "time_axis": "release", "spatial_scales": "neighborhoods"},
+        {"id": "tidal_fraction", "bands": 1, "time_axis": "release", "spatial_scales": "neighborhoods"},
+        {"id": "wetland_and_deepwater_distance", "bands": 2, "time_axis": "release", "spatial_scales": "single"},
+        {"id": "mapping_vintage", "bands": 2, "time_axis": "release", "spatial_scales": "single"},
+        {"id": "coverage", "bands": 1, "time_axis": "release", "spatial_scales": "single"}
+      ]
+    },
+    {
+      "id": "noaa_ccap",
+      "name": "NOAA Coastal Change Analysis Program regional land cover",
+      "channel": "availability",
+      "scope": "coastal_module",
+      "cadence": "periodic",
+      "adapter_status": "planned",
+      "official_url": "https://www.coast.noaa.gov/digitalcoast/data/ccapregional.html",
+      "planned_products": [
+        {"id": "coastal_class_fractions", "bands": 12, "time_axis": "release", "spatial_scales": "neighborhoods"},
+        {"id": "coastal_class_diversity", "bands": 1, "time_axis": "release", "spatial_scales": "neighborhoods"},
+        {"id": "source_age_and_coverage", "bands": 2, "time_axis": "release", "spatial_scales": "single"}
+      ]
+    },
+    {
+      "id": "noaa_cusp",
+      "name": "NOAA Continually Updated Shoreline Product",
+      "channel": "availability",
+      "scope": "coastal_module",
+      "cadence": "snapshot",
+      "adapter_status": "planned",
+      "official_url": "https://nsde.ngs.noaa.gov/",
+      "planned_products": [
+        {"id": "shoreline_distances", "bands": 2, "time_axis": "release", "spatial_scales": "single"},
+        {"id": "shoreline_density", "bands": 1, "time_axis": "release", "spatial_scales": "neighborhoods"},
+        {"id": "source_age_and_coverage", "bands": 2, "time_axis": "release", "spatial_scales": "single"}
+      ]
+    },
+    {
+      "id": "coastal_topology",
+      "name": "Derived national land-water coastal topology",
+      "channel": "availability",
+      "scope": "coastal_module",
+      "cadence": "derived",
+      "adapter_status": "planned",
+      "official_url": "https://www.coast.noaa.gov/digitalcoast/data/ccapregional.html",
+      "planned_products": [
+        {"id": "ocean_estuary_island_context", "bands": 6, "time_axis": "release", "spatial_scales": "neighborhoods"},
+        {"id": "topology_flags", "bands": 3, "time_axis": "release", "spatial_scales": "single"}
+      ]
+    },
+    {
+      "id": "census_acs",
+      "name": "U.S. Census American Community Survey five-year estimates",
+      "channel": "access",
+      "scope": "conus_access",
+      "cadence": "annual",
+      "adapter_status": "planned",
+      "official_url": "https://www.census.gov/programs-surveys/acs/data/data-via-api.html",
+      "planned_products": [
+        {"id": "population_and_housing_density", "bands": 2, "time_axis": "year", "spatial_scales": "neighborhoods"},
+        {"id": "access_context", "bands": 3, "time_axis": "year", "spatial_scales": "neighborhoods"},
+        {"id": "source_age_and_coverage", "bands": 2, "time_axis": "year", "spatial_scales": "single"}
+      ]
+    },
+    {
+      "id": "census_tiger",
+      "name": "U.S. Census TIGER/Line roads and urban areas",
+      "channel": "access",
+      "scope": "conus_access",
+      "cadence": "annual",
+      "adapter_status": "planned",
+      "official_url": "https://www.census.gov/geographies/mapping-files/time-series/geo/tiger-line-file.html",
+      "planned_products": [
+        {"id": "road_distances", "bands": 2, "time_axis": "year", "spatial_scales": "single"},
+        {"id": "road_density_by_class", "bands": 4, "time_axis": "year", "spatial_scales": "neighborhoods"},
+        {"id": "urban_fraction", "bands": 1, "time_axis": "year", "spatial_scales": "neighborhoods"},
+        {"id": "coverage", "bands": 1, "time_axis": "year", "spatial_scales": "single"}
+      ]
+    },
+    {
+      "id": "pad_us",
+      "name": "USGS Protected Areas Database of the United States",
+      "channel": "access",
+      "scope": "conus_access",
+      "cadence": "periodic",
+      "adapter_status": "planned",
+      "official_url": "https://www.usgs.gov/programs/gap-analysis-project/science/pad-us-data-download",
+      "planned_products": [
+        {"id": "public_and_protected_land_fractions", "bands": 3, "time_axis": "release", "spatial_scales": "neighborhoods"},
+        {"id": "owner_manager_group_fractions", "bands": 5, "time_axis": "release", "spatial_scales": "neighborhoods"},
+        {"id": "distance_to_public_land", "bands": 1, "time_axis": "release", "spatial_scales": "single"},
+        {"id": "source_age_and_coverage", "bands": 2, "time_axis": "release", "spatial_scales": "single"}
+      ]
+    },
+    {
+      "id": "ebird_sampling_history",
+      "name": "Lagged eBird sampling intensity summaries",
+      "channel": "access",
+      "scope": "training_only_access",
+      "cadence": "annual",
+      "adapter_status": "planned",
+      "official_url": "https://science.ebird.org/en/use-ebird-data/download-ebird-data-products",
+      "planned_products": [
+        {"id": "lagged_sampling_summaries", "bands": 4, "time_axis": "year", "spatial_scales": "neighborhoods"},
+        {"id": "history_coverage", "bands": 1, "time_axis": "year", "spatial_scales": "single"}
+      ]
+    },
+    {
+      "id": "epa_ecoregions",
+      "name": "EPA Level I-IV ecoregions",
+      "channel": "evaluation",
+      "scope": "conus_evaluation",
+      "cadence": "static",
+      "adapter_status": "planned",
+      "official_url": "https://www.epa.gov/eco-research/ecoregions",
+      "planned_products": [
+        {"id": "ecoregion_codes", "bands": 3, "time_axis": "static", "spatial_scales": "single"},
+        {"id": "ecoregion_boundary_distance", "bands": 1, "time_axis": "static", "spatial_scales": "single"},
+        {"id": "coverage", "bands": 1, "time_axis": "static", "spatial_scales": "single"}
+      ]
+    },
+    {
+      "id": "usgs_wbd",
+      "name": "USGS Watershed Boundary Dataset",
+      "channel": "evaluation",
+      "scope": "conus_evaluation",
+      "cadence": "snapshot",
+      "adapter_status": "planned",
+      "official_url": "https://www.usgs.gov/national-hydrography/watershed-boundary-dataset",
+      "planned_products": [
+        {"id": "huc_codes", "bands": 3, "time_axis": "release", "spatial_scales": "single"},
+        {"id": "watershed_context", "bands": 2, "time_axis": "release", "spatial_scales": "neighborhoods"},
+        {"id": "coverage", "bands": 1, "time_axis": "release", "spatial_scales": "single"}
+      ]
+    },
+    {
+      "id": "census_boundaries",
+      "name": "U.S. Census national cartographic boundaries",
+      "channel": "evaluation",
+      "scope": "conus_evaluation",
+      "cadence": "annual",
+      "adapter_status": "planned",
+      "official_url": "https://www.census.gov/geographies/mapping-files/time-series/geo/cartographic-boundary.html",
+      "planned_products": [
+        {"id": "state_county_region_codes", "bands": 3, "time_axis": "year", "spatial_scales": "single"},
+        {"id": "coverage", "bands": 1, "time_axis": "year", "spatial_scales": "single"}
+      ]
+    }
+  ]
+}
