@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 from pathlib import Path
 
 import numpy as np
@@ -64,6 +65,24 @@ DEFAULT_PROCESSED_DIR = "data/ebird/processed_nc_2020_2023"
 DEFAULT_OUTPUT_DIR_NAME = "latent_models"
 SEED = 19
 EPS = 1e-7
+WINDOWS_MAX_PATH_LENGTH = 259
+OUTPUT_SUFFIXES = [
+    "_metrics.csv",
+    "_species_metrics.csv",
+    "_availability_metrics.csv",
+    "_availability_species_metrics.csv",
+    "_latent_detection_diagnostics.csv",
+    "_focus_species_season.csv",
+    "_focus_species_availability_season.csv",
+    "_focus_species_group_predictions.csv",
+    "_component_support_metrics.csv",
+    "_component_species_season_metrics.csv",
+    "_component_species_support_metrics.csv",
+    "_pair_codetection_support_metrics.csv",
+    "_pair_codetection_species_season_metrics.csv",
+    "_frailty_species.csv",
+    "_summary.json",
+]
 
 
 def parse_args() -> argparse.Namespace:
@@ -261,6 +280,34 @@ def parse_args() -> argparse.Namespace:
         help="Common names included in focus species outputs.",
     )
     return parser.parse_args()
+
+
+def validate_output_paths(output_dir: Path, run_name: str) -> None:
+    """Fail before training when a Windows artifact path exceeds MAX_PATH."""
+    if os.name != "nt":
+        return
+    resolved_dir = output_dir.resolve()
+    candidates = [
+        resolved_dir / f"{run_name}{suffix}" for suffix in OUTPUT_SUFFIXES
+    ]
+    longest = max(candidates, key=lambda path: len(str(path)))
+    if len(str(longest)) <= WINDOWS_MAX_PATH_LENGTH:
+        return
+
+    longest_suffix = max(OUTPUT_SUFFIXES, key=len)
+    max_run_name_length = max(
+        WINDOWS_MAX_PATH_LENGTH
+        - len(str(resolved_dir))
+        - 1
+        - len(longest_suffix),
+        1,
+    )
+    raise ValueError(
+        "Output paths would exceed the Windows MAX_PATH limit before all "
+        f"artifacts are written (longest path: {len(str(longest))} characters). "
+        f"Use --run-name with at most {max_run_name_length} characters for "
+        f"this output directory; current length is {len(run_name)}."
+    )
 
 
 def inverse_softplus(value: float) -> float:
@@ -1466,6 +1513,49 @@ def summarize_focus_species_availability_season(
     return pd.DataFrame(rows)
 
 
+def build_focus_species_group_predictions(
+    groups: pd.DataFrame,
+    species: pd.DataFrame,
+    group_mask: np.ndarray,
+    positive_groups: np.ndarray,
+    psi: np.ndarray,
+    conditional_any_detection: np.ndarray,
+    prior_any_detection: np.ndarray,
+    focus_species: list[str],
+) -> pd.DataFrame:
+    focus = species.loc[
+        species["common_name"].isin(focus_species),
+        ["species_index", "species_key", "common_name", "scientific_name"],
+    ]
+    if focus.empty:
+        return pd.DataFrame()
+
+    group_indices = np.flatnonzero(group_mask)
+    test_groups = groups.iloc[group_indices].reset_index(drop=True)
+    frames = []
+    for _, species_row in focus.iterrows():
+        species_index = int(species_row["species_index"])
+        frame = test_groups.copy()
+        frame.insert(0, "scientific_name", species_row["scientific_name"])
+        frame.insert(0, "common_name", species_row["common_name"])
+        frame.insert(0, "species_key", species_row["species_key"])
+        frame.insert(0, "species_index", species_index)
+        frame["observed_any_detection"] = positive_groups[
+            group_indices, species_index
+        ].astype(np.int8)
+        frame["predicted_availability"] = psi[
+            group_indices, species_index
+        ].astype(float)
+        frame["conditional_any_detection_probability"] = conditional_any_detection[
+            group_indices, species_index
+        ].astype(float)
+        frame["prior_any_detection_probability"] = prior_any_detection[
+            group_indices, species_index
+        ].astype(float)
+        frames.append(frame)
+    return pd.concat(frames, ignore_index=True)
+
+
 def write_outputs(
     output_dir: Path,
     run_name: str,
@@ -1476,6 +1566,7 @@ def write_outputs(
     latent_detection_diagnostics: pd.DataFrame,
     focus_detection: pd.DataFrame,
     focus_availability: pd.DataFrame,
+    focus_group_predictions: pd.DataFrame,
     component_support: pd.DataFrame,
     component_species_season: pd.DataFrame,
     component_species_support: pd.DataFrame,
@@ -1501,6 +1592,10 @@ def write_outputs(
     )
     focus_availability.to_csv(
         output_dir / f"{run_name}_focus_species_availability_season.csv",
+        index=False,
+    )
+    focus_group_predictions.to_csv(
+        output_dir / f"{run_name}_focus_species_group_predictions.csv",
         index=False,
     )
     component_support.to_csv(
@@ -1537,6 +1632,7 @@ def main() -> None:
         if args.output_dir is not None
         else dataset_dir / DEFAULT_OUTPUT_DIR_NAME
     )
+    validate_output_paths(output_dir, args.run_name)
 
     metadata = load_metadata(dataset_dir)
     species = load_species(dataset_dir)
@@ -1697,6 +1793,16 @@ def main() -> None:
         test_group_mask,
         positive_groups,
         psi,
+        args.focus_species,
+    )
+    focus_group_predictions = build_focus_species_group_predictions(
+        groups,
+        species,
+        test_group_mask,
+        positive_groups,
+        psi,
+        conditional_any_detection,
+        prior_any_detection,
         args.focus_species,
     )
     component_support = summarize_component_support(
@@ -1863,6 +1969,7 @@ def main() -> None:
             "pair_codetection_species_season": int(
                 len(pair_codetection_species_season)
             ),
+            "focus_species_group_predictions": int(len(focus_group_predictions)),
         },
     }
     write_outputs(
@@ -1875,6 +1982,7 @@ def main() -> None:
         latent_detection_diagnostics,
         focus_detection,
         focus_availability,
+        focus_group_predictions,
         component_support,
         component_species_season,
         component_species_support,

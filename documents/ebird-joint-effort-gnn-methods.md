@@ -126,12 +126,62 @@ species or this geography. The current decision is:
   existing `species` parameterization shrinks each absolute scale toward zero;
   it does not preserve the supported global frailty while partially pooling
   species departures. Close that formulation as a non-promoted sensitivity.
-- The next isolated test is hierarchical frailty: retain one shared global
-  scale and add zero-centered, regularized species deviations. This directly
-  tests whether modest species heterogeneity helps without discarding the
-  global result or allowing 100 unrelated variance parameters. The script now
-  saves per-species frailty scales so stability and extreme values can be
-  evaluated explicitly.
+- The completed hierarchical-frailty run also did not beat global frailty.
+  Relative to global, fair checklist AUPRC declined from 0.57279 to 0.57195,
+  BCE increased from 0.30519 to 0.30538, overall any-detection error increased
+  from 0.00220 to 0.00372, and focus-season weighted error increased from
+  0.01311 to 0.01415. Overall pairwise error improved only from -0.01562 to
+  -0.01535.
+- Hierarchical scales were bounded but materially more variable (mean 1.02404,
+  standard deviation 0.17436, range 0.55795-1.44796). Absolute species-level
+  pairwise error improved for only 39 of 100 species and the median species
+  worsened. The additional heterogeneity therefore did not yield a broad
+  held-out benefit.
+- Apply the stopping rule: promote the simpler global-frailty likelihood as
+  the current structural latent model and close the frailty variance axis.
+  Independently regularized and hierarchical species frailty remain documented
+  non-promoted sensitivities.
+- The promoted global model was rerun as
+  `latent_strict_frailty_global_availdiag` to write compact held-out
+  group-level availability artifacts. It reproduced the promoted checkpoint
+  exactly: fair checklist AUPRC 0.57279, BCE 0.30519, calibration error
+  0.00888, ECE 0.01337, observed/predicted group any-detection 0.41331/0.41551,
+  weighted pairwise error -0.01562, and global frailty scale 1.07439.
+- The first held-out availability audit is a qualified pass, not a final
+  validation. Wood Thrush has near-zero winter behavior (observed any
+  detection 0, `psi` 0.04767, predicted any detection 0.00765) and a clear
+  early-breeding peak. Green Heron likewise falls to `psi` 0.03989 in winter
+  and rises to 0.38367/0.42488 in the breeding windows. Northern Cardinal
+  remains consistently high across seasons with fair observable errors within
+  about +/-0.009. These are the expected broad phenology contrasts.
+- Coarse five-bin environmental responses also retain useful shape. Across the
+  ten focus species, mean observable-response Spearman correlations are about
+  0.856-0.910 for elevation, coastline distance, waterbody distance, and
+  canopy; mean species-level weighted observable MAE is about 0.022-0.027.
+  This is encouraging but is only an internal binned-response check, not
+  external ecological validation.
+- Important failures remain. Great Egret late-breeding and fall-migration
+  observable any-detection are overpredicted by about 0.089. Black-and-white
+  Warbler has winter `psi` 0.25682 despite an observed-positive rate of
+  0.08061, while its combined predicted any-detection error is only +0.02616;
+  this is a direct example of availability/detection tradeoff hidden by an
+  acceptable observable prediction. Wood Thrush observable any-detection is
+  underpredicted by about 0.029-0.044 outside winter.
+- High-support averages are mostly bounded, but individual zero-detection
+  groups expose severe localized errors. Some Northern Cardinal, Eastern
+  Towhee, Great Egret, and Double-crested Cormorant groups with many visits
+  receive prior any-detection probabilities above 0.9. One audited Northern
+  Cardinal case had 61 test visits on 54 dates, zero detections, and predicted
+  any detection near 0.996; the same locality and observer had historical
+  same-season detections, but the immediately preceding year also had zero.
+  This points to temporal/locality and observer-history structure that the
+  current ecology-plus-effort predictors do not represent.
+- Continue the repeated-visit path with guardrails. Do not add a GNN to
+  `psi` yet. First classify high-confidence high-support non-detections by
+  prior locality-season history, then test meaningful temporal, ecological
+  regime, spatial, and observer-density transfer. The diagnostic script now
+  writes this historical-support audit as well as aggregate environmental
+  shape and extreme-zero summaries.
 
 This is still the right path, but success is no longer defined as squeezing a
 few additional points of checklist AUPRC from the NC testbed. The purpose of
@@ -8070,10 +8120,67 @@ Species-specific frailty result:
 - interpretation: this independently shrunk parameterization is effectively
   tied with global frailty and is not promoted
 
-Next hierarchical-frailty run:
+Completed hierarchical-frailty run:
+
+- The first attempt used an overlong filename prefix. Training completed, but
+  Windows rejected the 263-character
+  `_focus_species_availability_season.csv` path before the pairwise,
+  per-species-frailty, and summary artifacts were written. The partial files
+  are incomplete and must not be used as a finished run.
+- The script now validates every output path before loading data or training.
+  The rerun uses a shorter artifact name with identical model settings.
 
 ```
-python exp/ebird_locality_season_latent_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --epochs 200 --run-name latent_repeated_visit_e200_mrate25_srate10_speciesseason_detection_l2_0p0025_strictsupport_frailty_hierarchical_dev_l2_0p01 --marginal-rate-l2 25 --species-marginal-rate-l2 10 --species-season-mode detection --species-season-l2 0.0025 --min-group-dates 5 --min-group-duration-bins 3 --detection-frailty-mode hierarchical --detection-frailty-init 0.5 --detection-frailty-l2 0.01 --detection-frailty-deviation-l2 0.01 --frailty-quadrature-points 7
+python exp/ebird_locality_season_latent_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --epochs 200 --run-name latent_strict_frailty_hier_dev0p01 --marginal-rate-l2 25 --species-marginal-rate-l2 10 --species-season-mode detection --species-season-l2 0.0025 --min-group-dates 5 --min-group-duration-bins 3 --detection-frailty-mode hierarchical --detection-frailty-init 0.5 --detection-frailty-l2 0.01 --detection-frailty-deviation-l2 0.01 --frailty-quadrature-points 7
+```
+
+Hierarchical-frailty result and decision:
+
+- fair checklist AUPRC / BCE: 0.57195 / 0.30538, both slightly worse than
+  global frailty at 0.57279 / 0.30519
+- calibration error / ECE / max-bin error: 0.00919 / 0.01307 / 0.04688
+- observed / predicted overall any-detection rate: 0.41331 / 0.41703; error
+  0.00372 versus 0.00220 for global
+- overall weighted pairwise error: -0.01535 versus -0.01562 for global, an
+  improvement of only 0.00027
+- focus-season weighted absolute error: 0.01415 versus 0.01311 for global
+- species frailty scales: mean 1.02404, standard deviation 0.17436, minimum
+  0.55795, median 1.00399, and maximum 1.44796
+- absolute species-level pairwise error improved for 39 of 100 species; the
+  median species worsened
+- decision: retain global frailty and close the frailty variance axis
+
+Completed promoted-global availability artifact run:
+
+```
+python exp/ebird_locality_season_latent_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --epochs 200 --run-name latent_strict_frailty_global_availdiag --marginal-rate-l2 25 --species-marginal-rate-l2 10 --species-season-mode detection --species-season-l2 0.0025 --min-group-dates 5 --min-group-duration-bins 3 --detection-frailty-mode global --detection-frailty-init 0.5 --detection-frailty-l2 0.01 --frailty-quadrature-points 7
+```
+
+Completed held-out availability audit:
+
+```
+python exp/diagnose_ebird_latent_availability.py --latent-dir data/ebird/locality_season_top100/latent_models --run-name latent_strict_frailty_global_availdiag
+```
+
+Availability-audit result:
+
+- the rerun reproduced the promoted global model exactly
+- Wood Thrush and Green Heron show low winter availability and clear
+  spring/breeding increases; Northern Cardinal is stable and high year-round
+- binned environmental observable-response shape correlations average about
+  0.856-0.910 across the four retained environmental covariates
+- Great Egret late/fall observable predictions are high by about 0.089
+- Black-and-white Warbler winter and fall show component ambiguity even where
+  combined any-detection remains fairly close
+- some high-support zero-detection cases receive prior any-detection above
+  0.9, so pooled calibration is insufficient
+- decision: continue the latent structural path, keep the global likelihood
+  fixed, audit historical locality support, and do not add a GNN yet
+
+Extended historical-support audit command:
+
+```
+python exp/diagnose_ebird_latent_availability.py --latent-dir data/ebird/locality_season_top100/latent_models --dataset-dir data/ebird/locality_season_top100 --run-name latent_strict_frailty_global_availdiag
 ```
 
 Cross-regime summary command:
@@ -8177,16 +8284,36 @@ Current validation priorities:
    frailty model reduced but did not eliminate co-detection underprediction,
    improved fair checklist calibration, and preserved or improved aggregate
    focus-season error. Independently regularized species scales did not improve
-   on the global model. The next validation question is whether hierarchical
-   partial pooling can resolve species-structured errors while retaining the
-   global effect, bounded scales, transfer, and biological plausibility.
+   on the global model, and hierarchical partial pooling produced only a
+   negligible pairwise improvement while worsening fair checklist and
+   focus-season metrics. Retain global frailty and close this variance axis.
 8. Interpret availability-vs-observed-positive metrics only as lower-bound
    diagnostics. Fair group any-detection probabilities and held-out
    ecological/temporal plausibility are the relevant checks because true
    occupancy is unobserved.
-9. Defer post-hoc calibration and additional species-season flexibility. Both
-   can improve pooled probabilities while obscuring whether availability and
-   detection are scientifically separated.
+9. Treat the first held-out availability audit as a qualified pass. Wood
+   Thrush, Green Heron, and Northern Cardinal show sensible broad phenology,
+   and coarse environmental-response shapes are generally retained. Do not
+   call `psi` validated because Black-and-white Warbler winter availability,
+   Great Egret seasonal overprediction, Wood Thrush underprediction, and
+   high-confidence zero-detection cases remain unresolved.
+10. Complete the historical-support audit for high-confidence, high-support
+    non-detections. Separate cases with prior same-season detections from
+    historically unsupported localities and inspect whether the immediately
+    preceding year also changed. This distinguishes temporal/observer
+    instability from missing ecological or locality predictors.
+11. Then run meaningful transfer tests with the likelihood fixed: held-out
+    year, ecological region, coastal/inland or mountain/piedmont direction,
+    unseen or low-density localities, and observer-density regimes. Report
+    fair checklist detection, fair group any-detection, focus-species
+    phenology/environment response, and high-support failure counts together.
+12. Add graph structure only to the availability component after those tests
+    define a stable non-graph latent baseline. Keep checklist detection and
+    effort explicit, and compare the latent availability GNN directly with
+    this same model without graph structure.
+13. Defer post-hoc calibration and additional species-season flexibility. Both
+    can improve pooled probabilities while obscuring whether availability and
+    detection are scientifically separated.
 
 Spatial-stratified baseline commands:
 
@@ -8418,6 +8545,37 @@ Completed implementation phases:
     L2-regularized species deviations. Added a per-species frailty-scale CSV
     and scale-distribution summaries so partial-pooling stability can be
     diagnosed directly.
+57. The first full hierarchical run completed training but failed during
+    output writing because its longest Windows path exceeded `MAX_PATH`.
+    Added output-path preflight validation before training and replaced the
+    overlong artifact prefix with `latent_strict_frailty_hier_dev0p01`. The
+    partial long-prefix files are not a complete run.
+58. Completed the shortened hierarchical run. It produced only a negligible
+    overall pairwise improvement, worsened fair checklist and focus-season
+    metrics, and improved absolute species-level pairwise error for only 39 of
+    100 species. Retained global frailty and closed the frailty variance axis.
+59. Added compact held-out focus-species group predictions to latent-model
+    outputs and added `exp/diagnose_ebird_latent_availability.py` for
+    phenology, environmental-response, high-support non-detection, and fair
+    observable any-detection diagnostics.
+60. Reran the promoted global-frailty model with availability artifacts and
+    completed the first held-out audit. Broad Wood Thrush, Green Heron, and
+    Northern Cardinal phenology is plausible, and binned environmental
+    response shapes are mostly preserved. Great Egret seasonal overprediction,
+    Black-and-white Warbler winter component ambiguity, Wood Thrush
+    underprediction, and localized high-confidence zero-detection groups make
+    this a qualified rather than final pass.
+61. Extended the availability diagnostic with:
+    - per-species/covariate weighted observable MAE and binned shape
+      correlations
+    - counts of high-support zero-detection groups above 0.5, 0.8, and 0.9
+      predicted any-detection probability
+    - locality names/types and prior-year same-locality support for the top
+      zero-detection cases
+    - immediately preceding support year, detections in that year, latest
+      positive year, and a compact history-class summary
+    These outputs are designed to separate temporal/observer instability from
+    missing ecological or locality predictors before transfer testing.
 
 Current decisions and immediate implementation steps:
 
@@ -8621,27 +8779,63 @@ python exp/ebird_locality_season_latent_model.py --dataset-dir data/ebird/locali
    - absolute species pairwise error improved for only 37 of 100 species
    - scales remained narrowly distributed around the global result, so this
      parameterization is closed as a non-promoted sensitivity
-28. Run hierarchical frailty with the same global penalty and a separate
+28. Completed hierarchical frailty with the same global penalty and a separate
    penalty on zero-centered species deviations:
 
 ```
-python exp/ebird_locality_season_latent_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --epochs 200 --run-name latent_repeated_visit_e200_mrate25_srate10_speciesseason_detection_l2_0p0025_strictsupport_frailty_hierarchical_dev_l2_0p01 --marginal-rate-l2 25 --species-marginal-rate-l2 10 --species-season-mode detection --species-season-l2 0.0025 --min-group-dates 5 --min-group-duration-bins 3 --detection-frailty-mode hierarchical --detection-frailty-init 0.5 --detection-frailty-l2 0.01 --detection-frailty-deviation-l2 0.01 --frailty-quadrature-points 7
+python exp/ebird_locality_season_latent_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --epochs 200 --run-name latent_strict_frailty_hier_dev0p01 --marginal-rate-l2 25 --species-marginal-rate-l2 10 --species-season-mode detection --species-season-l2 0.0025 --min-group-dates 5 --min-group-duration-bins 3 --detection-frailty-mode hierarchical --detection-frailty-init 0.5 --detection-frailty-l2 0.01 --detection-frailty-deviation-l2 0.01 --frailty-quadrature-points 7
 ```
 
-29. Promote hierarchical frailty only if it materially improves held-out
-   species-level pairwise error beyond global frailty while preserving fair
-   group any-detection calibration, checklist BCE/AUPRC, focus-season
-   plausibility, and a bounded species-scale distribution. If it remains tied,
-   retain global frailty and stop this variance-parameter axis.
-30. Do not apply post-hoc probability calibration yet. It could improve numeric
+29. Hierarchical result:
+   - overall pairwise error changed from -0.01562 to -0.01535
+   - fair AUPRC declined from 0.57279 to 0.57195
+   - overall any-detection error increased from 0.00220 to 0.00372
+   - focus-season error increased from 0.01311 to 0.01415
+   - absolute species pairwise error improved for only 39 of 100 species
+   - retain global frailty and stop this variance-parameter axis
+30. Completed the fixed promoted-global rerun that writes group-level
+   availability-validation artifacts:
+
+```
+python exp/ebird_locality_season_latent_model.py --dataset-dir data/ebird/locality_season_top100 --processed-dir data/ebird/processed_nc_2020_2023 --epochs 200 --run-name latent_strict_frailty_global_availdiag --marginal-rate-l2 25 --species-marginal-rate-l2 10 --species-season-mode detection --species-season-l2 0.0025 --min-group-dates 5 --min-group-duration-bins 3 --detection-frailty-mode global --detection-frailty-init 0.5 --detection-frailty-l2 0.01 --frailty-quadrature-points 7
+```
+
+31. Completed the first latent-availability validation battery:
+
+```
+python exp/diagnose_ebird_latent_availability.py --latent-dir data/ebird/locality_season_top100/latent_models --run-name latent_strict_frailty_global_availdiag
+```
+
+32. Rerun the now-extended diagnostic against the saved predictions. This does
+   not retrain the latent model:
+
+```
+python exp/diagnose_ebird_latent_availability.py --latent-dir data/ebird/locality_season_top100/latent_models --dataset-dir data/ebird/locality_season_top100 --run-name latent_strict_frailty_global_availdiag
+```
+
+33. Use the new history summary to classify the highest-confidence
+   zero-detection cases:
+   - prior same-season detections followed by recent zero years indicate
+     temporal or observer/reporting instability
+   - substantial historical same-season support with no detections indicates
+     ecological/locality overgeneralization or missing habitat predictors
+   - no prior locality support indicates genuine transfer/extrapolation
+34. After that classification, implement fixed-likelihood transfer tests rather
+   than another parameter sweep. Start with temporal and observer/locality
+   density transfer, then ecological-region and directional spatial transfer.
+35. Interpret availability as a latent ecological quantity, not as calibrated
+   occupancy. Require fair predicted-vs-observed any-detection agreement,
+   biologically sensible phenology/environmental patterns, and bounded
+   high-support non-detection behavior.
+36. Do not apply post-hoc probability calibration yet. It could improve numeric
    calibration while obscuring whether availability and detection are
    scientifically separated.
-31. Keep the frozen-access spatial GNN as the checklist-level benchmark while
+37. Keep the frozen-access spatial GNN as the checklist-level benchmark while
    the locality-season model is developed. Do not add more spatial-GNN
    architecture variants unless a diagnostic points to a specific failure mode.
-32. Decide whether to rerun the bridge with 30/30 epochs only after the
+38. Decide whether to rerun the bridge with 30/30 epochs only after the
    response/phenology diagnostics show the current 10/20 result is stable
    enough to justify the longer run.
-33. Revisit House Sparrow and Red-breasted Nuthatch. House Sparrow improved in
+39. Revisit House Sparrow and Red-breasted Nuthatch. House Sparrow improved in
    the checklist-level two-component bridge, but Red-breasted Nuthatch remains a
    small negative-delta species.
