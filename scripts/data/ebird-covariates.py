@@ -13,6 +13,7 @@ Run from the project root:
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 from ebird_covariates.planner import (
@@ -24,9 +25,15 @@ from ebird_covariates.planner import (
 from ebird_covariates.nlcd import (
     PRODUCTS as NLCD_PRODUCTS,
     parse_year_expression,
+    register_aws_sources as register_nlcd_aws_sources,
+    register_local_sources as register_nlcd_local_sources,
     resolve_catalog as resolve_nlcd_catalog,
+    validate_registered_sources as validate_nlcd_registered_sources,
     write_catalog as write_nlcd_catalog,
+    write_source_registration as write_nlcd_source_registration,
+    write_source_validation as write_nlcd_source_validation,
 )
+from ebird_covariates.nlcd_derive import derive_nlcd
 from ebird_covariates.raster_engine import (
     RESAMPLING_METHODS,
     load_band_inventory,
@@ -163,6 +170,101 @@ def parse_args() -> argparse.Namespace:
         default=4,
         help="Concurrent metadata requests. Defaults to 4.",
     )
+
+    nlcd_local_parser = subparsers.add_parser(
+        "register-nlcd-local",
+        help="Verify local Annual NLCD ZIP/TIFF inputs and write a source registration.",
+    )
+    nlcd_local_parser.add_argument("--catalog", required=True, help="NLCD catalog JSON.")
+    nlcd_local_parser.add_argument(
+        "--input-dir",
+        required=True,
+        help="Directory containing catalogued ZIP archives or extracted TIFFs.",
+    )
+    nlcd_local_parser.add_argument(
+        "--output",
+        default="data/ebird/covariates/raw/annual_nlcd/C1V2/sources.local.json",
+        help="Output source-registration JSON.",
+    )
+    nlcd_local_parser.add_argument(
+        "--sha256",
+        action="store_true",
+        help="Calculate immutable SHA-256 hashes. This reads every source file.",
+    )
+
+    nlcd_aws_parser = subparsers.add_parser(
+        "register-nlcd-aws",
+        help="Write requester-pays AWS COG references from an NLCD catalog.",
+    )
+    nlcd_aws_parser.add_argument("--catalog", required=True, help="NLCD catalog JSON.")
+    nlcd_aws_parser.add_argument(
+        "--output",
+        default="data/ebird/covariates/raw/annual_nlcd/C1V2/sources.aws.json",
+        help="Output source-registration JSON.",
+    )
+
+    nlcd_validate_parser = subparsers.add_parser(
+        "validate-nlcd-sources",
+        help="Open registered NLCD rasters and validate their grid metadata.",
+    )
+    nlcd_validate_parser.add_argument(
+        "--sources",
+        required=True,
+        help="Local or requester-pays AWS source-registration JSON.",
+    )
+    nlcd_validate_parser.add_argument(
+        "--output",
+        help="Validation JSON path. Defaults beside --sources.",
+    )
+
+    nlcd_derive_parser = subparsers.add_parser(
+        "derive-nlcd",
+        help="Derive tiled Annual NLCD ecological bands on the build-plan grid.",
+    )
+    nlcd_derive_parser.add_argument("--plan", required=True, help="build_plan.json path.")
+    nlcd_derive_parser.add_argument(
+        "--sources",
+        required=True,
+        help="Validated local or requester-pays AWS source-registration JSON.",
+    )
+    nlcd_derive_parser.add_argument(
+        "--output-dir",
+        help="Output directory. Defaults to <build_dir>/sources/annual_nlcd.",
+    )
+    nlcd_derive_parser.add_argument(
+        "--years",
+        help="Optional years/ranges overriding the plan, for example 2020-2023.",
+    )
+    nlcd_derive_parser.add_argument(
+        "--neighborhoods-m",
+        nargs="+",
+        type=int,
+        help="Optional circular-neighborhood radii overriding the plan.",
+    )
+    nlcd_derive_parser.add_argument(
+        "--tile-ids",
+        nargs="+",
+        help=(
+            "Optional plan tile IDs to derive. Use this for bounded pilot runs "
+            "before processing the full AOI."
+        ),
+    )
+    nlcd_derive_parser.add_argument(
+        "--minimum-coverage",
+        type=float,
+        default=0.8,
+        help="Minimum valid source-area fraction for a derived value. Defaults to 0.8.",
+    )
+    nlcd_derive_parser.add_argument(
+        "--no-vrt",
+        action="store_true",
+        help="Write COG tiles and inventories without assembling the source VRT.",
+    )
+    nlcd_derive_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Overwrite existing derived COG tiles.",
+    )
     return parser.parse_args()
 
 
@@ -272,6 +374,87 @@ def run_catalog_nlcd(args: argparse.Namespace) -> None:
     print(f"Wrote catalog to {output_path}")
 
 
+def load_json_file(path: Path) -> dict:
+    if not path.exists():
+        raise FileNotFoundError(f"JSON input does not exist: {path}")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def run_register_nlcd_local(args: argparse.Namespace) -> None:
+    catalog = load_json_file(Path(args.catalog))
+    registration = register_nlcd_local_sources(
+        catalog=catalog,
+        input_dir=Path(args.input_dir),
+        calculate_sha256=args.sha256,
+    )
+    output_path = Path(args.output)
+    write_nlcd_source_registration(registration, output_path)
+    print(
+        f"Registered {len(registration['sources'])} local Annual NLCD rasters "
+        f"from {registration['input_dir']}"
+    )
+    print(f"Wrote source registration to {output_path}")
+
+
+def run_register_nlcd_aws(args: argparse.Namespace) -> None:
+    catalog = load_json_file(Path(args.catalog))
+    registration = register_nlcd_aws_sources(catalog)
+    output_path = Path(args.output)
+    write_nlcd_source_registration(registration, output_path)
+    print(
+        f"Registered {len(registration['sources'])} requester-pays Annual NLCD "
+        f"COG references in {registration['aws_region']}"
+    )
+    print("References are not opened until credentials are supplied to a build command.")
+    print(f"Wrote source registration to {output_path}")
+
+
+def run_validate_nlcd_sources(args: argparse.Namespace) -> None:
+    source_path = Path(args.sources)
+    registration = load_json_file(source_path)
+    validation = validate_nlcd_registered_sources(registration)
+    output_path = (
+        Path(args.output)
+        if args.output
+        else source_path.with_name(source_path.stem + ".validation.json")
+    )
+    write_nlcd_source_validation(validation, output_path)
+    print(
+        f"Validated {validation['source_count']} Annual NLCD rasters; "
+        f"land-cover grids aligned={validation['land_cover_grids_aligned']}"
+    )
+    print(f"Wrote source validation to {output_path}")
+
+
+def run_derive_nlcd(args: argparse.Namespace) -> None:
+    plan = load_plan(Path(args.plan))
+    registration = load_json_file(Path(args.sources))
+    output_dir = (
+        Path(args.output_dir)
+        if args.output_dir
+        else Path(plan["outputs"]["build_dir"]) / "sources" / "annual_nlcd"
+    )
+    summary = derive_nlcd(
+        plan=plan,
+        registration=registration,
+        output_dir=output_dir,
+        years=parse_year_expression(args.years) if args.years else None,
+        neighborhoods_m=args.neighborhoods_m,
+        tile_ids=args.tile_ids,
+        minimum_coverage=args.minimum_coverage,
+        write_vrt=not args.no_vrt,
+        overwrite=args.overwrite,
+        progress=True,
+    )
+    print(
+        f"Derived Annual NLCD {summary['release']}: "
+        f"{summary['band_count']} bands across {summary['tile_count']} plan tiles"
+    )
+    if summary["logical_vrt"]:
+        print(f"Wrote logical raster to {summary['logical_vrt']}")
+    print(f"Wrote derivation summary to {output_dir / 'annual_nlcd_summary.json'}")
+
+
 def main() -> None:
     args = parse_args()
     if args.command == "plan":
@@ -285,6 +468,18 @@ def main() -> None:
         return
     if args.command == "catalog-nlcd":
         run_catalog_nlcd(args)
+        return
+    if args.command == "register-nlcd-local":
+        run_register_nlcd_local(args)
+        return
+    if args.command == "register-nlcd-aws":
+        run_register_nlcd_aws(args)
+        return
+    if args.command == "validate-nlcd-sources":
+        run_validate_nlcd_sources(args)
+        return
+    if args.command == "derive-nlcd":
+        run_derive_nlcd(args)
         return
     raise ValueError(f"Unsupported command: {args.command}")
 

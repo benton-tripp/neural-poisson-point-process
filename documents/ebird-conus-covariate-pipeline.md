@@ -3,8 +3,8 @@
 ## Status
 
 - Started: 2026-07-17
-- Current phase: Phase 3 in progress; Annual NLCD catalog adapter complete,
-  raster acquisition/derivation pending
+- Current phase: Phase 3 in progress; Annual NLCD requester-pays source access
+  is validated and derivation is synthetic-tested; the bounded NC pilot is next
 - Initial study area: North Carolina
 - Intended extent: conterminous United States (CONUS)
 - Primary consumer: locality-season availability/detection models
@@ -452,7 +452,7 @@ core.
 | 0 | Architecture, output contract, source inventory, and ledger | Complete |
 | 1 | Source registry, build configuration, fixed-grid planner, and manifest schema | Complete |
 | 2 | Windowed/tiled reprojection and VRT/COG assembly | Complete |
-| 3 | Annual NLCD and LANDFIRE adapters/derivations | In progress: NLCD catalog complete |
+| 3 | Annual NLCD and LANDFIRE adapters/derivations | In progress: NLCD implementation complete and synthetic-tested; official-source NC build and LANDFIRE pending |
 | 4 | 3DEP terrain and 3DHP/NHDPlus hydrography | Pending |
 | 5 | NWI, C-CAP, CUSP, and coastal topology | Pending |
 | 6 | Daymet monthly/seasonal/normals/anomalies | Pending |
@@ -658,6 +658,169 @@ download-request, and download-URI fields separately and sets
 download URL. Acquired archives must receive a local SHA-256 because these
 large-file metadata records do not provide remote checksums.
 
+## Phase 3 Annual NLCD Derivation Checkpoint: 2026-07-20
+
+The production catalog command was rerun successfully against the NC plan. It
+resolved the intended nine Collection 1.2 archives and wrote
+`data/ebird/covariates/raw/annual_nlcd/C1V2/catalog.json`:
+
+```text
+Annual NLCD C1V2: 9 files, 10.2 GiB total
+LndCov: 5 files, 6.6 GiB
+FctImp: 4 files, 3.6 GiB
+acquisition status: metadata_resolved_manual_or_aws_credentials_required
+```
+
+The acquisition status is expected. Cataloging resolves authoritative metadata
+and deterministic raster identities; it does not claim that the large raster
+objects are locally present or that requester-pays AWS credentials work.
+
+The metadata-only AWS registration was also run successfully and wrote
+`data/ebird/covariates/raw/annual_nlcd/C1V2/sources.aws.json` with nine
+requester-pays references in `us-west-2`. The first and last registered raster
+URIs correspond to 2019 `LndCov` and 2023 `FctImp`.
+
+Requester-pays authentication and official-source header validation then
+passed on 2026-07-20. All nine remote rasters opened successfully, all five
+annual land-cover rasters use the same 30 m grid, and the validation artifact
+was written to
+`data/ebird/covariates/raw/annual_nlcd/C1V2/sources.aws.validation.json`:
+
+```text
+Validated 9 Annual NLCD rasters; land-cover grids aligned=True
+```
+
+This closes the source-access gate. It validates identities and raster grid
+metadata, but it does not yet validate derived NC values, window-read cost,
+runtime, tile continuity, or coastal/island behavior.
+
+Implemented source operations:
+
+- `register-nlcd-local` finds either extracted TIFFs or official ZIP archives,
+  verifies the exact TIFF member, opens it through Rasterio/GDAL, records grid
+  metadata, checks catalog archive size where applicable, and optionally
+  calculates SHA-256.
+- `register-nlcd-aws` writes requester-pays `/vsis3/` COG references without
+  falsely marking them as opened or validated.
+- `validate-nlcd-sources` opens every registered raster, verifies one-band
+  metadata, and checks that all annual land-cover grids align. This is the
+  required lightweight gate before derivation.
+- `derive-nlcd` performs buffered source-window reads, area-preserving average
+  reprojection, fractional cell-overlap circular-neighborhood aggregation, AOI masking, tiled COG
+  inventory writes, completeness validation, and `annual_nlcd.vrt` assembly.
+
+The derivation definitions are now explicit:
+
+- class fraction: valid source-pixel area in each of the 16 modeled Annual NLCD
+  classes divided by valid modeled-class area within the circular neighborhood
+- diversity: Shannon entropy across the 16 class fractions, normalized by
+  `log(16)`
+- fragmentation/mixing index: `1 - max(class fraction)`; this is not a patch-
+  edge or connected-component fragmentation metric
+- annual change: area whose aligned land-cover class differs between `year - 1`
+  and `year`, divided by area valid in both years
+- imperviousness: native 0-100 fractional imperviousness converted to 0-1 and
+  averaged by valid source area
+- source coverage: valid modeled land-cover area at the smallest configured
+  neighborhood, retained as a QA/missingness band
+
+For 2020-2023 and 250 m, 1 km, and 5 km neighborhoods, the exact band count is:
+
+```text
+16 class fractions x 3 radii x 4 years = 192
+2 diversity/fragmentation x 3 radii x 4 years = 24
+source coverage x 4 years = 4
+annual change x 3 radii x 4 years = 12
+imperviousness x 3 radii x 4 years = 12
+total = 244 bands
+```
+
+Synthetic validation uses aligned 2019/2020 land-cover rasters and a 2020
+impervious raster split across four independently derived output tiles. It
+verifies reprojection, fractional circular aggregation, class fractions
+summing to one, directional change/impervious contrasts, buffered seam
+continuity, COG inventories, exact expected band count, and a readable VRT.
+The complete covariate test suite now passes:
+
+```text
+env\Scripts\python.exe -m unittest \
+  tests.test_ebird_covariate_planner \
+  tests.test_ebird_covariate_raster_engine \
+  tests.test_ebird_covariate_nlcd \
+  tests.test_ebird_covariate_nlcd_derive -v
+```
+
+Result: 11 tests passed. This validates code behavior on controlled rasters; it
+does not substitute for validating the official raster objects or inspecting
+the NC outputs.
+
+### Official source access gate
+
+Requester-pays AWS is the preferred scalable backend if standard AWS
+credentials are available. Registration itself is metadata-only:
+
+```text
+env\Scripts\python.exe scripts/data/ebird-covariates.py register-nlcd-aws \
+  --catalog data/ebird/covariates/raw/annual_nlcd/C1V2/catalog.json \
+  --output data/ebird/covariates/raw/annual_nlcd/C1V2/sources.aws.json
+```
+
+Then open only the nine raster headers before any heavy processing:
+
+```text
+env\Scripts\python.exe scripts/data/ebird-covariates.py validate-nlcd-sources \
+  --sources data/ebird/covariates/raw/annual_nlcd/C1V2/sources.aws.json
+```
+
+If requester-pays access is unavailable, download the nine cataloged official
+ZIPs or TIFFs into one immutable local directory, then use:
+
+```text
+env\Scripts\python.exe scripts/data/ebird-covariates.py register-nlcd-local \
+  --catalog data/ebird/covariates/raw/annual_nlcd/C1V2/catalog.json \
+  --input-dir <annual-nlcd-download-directory> \
+  --sha256 \
+  --output data/ebird/covariates/raw/annual_nlcd/C1V2/sources.local.json
+
+env\Scripts\python.exe scripts/data/ebird-covariates.py validate-nlcd-sources \
+  --sources data/ebird/covariates/raw/annual_nlcd/C1V2/sources.local.json
+```
+
+After validation passes, run one complete 100 km plan tile before the full
+27-tile NC derivation. The pilot retains all four years, all three neighborhood
+radii, and the exact 244-band contract while bounding the first remote-window
+read. `xp0014_yp0015` is a fully active interior tile:
+
+```text
+set AWS_PROFILE=ebird-nlcd
+set AWS_DEFAULT_REGION=us-west-2
+env\Scripts\python.exe scripts/data/ebird-covariates.py derive-nlcd ^
+  --plan data/ebird/covariates/builds/nc_2020_2023_covariates_v1/build_plan.json ^
+  --sources data/ebird/covariates/raw/annual_nlcd/C1V2/sources.aws.json ^
+  --tile-ids xp0014_yp0015 ^
+  --output-dir data/ebird/covariates/builds/nc_2020_2023_covariates_v1/sources/annual_nlcd
+```
+
+Do not add `--overwrite`. If the pilot passes range, completeness, and visual
+QA, use the same output directory and omit `--tile-ids` for the full build.
+Existing pilot COGs will not be overwritten, although the current derivation
+still rereads and recomputes that one source window while rebuilding complete
+inventories:
+
+```text
+env\Scripts\python.exe scripts/data/ebird-covariates.py derive-nlcd ^
+  --plan data/ebird/covariates/builds/nc_2020_2023_covariates_v1/build_plan.json ^
+  --sources data/ebird/covariates/raw/annual_nlcd/C1V2/sources.aws.json ^
+  --output-dir data/ebird/covariates/builds/nc_2020_2023_covariates_v1/sources/annual_nlcd
+```
+
+Replace `sources.aws.json` with `sources.local.json` for local inputs. Do not
+add `--overwrite` on the initial run; existing valid tiles can then be reused
+after interruption. The next checkpoint must record pilot runtime/disk use,
+coverage and range QA, class-fraction sums, and a visual check before the full
+build. The full build must then add tile-seam and coastal/island spot checks
+before Annual NLCD is promoted.
+
 ## Decision Log
 
 ### 2026-07-17
@@ -688,12 +851,27 @@ large-file metadata records do not provide remote checksums.
   supplies authoritative file metadata but not an unattended public large-file
   path for this adapter.
 
+### 2026-07-20
+
+- Treat official-source header validation as a distinct gate between source
+  registration and expensive derivation.
+- Prefer requester-pays AWS window reads for scalable state/CONUS processing
+  when credentials and the generated object paths validate; retain immutable
+  local ZIP/TIFF registration as the supported fallback.
+- Define the current land-cover fragmentation band narrowly as one minus the
+  dominant class fraction. Do not describe it as patch-edge fragmentation.
+- Require every Annual NLCD derivation to match its analytically expected band
+  count before writing a successful summary.
+- Keep source coverage as an explicit QA band rather than converting
+  insufficient support into ecological zeroes.
+- Do not claim the Annual NLCD adapter is promoted from synthetic tests alone;
+  real NC coverage, seams, ranges, and coastal/island geography remain required.
+
 ## Open Questions
 
 1. Whether the 250 m grid needs a 100 m coastal sensitivity.
-2. Whether authenticated requester-pays AWS or official MRLC downloads should
-   be the primary Annual NLCD acquisition backend; local archive ingestion will
-   be supported in either case.
+2. Whether requester-pays window reads remain reliable and economical during
+   the NC pilot and full-state derivation.
 3. Whether LANDFIRE EVT should be retained at detailed class level or collapsed
    to a portable ecological hierarchy.
 4. How to crosswalk 3DHP and legacy NHDPlus HR attributes into one schema.
@@ -708,10 +886,11 @@ large-file metadata records do not provide remote checksums.
 The next update should record:
 
 - the selected Annual NLCD acquisition backend and immutable local archive
-  checksums
+  checksums, or validated requester-pays window access
 - the first real NC NLCD source and derived tiles
-- exact class-fraction, diversity, fragmentation, imperviousness, and adjacent-
-  year change derivations
 - named materialization profiles and exact inclusion rules
 - coverage, value-range, class-fraction-sum, and geographic spot-check results
 - source-window/subset behavior and measured disk/runtime costs
+- whether the 250 m grid preserves Emerald Isle, Fort Macon, Ocracoke, tidal-
+  wetland, and narrow land/water context well enough to avoid a 100 m
+  sensitivity build

@@ -1483,20 +1483,33 @@ plan resolves a 250 m `EPSG:5070` grid with 27 intersecting 100 km tiles. This
 work is an input-data intervention, not another latent-model hyperparameter
 search. Source blocks will be promoted by transfer and ecological-plausibility
 evidence, with access variables kept out of availability unless an explicit
-ablation justifies them. The generic COG/VRT engine has also passed a synthetic
-four-tile seam-equivalence test. The Annual NLCD Collection 1.2 metadata
-adapter is now complete and release-pinned. The NC pilot selects 2019-2023 land
-cover and 2020-2023 fractional imperviousness (nine archives, 10.2 GiB before
-subsetting); 2019 supplies the non-future predecessor for 2020 change. Raster
-acquisition remains pending because ScienceBase large-file links are request
-pages, so the production adapter will support authenticated requester-pays AWS,
-official MRLC downloads, and already acquired local archives without changing
-the downstream normalization contract.
+ablation justifies them. The generic COG/VRT engine has passed a synthetic
+four-tile seam-equivalence test.
+
+The Annual NLCD portion of Phase 3 is now implemented and synthetic-tested.
+The release-pinned NC catalog resolves 2019-2023 land cover and 2020-2023
+fractional imperviousness (nine archives, 10.2 GiB before subsetting); 2019 is
+used only as the non-future predecessor for 2020 change. Local ZIP/TIFF and
+requester-pays AWS registrations, header/grid validation, buffered area-
+fraction derivation, COG inventories, exact 244-band completeness checks, and
+an Annual NLCD VRT are executable. The 11-test covariate suite passes. The
+requester-pays registration now contains all nine expected references, but
+official-source header access and NC geographic QA remain pending, so this source
+block is not yet promoted. The repeated-visit likelihood, split, support rules,
+and optimizer remain frozen while this ecological predictor intervention is
+built. Full definitions and the backend-specific commands are maintained in
+the dedicated covariate ledger.
 
 ```text
 python scripts/data/ebird-covariates.py plan --config config/ebird_covariates/nc_2020_2023_v1.json
 
 python scripts/data/ebird-covariates.py catalog-nlcd --plan data/ebird/covariates/builds/nc_2020_2023_covariates_v1/build_plan.json
+
+python scripts/data/ebird-covariates.py register-nlcd-aws --catalog data/ebird/covariates/raw/annual_nlcd/C1V2/catalog.json --output data/ebird/covariates/raw/annual_nlcd/C1V2/sources.aws.json
+
+python scripts/data/ebird-covariates.py validate-nlcd-sources --sources data/ebird/covariates/raw/annual_nlcd/C1V2/sources.aws.json
+
+python scripts/data/ebird-covariates.py derive-nlcd --plan data/ebird/covariates/builds/nc_2020_2023_covariates_v1/build_plan.json --sources data/ebird/covariates/raw/annual_nlcd/C1V2/sources.aws.json --output-dir data/ebird/covariates/builds/nc_2020_2023_covariates_v1/sources/annual_nlcd
 ```
 
 ## Data Preparation
@@ -9768,13 +9781,18 @@ python exp/diagnose_ebird_latent_availability.py --latent-dir data/ebird/localit
    environmental-response errors improved while several species and extreme
    zero-detection cases worsened. Close this diagnostic step without changing
    the likelihood or adding species-specific history.
-48. Build the first versioned national covariate feature pipeline as a separate
-   NC pilot. Use `EPSG:5070`, preserve source/version/coverage metadata, and
+48. Started the first versioned national covariate feature pipeline as a
+   separate NC pilot. Use `EPSG:5070`, preserve source/version/coverage metadata, and
    derive point plus 250 m/1 km/5 km summaries. Stage sources in blocks:
    Annual NLCD/LANDFIRE, NWI/3DHP, 3DEP/Daymet, then C-CAP/CUSP coastal features.
    Keep roads, population, PAD-US/access, and observer geography in the
    observation-process channel by default. Do not overwrite the current
-   processed or locality-season datasets.
+   processed or locality-season datasets. As of 2026-07-20, planning, generic
+   tiled COG/VRT processing, Annual NLCD metadata/registration/validation, and
+   the 244-band Annual NLCD derivation are implemented; 11 synthetic/unit tests
+   pass. The production catalog resolved nine official archives totaling
+   10.2 GiB. Official raster header access and the real NC derivation/QA are the
+   next gate; no model rerun should begin before that gate passes.
 49. Rebuild a parallel enriched locality-season dataset and rerun the fixed
    portable and shared-history coastal tests without retuning the likelihood.
    Then run the already-supported high-elevation and low-observer-support
