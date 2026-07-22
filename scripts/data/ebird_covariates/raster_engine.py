@@ -118,8 +118,11 @@ def write_cog(
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = output_path.with_suffix(".tmp.tif")
+    temporary_overview = Path(f"{temporary}.ovr.tmp")
     if temporary.exists():
         temporary.unlink()
+    if temporary_overview.exists():
+        temporary_overview.unlink()
     with rasterio.open(
         temporary,
         "w",
@@ -140,6 +143,8 @@ def write_cog(
         destination.set_band_description(1, description)
         destination.update_tags(**tags)
     temporary.replace(output_path)
+    if temporary_overview.exists():
+        temporary_overview.unlink()
 
 
 def normalize_raster_to_tiles(

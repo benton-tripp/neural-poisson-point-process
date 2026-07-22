@@ -1513,10 +1513,21 @@ structure without visible seams. Post-rebuild checklist QA supports 661,978 of
 from 164 to one; the remaining seven events are marine or marine-likely
 traveling checklists plotted 3.49-6.66 km seaward. Annual NLCD is therefore
 promoted with explicit terrestrial missingness for those events. The
-repeated-visit likelihood, split,
-support rules, and optimizer remain frozen while this ecological predictor
+repeated-visit likelihood, split, support rules, and optimizer remain frozen
+while this ecological predictor
 intervention is built. Full definitions and exact commands are maintained in
 the dedicated covariate ledger.
+
+The LANDFIRE LF2023 bounded model-scale gate also now passes. Each release has
+a stable 46-band vegetation schema: nine portable EVT class fractions and
+dominant-lifeform-conditional tree/shrub/herb cover and height at 250 m, 1 km,
+and 5 km, plus modeled-source coverage. Interior and coastal pilots pass COG,
+grid, value-range, VRT-order, sparse-band, and EVT class-closure checks with a
+maximum fraction-sum error of `7.15e-07`. Coastal modeled support is 99.04%,
+97.81%, and 90.43% by increasing radius because neighborhoods reach official
+LANDFIRE `Fill-NoData` ocean cells. This is retained as support information,
+not imputed habitat. Annual disturbance and LF2016/LF2022 bounded checks are
+next; the frozen locality-season model is not yet refit.
 
 ```text
 python scripts/data/ebird-covariates.py plan --config config/ebird_covariates/nc_2020_2023_v1.json
@@ -9866,3 +9877,38 @@ python exp/diagnose_ebird_latent_availability.py --latent-dir data/ebird/localit
    This is a metadata/provenance gate only: resolve official release-specific
    class tables and a portable physiognomy/lifeform crosswalk before the
    bounded raster pilot. Keep the latent model frozen during this work.
+57. Completed the LANDFIRE class-semantics and bounded interior/coastal
+   raw-raster gates.
+   The official ImageServer raster-attribute-table endpoint yielded 3,627
+   release-specific rows across LF2016/LF2022/LF2023 EVT, EVC, and EVH. Build
+   model inputs from a validated nine-class EVT hierarchy
+   (`forest_tree`, `shrub`, `herbaceous`, `riparian`, `agriculture`,
+   `developed`, `sparse_barren`, `open_water`, and `snow_ice`) while
+   preserving every raw release/code/name field. Interpret EVC and EVH as
+   cover/height conditional on the mapped dominant lifeform, not simultaneous
+   vertical-stratum measurements. A 5 km-buffered LF2023 pilot on
+   `xp0014_yp0015` produced three `3668 x 3668` one-band 30 m rasters in
+   `EPSG:5070`, each with 100% source coverage and no values outside its exact
+   release lookup; total size is 78.86 MiB. The matching
+   `xp0017_yp0014` coastal pilot also passed with complete coverage and only
+   registered values for all three products. Across both pilots the six files
+   total 157.72 MiB. This shows that the earlier marine NLCD gaps are
+   source-specific rather than a common AOI/grid failure. Proceed to
+   model-scale 250 m/1 km/5 km derivation on both pilots. This enriches the
+   ecological availability covariates only; keep the accepted latent
+   occupancy-detection model and its observer/process assumptions frozen until
+   the covariate rebuild is complete.
+58. Completed the bounded LF2023 model-scale vegetation and QA gate. The
+   release schema contains 46 logical bands: 27 nine-class EVT fractions,
+   nine dominant-lifeform-conditional EVC cover bands, nine corresponding EVH
+   height bands, and one modeled-source coverage band. The interior tile
+   `xp0014_yp0015` writes 44 COGs and retains two all-NoData 5 km shrub bands
+   as empty logical inventories; the coastal tile `xp0017_yp0014` writes all
+   46 COGs. Both pass grid, range, VRT order, sparse-band, and class-closure QA
+   with maximum EVT fraction-sum error `7.15e-07`. Interior support is 100% at
+   all radii. Coastal support is 99.04%, 97.81%, and 90.43% at 250 m, 1 km,
+   and 5 km because the modeled-class mask excludes official `Fill-NoData`
+   ocean cells. Preserve that support decline rather than imputing vegetation.
+   The full covariate regression gate now passes all 35 tests. Proceed to
+   Dist20-Dist23 and bounded LF2016/LF2022 checks before statewide LANDFIRE
+   materialization; keep the accepted latent model frozen.

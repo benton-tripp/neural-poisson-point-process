@@ -25,6 +25,16 @@ from ebird_covariates.landfire_attributes import (
     extract_attribute_tables as extract_landfire_attribute_tables,
     write_attribute_summary as write_landfire_attribute_summary,
 )
+from ebird_covariates.landfire_crosswalk import (
+    build_crosswalks as build_landfire_crosswalks,
+)
+from ebird_covariates.landfire_derive import derive_landfire
+from ebird_covariates.landfire_export import export_landfire_tiles
+from ebird_covariates.landfire_qa import (
+    plot_landfire_tile_preview,
+    validate_landfire_derivation,
+    write_landfire_derivation_validation,
+)
 from ebird_covariates.planner import (
     build_plan,
     load_json,
@@ -414,6 +424,160 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Replace previously cataloged attribute-table files.",
     )
+
+    landfire_crosswalk_parser = subparsers.add_parser(
+        "build-landfire-crosswalks",
+        help="Build release-aware model lookups from LANDFIRE class tables.",
+    )
+    landfire_crosswalk_parser.add_argument(
+        "--attributes-summary",
+        required=True,
+        help="landfire_attribute_tables.json from catalog-landfire-attributes.",
+    )
+    landfire_crosswalk_parser.add_argument(
+        "--output-dir",
+        default="data/ebird/covariates/raw/landfire/crosswalks",
+        help="Output directory for crosswalk CSVs and their summary.",
+    )
+    landfire_crosswalk_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace previously generated crosswalk files.",
+    )
+
+    landfire_export_parser = subparsers.add_parser(
+        "export-landfire",
+        help="Export and validate bounded raw LANDFIRE ImageServer tiles.",
+    )
+    landfire_export_parser.add_argument(
+        "--plan",
+        required=True,
+        help="build_plan.json path.",
+    )
+    landfire_export_parser.add_argument(
+        "--catalog",
+        required=True,
+        help="LANDFIRE catalog JSON from catalog-landfire.",
+    )
+    landfire_export_parser.add_argument(
+        "--crosswalk-summary",
+        required=True,
+        help="landfire_crosswalk_summary.json path.",
+    )
+    landfire_export_parser.add_argument(
+        "--tile-ids",
+        nargs="+",
+        required=True,
+        help="One or more exact build-plan tile IDs.",
+    )
+    landfire_export_parser.add_argument(
+        "--layers",
+        nargs="+",
+        required=True,
+        help="One or more exact LANDFIRE layer names.",
+    )
+    landfire_export_parser.add_argument(
+        "--buffer-m",
+        type=float,
+        default=5000.0,
+        help="Source buffer around each plan tile in meters. Defaults to 5000.",
+    )
+    landfire_export_parser.add_argument(
+        "--output-dir",
+        required=True,
+        help="Output directory for raw TIFFs and export summary.",
+    )
+    landfire_export_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=300.0,
+        help="Per-export HTTP timeout in seconds. Defaults to 300.",
+    )
+    landfire_export_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace previously exported raw TIFFs.",
+    )
+
+    landfire_derive_parser = subparsers.add_parser(
+        "derive-landfire",
+        help="Derive model-scale LANDFIRE bands from one validated export group.",
+    )
+    landfire_derive_parser.add_argument(
+        "--plan",
+        required=True,
+        help="build_plan.json path.",
+    )
+    landfire_derive_parser.add_argument(
+        "--export-summary",
+        required=True,
+        help="landfire_export_summary.json for one tile and release.",
+    )
+    landfire_derive_parser.add_argument(
+        "--crosswalk-summary",
+        required=True,
+        help="landfire_crosswalk_summary.json path.",
+    )
+    landfire_derive_parser.add_argument(
+        "--output-dir",
+        required=True,
+        help="Output directory for derived COGs, inventories, VRT, and summary.",
+    )
+    landfire_derive_parser.add_argument(
+        "--neighborhoods-m",
+        type=int,
+        nargs="+",
+        help="Neighborhood radii in meters. Defaults to the build plan.",
+    )
+    landfire_derive_parser.add_argument(
+        "--minimum-coverage",
+        type=float,
+        default=0.8,
+        help="Minimum valid source-area fraction. Defaults to 0.8.",
+    )
+    landfire_derive_parser.add_argument(
+        "--minimum-lifeform-fraction",
+        type=float,
+        default=0.01,
+        help="Minimum named-lifeform fraction for conditional means. Defaults to 0.01.",
+    )
+    landfire_derive_parser.add_argument(
+        "--no-vrt",
+        action="store_true",
+        help="Do not assemble the derived logical VRT.",
+    )
+    landfire_derive_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace previously derived LANDFIRE COGs.",
+    )
+    landfire_validate_parser = subparsers.add_parser(
+        "validate-landfire-derived",
+        help="Validate derived LANDFIRE COGs, VRT, ranges, and class closure.",
+    )
+    landfire_validate_parser.add_argument(
+        "--plan",
+        required=True,
+        help="build_plan.json path.",
+    )
+    landfire_validate_parser.add_argument(
+        "--summary",
+        required=True,
+        help="landfire_derived_summary.json path from derive-landfire.",
+    )
+    landfire_validate_parser.add_argument(
+        "--output",
+        help="Validation JSON path. Defaults below the summary diagnostics dir.",
+    )
+    landfire_validate_parser.add_argument(
+        "--preview",
+        action="store_true",
+        help="Render a mapped four-panel QA preview for the derived tile.",
+    )
+    landfire_validate_parser.add_argument(
+        "--preview-output",
+        help="Preview PNG path. Defaults below the summary diagnostics dir.",
+    )
     return parser.parse_args()
 
 
@@ -788,6 +952,127 @@ def run_catalog_landfire_attributes(args: argparse.Namespace) -> None:
     print(f"Wrote attribute-table summary to {summary_path}")
 
 
+def run_build_landfire_crosswalks(args: argparse.Namespace) -> None:
+    attribute_summary = load_json_file(Path(args.attributes_summary))
+    summary = build_landfire_crosswalks(
+        attribute_summary,
+        Path(args.output_dir),
+        overwrite=args.overwrite,
+    )
+    print(
+        f"Built {summary['artifact_count']} LANDFIRE crosswalk artifacts "
+        f"for {len(summary['model_classes'])} portable EVT classes"
+    )
+    print(
+        "EVT release rows: "
+        + ", ".join(
+            f"{release}={rows:,}"
+            for release, rows in summary["evt_release_rows"].items()
+        )
+    )
+    print(
+        f"Numeric structural classes: EVC={summary['evc_numeric_rows']:,}, "
+        f"EVH={summary['evh_numeric_rows']:,}"
+    )
+    print(f"Wrote crosswalk summary to {summary['summary_path']}")
+
+
+def run_export_landfire(args: argparse.Namespace) -> None:
+    summary = export_landfire_tiles(
+        plan=load_plan(Path(args.plan)),
+        catalog=load_json_file(Path(args.catalog)),
+        crosswalk_summary=load_json_file(Path(args.crosswalk_summary)),
+        output_dir=Path(args.output_dir),
+        tile_ids=args.tile_ids,
+        layer_names=args.layers,
+        buffer_m=args.buffer_m,
+        timeout=args.timeout,
+        overwrite=args.overwrite,
+        progress=True,
+    )
+    for record in summary["exports"]:
+        print(
+            f"  {record['tile_id']} {record['layer_name']}: "
+            f"{record['width']}x{record['height']}, "
+            f"{record['unique_value_count']} values, "
+            f"{record['coverage_fraction']:.2%} coverage, "
+            f"{record['bytes'] / (1024**2):.1f} MiB"
+        )
+    print(
+        f"Exported {summary['export_count']} validated LANDFIRE rasters; "
+        f"all checks passed={summary['all_checks_passed']}"
+    )
+    print(f"Wrote export summary to {summary['summary_path']}")
+
+
+def run_derive_landfire(args: argparse.Namespace) -> None:
+    summary = derive_landfire(
+        plan=load_plan(Path(args.plan)),
+        export_summary=load_json_file(Path(args.export_summary)),
+        crosswalk_summary=load_json_file(Path(args.crosswalk_summary)),
+        output_dir=Path(args.output_dir),
+        neighborhoods_m=args.neighborhoods_m,
+        minimum_coverage=args.minimum_coverage,
+        minimum_lifeform_fraction=args.minimum_lifeform_fraction,
+        overwrite=args.overwrite,
+        write_vrt=not args.no_vrt,
+        progress=True,
+    )
+    print(
+        f"Derived LANDFIRE {summary['release']} {summary['tile_id']}: "
+        f"{summary['band_count']} bands, "
+        f"{summary['derived_cog_count']} COGs, "
+        f"{summary['derived_cog_bytes'] / (1024**2):.2f} MiB"
+    )
+    print(f"Wrote derivation summary to {summary['summary_path']}")
+
+
+def run_validate_landfire_derived(args: argparse.Namespace) -> None:
+    plan = load_plan(Path(args.plan))
+    summary_path = Path(args.summary)
+    summary = load_json_file(summary_path)
+    validation = validate_landfire_derivation(plan, summary)
+    diagnostics_dir = summary_path.parent / "diagnostics"
+    output_path = (
+        Path(args.output)
+        if args.output
+        else diagnostics_dir / "landfire_validation.json"
+    )
+    write_landfire_derivation_validation(validation, output_path)
+    maximum_error = validation["maximum_evt_fraction_sum_error"]
+    maximum_error_text = (
+        f"{maximum_error:.3g}" if maximum_error is not None else "not calculated"
+    )
+    print(
+        f"Validated derived LANDFIRE {validation['release']} "
+        f"{validation['tile_id']}: {validation['band_count']} bands, "
+        f"{validation['derived_cog_count']} COGs, "
+        f"{validation['empty_band_count']} empty logical bands; "
+        f"maximum EVT fraction-sum error={maximum_error_text}"
+    )
+    for check in validation["evt_fraction_sum_checks"]:
+        support = check["supported_aoi_fraction"]
+        support_text = f"{support:.2%}" if support is not None else "n/a"
+        print(f"  r{check['radius_m']}: AOI support={support_text}")
+    print(f"All checks passed: {validation['all_checks_passed']}")
+    print(f"Wrote derivation validation to {output_path}")
+    if args.preview:
+        preview_path = (
+            Path(args.preview_output)
+            if args.preview_output
+            else diagnostics_dir
+            / f"{validation['tile_id']}_landfire_preview.png"
+        )
+        plot_landfire_tile_preview(plan, summary, preview_path)
+        print(f"Wrote LANDFIRE preview to {preview_path}")
+    if not validation["all_checks_passed"]:
+        issue_summary = "; ".join(validation["issues"][:5])
+        raise RuntimeError(
+            f"Derived LANDFIRE validation failed with "
+            f"{len(validation['issues'])} issue(s): {issue_summary}"
+        )
+
+
 def main() -> None:
     args = parse_args()
     if args.command == "plan":
@@ -825,6 +1110,18 @@ def main() -> None:
         return
     if args.command == "catalog-landfire-attributes":
         run_catalog_landfire_attributes(args)
+        return
+    if args.command == "build-landfire-crosswalks":
+        run_build_landfire_crosswalks(args)
+        return
+    if args.command == "export-landfire":
+        run_export_landfire(args)
+        return
+    if args.command == "derive-landfire":
+        run_derive_landfire(args)
+        return
+    if args.command == "validate-landfire-derived":
+        run_validate_landfire_derived(args)
         return
     raise ValueError(f"Unsupported command: {args.command}")
 

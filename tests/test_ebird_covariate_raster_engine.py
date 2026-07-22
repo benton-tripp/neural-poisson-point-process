@@ -20,11 +20,30 @@ sys.path.insert(0, str(PROJECT_ROOT / "scripts" / "data"))
 from ebird_covariates.planner import plan_tiles  # noqa: E402
 from ebird_covariates.raster_engine import (  # noqa: E402
     normalize_raster_to_tiles,
+    write_cog,
     write_logical_vrt,
 )
 
 
 class RasterEngineTests(unittest.TestCase):
+    def test_cog_writer_removes_gdal_temporary_overview(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output_path = Path(temporary_directory) / "large.tif"
+            write_cog(
+                output_path=output_path,
+                values=np.ones((400, 400), dtype=np.float32),
+                transform=from_origin(0.0, 100000.0, 250.0, 250.0),
+                crs="EPSG:5070",
+                nodata=-9999.0,
+                description="test",
+                tags={"source": "synthetic"},
+                overview_resampling="average",
+            )
+            self.assertTrue(output_path.exists())
+            self.assertFalse(
+                Path(f"{output_path.with_suffix('.tmp.tif')}.ovr.tmp").exists()
+            )
+
     def test_cog_tiles_assemble_without_seam_changes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

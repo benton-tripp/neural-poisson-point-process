@@ -5,8 +5,10 @@
 - Started: 2026-07-17
 - Current phase: Phase 3 in progress; Annual NLCD is promoted after its
   corrected `all_touched` full build passed code, numerical, mapped, and
-  statewide checklist-support gates. The release-aware LANDFIRE catalog is
-  implemented and validated; its class crosswalk and bounded raster pilot are next
+  statewide checklist-support gates. LANDFIRE cataloging, release-specific
+  class tables, portable crosswalks, and bounded interior/coastal raw and
+  model-scale LF2023 pilots are validated; annual disturbance and multi-release
+  state scaling are next
 - Initial study area: North Carolina
 - Intended extent: conterminous United States (CONUS)
 - Primary consumer: locality-season availability/detection models
@@ -454,7 +456,7 @@ core.
 | 0 | Architecture, output contract, source inventory, and ledger | Complete |
 | 1 | Source registry, build configuration, fixed-grid planner, and manifest schema | Complete |
 | 2 | Windowed/tiled reprojection and VRT/COG assembly | Complete |
-| 3 | Annual NLCD and LANDFIRE adapters/derivations | In progress: Annual NLCD promoted for NC; LANDFIRE catalog validated, derivation remains |
+| 3 | Annual NLCD and LANDFIRE adapters/derivations | In progress: Annual NLCD promoted for NC; LANDFIRE metadata, crosswalk, raw export, model-scale derivation, and QA pass on bounded interior/coastal LF2023 pilots; annual disturbance and state scaling remain |
 | 4 | 3DEP terrain and 3DHP/NHDPlus hydrography | Pending |
 | 5 | NWI, C-CAP, CUSP, and coastal topology | Pending |
 | 6 | Daymet monthly/seasonal/normals/anomalies | Pending |
@@ -1137,8 +1139,13 @@ NC enriched-covariate build.
 Replace `sources.aws.json` with `sources.local.json` for local inputs. Do not
 normally add `--overwrite`; valid tiles can then be reused after interruption.
 The one required overwrite above is scoped to the AOI mask-contract migration.
-The posted requester-pays charge remains to be recorded when Cost Explorer
-finishes allocating it.
+Cost Explorer subsequently posted same-day request charges of approximately
+`$0.0011744` for the full-build day (`$0.0011496` internal Tier 2 plus
+`$0.0000248` Tier 2), with no data-transfer-out charge. The daily total was
+`$0.0012768` after unrelated timed-storage cost. This is account/day-level
+billing evidence rather than an instrumented per-command invoice, but it
+confirms that requester-pays source reads were operationally negligible for
+the NC build.
 
 ## Phase 3 LANDFIRE Catalog Checkpoint: 2026-07-22
 
@@ -1194,9 +1201,156 @@ The live LFPS inventory contained 136 records. All 13 selected services are
 one-band, 30 m thematic rasters in `EPSG:5070` with nearest-neighbor default
 resampling. Annual disturbance services live under the separate official
 `Landfire_Disturbance` folder; the adapter resolves that distinction
-explicitly. The next gate is a release-specific attribute-table/crosswalk
-contract, followed by one bounded interior/coastal raster pilot. Do not derive
-fractions from display colors or bilinearly resample categorical source codes.
+explicitly. Do not derive fractions from display colors or bilinearly resample
+categorical source codes.
+
+## Phase 3 LANDFIRE Attribute and Raster Checkpoint: 2026-07-22
+
+Release-specific EVT, EVC, and EVH class tables are now acquired from the
+official ImageServer `rasterAttributeTable` resource using each service's
+named raster function. This is preferable to reading VAT members from the
+multi-gigabyte full-extent ZIPs: the archive host accepts suffix ranges but
+returns HTTP 500 for absolute byte offsets above 2 GiB. The structured service
+returns the exact class fields directly and transfers only about 1.5 MiB for
+all nine tables.
+
+The accepted table inventory is:
+
+- EVT: 857 rows for LF2016 and 831 rows each for LF2022 and LF2023
+- EVC: 264, 266, and 266 rows
+- EVH: 103, 104, and 105 rows
+- total: 3,627 rows across nine raw JSON and normalized CSV artifacts
+
+The portable EVT hierarchy has nine classes: `forest_tree`, `shrub`,
+`herbaceous`, `riparian`, `agriculture`, `developed`,
+`sparse_barren`, `open_water`, and `snow_ice`. It is derived from the
+official `EVT_PHYS` field. The only disambiguation uses `EVT_LF` to split
+`Exotic Tree-Shrub` rows into tree or shrub. Raw release, value, name,
+lifeform, physiognomy, and other official fields remain in the crosswalk.
+Unknown future categories fail validation instead of being assigned by
+keyword fallback.
+
+EVC and EVH require a narrower interpretation. LANDFIRE describes each as a
+single composite raster produced from lifeform-specific layers. Therefore the
+lookups record cover or height conditional on the mapped dominant lifeform;
+they do not claim simultaneous tree, shrub, and herb strata at a pixel. The
+crosswalk contains 731 numeric EVC rows and 247 numeric EVH rows, retains
+special developed/agricultural/water classes separately, and marks lower-bound
+classes such as `Herb Cover >= 99%`.
+
+Exact commands:
+
+```bat
+env\Scripts\python.exe scripts/data/ebird-covariates.py catalog-landfire-attributes ^
+  --catalog data/ebird/covariates/raw/landfire/catalog.json
+
+env\Scripts\python.exe scripts/data/ebird-covariates.py build-landfire-crosswalks ^
+  --attributes-summary data/ebird/covariates/raw/landfire/attributes/landfire_attribute_tables.json
+
+env\Scripts\python.exe scripts/data/ebird-covariates.py export-landfire ^
+  --plan data/ebird/covariates/builds/nc_2020_2023_covariates_v1/build_plan.json ^
+  --catalog data/ebird/covariates/raw/landfire/catalog.json ^
+  --crosswalk-summary data/ebird/covariates/raw/landfire/crosswalks/landfire_crosswalk_summary.json ^
+  --tile-ids xp0014_yp0015 ^
+  --layers LF2023_EVT LF2023_EVC LF2023_EVH ^
+  --buffer-m 5000 ^
+  --output-dir data/ebird/covariates/builds/nc_2020_2023_covariates_v1/sources/landfire/raw
+```
+
+Accepted bounded-pilot output:
+
+```text
+LANDFIRE export tile 1/1: xp0014_yp0015
+  xp0014_yp0015 LF2023_EVT: 3668x3668, 74 values, 100.00% coverage, 26.3 MiB
+  xp0014_yp0015 LF2023_EVC: 3668x3668, 229 values, 100.00% coverage, 26.3 MiB
+  xp0014_yp0015 LF2023_EVH: 3668x3668, 82 values, 100.00% coverage, 26.3 MiB
+Exported 3 validated LANDFIRE rasters; all checks passed=True
+```
+
+The adapter snaps the requested tile plus 5 km halo to the native LANDFIRE
+grid, requests nearest-neighbor one-band TIFFs in `EPSG:5070`, and checks
+dimensions, transform, bounds, source coverage, and every observed class code
+against the exact release lookup. The three interior-pilot files total
+78.86 MiB. The same command then passed for coastal tile
+`xp0017_yp0014`: EVT, EVC, and EVH again measured `3668 x 3668`, had
+100% source coverage, and contained 55, 209, and 82 registered values
+respectively. The two pilots comprise six files and 157.72 MiB. LANDFIRE
+therefore covers this ocean-adjacent test cleanly; the remaining Annual NLCD
+marine gaps are source-specific rather than evidence of a shared grid or AOI
+failure. The next gate is deriving the nine EVT fractions and conditional
+EVC/EVH lifeform summaries at 250 m, 1 km, and 5 km on both pilots.
+
+## Phase 3 LANDFIRE Model-Scale Derivation Checkpoint: 2026-07-22
+
+The LF2023 model-scale vegetation derivation and reusable QA command are now
+implemented. Each release has a fixed 46-band logical schema:
+
+- 27 EVT bands: nine portable class fractions at 250 m, 1 km, and 5 km
+- nine EVC bands: conditional dominant-tree, shrub, and herb cover means at
+  the three radii
+- nine EVH bands: conditional dominant-tree, shrub, and herb height means at
+  the three radii
+- one 250 m modeled-source coverage band
+
+Conditional EVC/EVH values require at least 80% total modeled source coverage
+and at least 1% support from the named lifeform. Other lifeforms are excluded
+from the denominator rather than assigned structural zeroes. A band that is
+all NoData on one tile remains in the inventory and VRT schema but does not
+produce an unnecessary physical COG. This sparse-tile rule is required for a
+stable CONUS schema.
+
+Exact accepted commands for the interior pilot were:
+
+```bat
+env\Scripts\python.exe scripts/data/ebird-covariates.py derive-landfire ^
+  --plan data/ebird/covariates/builds/nc_2020_2023_covariates_v1/build_plan.json ^
+  --export-summary data/ebird/covariates/builds/nc_2020_2023_covariates_v1/sources/landfire/raw/landfire_export_summary.json ^
+  --crosswalk-summary data/ebird/covariates/raw/landfire/crosswalks/landfire_crosswalk_summary.json ^
+  --output-dir data/ebird/covariates/builds/nc_2020_2023_covariates_v1/sources/landfire/derived_interior
+
+env\Scripts\python.exe scripts/data/ebird-covariates.py validate-landfire-derived ^
+  --plan data/ebird/covariates/builds/nc_2020_2023_covariates_v1/build_plan.json ^
+  --summary data/ebird/covariates/builds/nc_2020_2023_covariates_v1/sources/landfire/derived_interior/landfire_derived_summary.json ^
+  --preview
+```
+
+```text
+Derived LANDFIRE LF2023 xp0014_yp0015: 46 bands, 44 COGs, 23.23 MiB
+Validated derived LANDFIRE LF2023 xp0014_yp0015: 46 bands, 44 COGs,
+  2 empty logical bands; maximum EVT fraction-sum error=7.15e-07
+  r250: AOI support=100.00%
+  r1000: AOI support=100.00%
+  r5000: AOI support=100.00%
+All checks passed: True
+```
+
+The two empty interior bands are the 5 km conditional shrub-cover and
+shrub-height bands. Shrub support does not reach the 1% threshold anywhere in
+that tile at 5 km, so physical all-NoData files would add no information.
+
+The corresponding coastal derivation used the export summary below
+`sources/landfire/raw_coastal` and wrote to
+`sources/landfire/derived_coastal`:
+
+```text
+Derived LANDFIRE LF2023 xp0017_yp0014: 46 bands, 46 COGs, 6.50 MiB
+Validated derived LANDFIRE LF2023 xp0017_yp0014: 46 bands, 46 COGs,
+  0 empty logical bands; maximum EVT fraction-sum error=7.15e-07
+  r250: AOI support=99.04%
+  r1000: AOI support=97.81%
+  r5000: AOI support=90.43%
+All checks passed: True
+```
+
+The raw coastal TIFFs have complete raster-mask coverage, while model support
+excludes the official `Fill-NoData` EVT class. The radius-dependent decline is
+therefore expected modeled-class truncation where coastal neighborhoods extend
+over source NoData ocean, not a seam, reprojection, or AOI-placement error.
+Both previews and all automated grid, COG, range, VRT-order, sparse-band, and
+class-closure checks passed. The combined planner, raster-engine, Annual NLCD,
+and LANDFIRE regression suite passes all 35 tests. The next LANDFIRE gate is
+the annual Dist20-Dist23 derivation, followed by bounded LF2016/LF2022 release
+checks before a full NC materialization.
 
 ## Decision Log
 
@@ -1319,30 +1473,53 @@ fractions from display colors or bilinearly resample categorical source codes.
 - Require release-specific class semantics before derivation. Use nearest
   neighbor for categorical source reads, then derive model-grid fractions;
   never bilinearly interpolate EVT/EVC/EVH codes.
+- Use each official ImageServer's named `rasterAttributeTable` response for
+  release-specific class semantics. Do not depend on byte-range access to
+  full-extent ZIPs whose server fails at absolute offsets above 2 GiB.
+- Use a nine-class portable EVT hierarchy based on `EVT_PHYS`, preserving all
+  official raw fields. Use `EVT_LF` only to disambiguate
+  `Exotic Tree-Shrub`; fail on unmapped future categories.
+- Treat EVC and EVH values as cover and height conditional on the mapped
+  dominant lifeform. Do not present the composite products as simultaneous
+  tree, shrub, and herb measurements.
+- Accept the first bounded raw-raster gate on `xp0014_yp0015`: LF2023 EVT,
+  EVC, and EVH are each one-band 30 m rasters in `EPSG:5070`, have complete
+  source coverage, contain only release-registered values, and total
+  78.86 MiB.
+- Accept the matching coastal raw-raster gate on `xp0017_yp0014`: all three
+  products again have complete source coverage and release-registered values.
+  Treat the contrast with the seven Annual NLCD marine gaps as a
+  source-support difference, not a grid-placement failure.
+- Preserve a release's complete logical schema even when a tile-level band is
+  all NoData; omit the empty COG but retain an empty inventory and VRT band.
+- Accept the bounded LF2023 model-scale vegetation gate. Interior and coastal
+  pilots retain 46 logical bands, pass range/grid/VRT and EVT class-closure QA,
+  and have maximum fraction-sum error `7.15e-07`. Coastal support declines
+  from 99.04% at 250 m to 90.43% at 5 km because modeled neighborhoods reach
+  official `Fill-NoData` ocean cells; preserve this as explicit support.
+- Proceed to annual disturbance and LF2016/LF2022 bounded gates before any
+  full-state LANDFIRE materialization or model refit.
 
 ## Open Questions
 
 1. Whether Ocracoke or a later narrow-island transfer test exposes a specific
    need for a targeted 100 m coastal sensitivity; the current coastal pilot
    does not.
-2. What requester-pays charge is posted for the completed 27-tile NC run; the
-   source reads and runtime are already operationally acceptable.
-3. Which release-specific LANDFIRE EVT attribute fields should define the
-   portable hierarchy. Prefer an official physiognomy/lifeform crosswalk for
-   model inputs while preserving raw EVT codes and names for provenance and
-   optional sensitivity work.
-4. How to crosswalk 3DHP and legacy NHDPlus HR attributes into one schema.
-5. Which NWI Cowardin hierarchy best balances ecological meaning and sparsity.
-6. Whether the NC materialized output should include all monthly climate bands
+2. Whether the conditional dominant-lifeform EVC/EVH summaries add enough
+   independent structural information beyond EVT and Annual NLCD to remain in
+   the core materialization profile.
+3. How to crosswalk 3DHP and legacy NHDPlus HR attributes into one schema.
+4. Which NWI Cowardin hierarchy best balances ecological meaning and sparsity.
+5. Whether the NC materialized output should include all monthly climate bands
    or whether they should remain in the logical VRT and date-aware extractor.
-7. Which second region provides the strongest portability test without
+6. Which second region provides the strongest portability test without
    requiring a full CONUS eBird build.
 
 ## Next Ledger Update
 
 The next update should record:
 
-- the posted AWS charge for the completed 27-tile run
-- the release-specific LANDFIRE attribute-table hashes and crosswalk
-- the exact bounded LANDFIRE raster-pilot command and validation result
+- the exact annual LANDFIRE disturbance derivation and validation result
+- bounded LF2016 and LF2022 vegetation release results
+- the decision and command for full-NC LANDFIRE materialization
 - named materialization profiles and exact inclusion rules
