@@ -16,6 +16,15 @@ import argparse
 import json
 from pathlib import Path
 
+from ebird_covariates.landfire import (
+    SUPPORTED_PRODUCTS as LANDFIRE_PRODUCTS,
+    resolve_catalog as resolve_landfire_catalog,
+    write_catalog as write_landfire_catalog,
+)
+from ebird_covariates.landfire_attributes import (
+    extract_attribute_tables as extract_landfire_attribute_tables,
+    write_attribute_summary as write_landfire_attribute_summary,
+)
 from ebird_covariates.planner import (
     build_plan,
     load_json,
@@ -34,6 +43,13 @@ from ebird_covariates.nlcd import (
     write_source_validation as write_nlcd_source_validation,
 )
 from ebird_covariates.nlcd_derive import derive_nlcd
+from ebird_covariates.nlcd_qa import (
+    plot_nlcd_tile_preview,
+    validate_nlcd_checklist_support,
+    validate_nlcd_derivation,
+    write_nlcd_checklist_support,
+    write_nlcd_derivation_validation,
+)
 from ebird_covariates.raster_engine import (
     RESAMPLING_METHODS,
     load_band_inventory,
@@ -265,6 +281,139 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Overwrite existing derived COG tiles.",
     )
+
+    nlcd_derived_validate_parser = subparsers.add_parser(
+        "validate-nlcd-derived",
+        help="Validate derived Annual NLCD COGs and optionally render tile previews.",
+    )
+    nlcd_derived_validate_parser.add_argument(
+        "--plan",
+        required=True,
+        help="build_plan.json path.",
+    )
+    nlcd_derived_validate_parser.add_argument(
+        "--summary",
+        required=True,
+        help="annual_nlcd_summary.json path from derive-nlcd.",
+    )
+    nlcd_derived_validate_parser.add_argument(
+        "--output",
+        help=(
+            "Validation JSON path. Defaults to "
+            "<summary-dir>/diagnostics/annual_nlcd_validation.json."
+        ),
+    )
+    nlcd_derived_validate_parser.add_argument(
+        "--preview-tile-ids",
+        nargs="+",
+        help="Optional derived tile IDs for mapped QA previews.",
+    )
+    nlcd_derived_validate_parser.add_argument(
+        "--preview-dir",
+        help="Preview output directory. Defaults below the summary diagnostics dir.",
+    )
+
+    nlcd_checklist_parser = subparsers.add_parser(
+        "validate-nlcd-checklist-support",
+        help="Measure derived Annual NLCD support at processed checklist locations.",
+    )
+    nlcd_checklist_parser.add_argument(
+        "--summary",
+        required=True,
+        help="annual_nlcd_summary.json path from derive-nlcd.",
+    )
+    nlcd_checklist_parser.add_argument(
+        "--checklists",
+        required=True,
+        help="Processed checklist GeoParquet path.",
+    )
+    nlcd_checklist_parser.add_argument(
+        "--output",
+        help=(
+            "Validation JSON path. Defaults to "
+            "<summary-dir>/diagnostics/annual_nlcd_checklist_support.json."
+        ),
+    )
+    nlcd_checklist_parser.add_argument(
+        "--unsupported-output",
+        help=(
+            "Unsupported-checklist CSV path. Defaults to "
+            "<summary-dir>/diagnostics/annual_nlcd_unsupported_checklists.csv."
+        ),
+    )
+
+    landfire_parser = subparsers.add_parser(
+        "catalog-landfire",
+        help="Resolve release-pinned LANDFIRE layers and validate public ImageServers.",
+    )
+    landfire_parser.add_argument(
+        "--plan",
+        required=True,
+        help="Build plan containing the LANDFIRE temporal/release policy.",
+    )
+    landfire_parser.add_argument(
+        "--vegetation-releases",
+        nargs="+",
+        help="Optional LFYYYY releases overriding the build plan.",
+    )
+    landfire_parser.add_argument(
+        "--products",
+        nargs="+",
+        choices=sorted(LANDFIRE_PRODUCTS),
+        help="Optional product acronyms overriding the build plan.",
+    )
+    landfire_parser.add_argument(
+        "--output",
+        default="data/ebird/covariates/raw/landfire/catalog.json",
+        help="Output catalog JSON path.",
+    )
+    landfire_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=60.0,
+        help="LFPS metadata request timeout in seconds. Defaults to 60.",
+    )
+    landfire_parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=6,
+        help="Concurrent ImageServer metadata requests. Defaults to 6.",
+    )
+
+    landfire_attributes_parser = subparsers.add_parser(
+        "catalog-landfire-attributes",
+        help="Catalog release-specific class tables from official ImageServers.",
+    )
+    landfire_attributes_parser.add_argument(
+        "--catalog",
+        required=True,
+        help="LANDFIRE catalog JSON from catalog-landfire.",
+    )
+    landfire_attributes_parser.add_argument(
+        "--layers",
+        nargs="+",
+        help="Optional exact layer names, for example LF2023_EVT.",
+    )
+    landfire_attributes_parser.add_argument(
+        "--output-dir",
+        default="data/ebird/covariates/raw/landfire/attributes",
+        help="Output directory for raw JSON, normalized CSV, and summary files.",
+    )
+    landfire_attributes_parser.add_argument(
+        "--summary-output",
+        help="Summary JSON path. Defaults below --output-dir.",
+    )
+    landfire_attributes_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=120.0,
+        help="HTTP request timeout in seconds. Defaults to 120.",
+    )
+    landfire_attributes_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace previously cataloged attribute-table files.",
+    )
     return parser.parse_args()
 
 
@@ -450,9 +599,193 @@ def run_derive_nlcd(args: argparse.Namespace) -> None:
         f"Derived Annual NLCD {summary['release']}: "
         f"{summary['band_count']} bands across {summary['tile_count']} plan tiles"
     )
+    print(
+        f"COG payload: {summary['derived_cog_count']:,} files, "
+        f"{summary['derived_cog_mib']:.2f} MiB"
+    )
+    print(f"Elapsed time: {summary['elapsed_seconds']:.1f} seconds")
     if summary["logical_vrt"]:
         print(f"Wrote logical raster to {summary['logical_vrt']}")
     print(f"Wrote derivation summary to {output_dir / 'annual_nlcd_summary.json'}")
+
+
+def run_validate_nlcd_derived(args: argparse.Namespace) -> None:
+    plan = load_plan(Path(args.plan))
+    summary_path = Path(args.summary)
+    summary = load_json_file(summary_path)
+    validation = validate_nlcd_derivation(plan, summary)
+    diagnostics_dir = summary_path.parent / "diagnostics"
+    output_path = (
+        Path(args.output)
+        if args.output
+        else diagnostics_dir / "annual_nlcd_validation.json"
+    )
+    write_nlcd_derivation_validation(validation, output_path)
+    maximum_error = validation["maximum_class_fraction_sum_error"]
+    maximum_error_text = (
+        f"{maximum_error:.3g}" if maximum_error is not None else "not calculated"
+    )
+    print(
+        f"Validated derived Annual NLCD: {validation['band_count']} bands, "
+        f"{validation['derived_cog_count']} COGs; "
+        f"maximum class-fraction sum error={maximum_error_text}"
+    )
+    print(f"All checks passed: {validation['all_checks_passed']}")
+    support_by_tile: dict[str, dict[int, float]] = {}
+    for check in validation["class_fraction_sum_checks"]:
+        tile_support = support_by_tile.setdefault(check["tile_id"], {})
+        radius = int(check["radius_m"])
+        tile_support[radius] = min(
+            tile_support.get(radius, 1.0),
+            float(check["supported_aoi_fraction"]),
+        )
+    for tile_id, support_by_radius in support_by_tile.items():
+        formatted = ", ".join(
+            f"r{radius}={fraction:.2%}"
+            for radius, fraction in sorted(support_by_radius.items())
+        )
+        print(f"Minimum AOI support {tile_id}: {formatted}")
+    print(f"Wrote derivation validation to {output_path}")
+
+    if args.preview_tile_ids:
+        preview_dir = (
+            Path(args.preview_dir)
+            if args.preview_dir
+            else diagnostics_dir / "previews"
+        )
+        for tile_id in args.preview_tile_ids:
+            preview_path = preview_dir / f"{tile_id}_annual_nlcd_preview.png"
+            plot_nlcd_tile_preview(plan, summary, tile_id, preview_path)
+            print(f"Wrote Annual NLCD preview to {preview_path}")
+
+    if not validation["all_checks_passed"]:
+        issue_summary = "; ".join(validation["issues"][:5])
+        raise RuntimeError(
+            f"Derived Annual NLCD validation failed with "
+            f"{len(validation['issues'])} issue(s): {issue_summary}"
+        )
+
+
+def run_validate_nlcd_checklist_support(args: argparse.Namespace) -> None:
+    summary_path = Path(args.summary)
+    summary = load_json_file(summary_path)
+    diagnostics_dir = summary_path.parent / "diagnostics"
+    output_path = (
+        Path(args.output)
+        if args.output
+        else diagnostics_dir / "annual_nlcd_checklist_support.json"
+    )
+    unsupported_output_path = (
+        Path(args.unsupported_output)
+        if args.unsupported_output
+        else diagnostics_dir / "annual_nlcd_unsupported_checklists.csv"
+    )
+    validation, unsupported = validate_nlcd_checklist_support(
+        summary,
+        Path(args.checklists),
+    )
+    write_nlcd_checklist_support(
+        validation,
+        unsupported,
+        output_path,
+        unsupported_output_path,
+    )
+    print(
+        f"Annual NLCD checklist support: "
+        f"{validation['eligible_checklist_count']:,}/"
+        f"{validation['checklist_count']:,} checklists eligible"
+    )
+    for record in validation["support_by_radius"]:
+        fraction = record["supported_fraction"]
+        fraction_text = f"{fraction:.4%}" if fraction is not None else "n/a"
+        print(
+            f"  r{record['radius_m']}: "
+            f"{record['supported_checklists']:,}/"
+            f"{record['eligible_checklists']:,} supported ({fraction_text}); "
+            f"{record['unsupported_checklists']:,} unsupported"
+        )
+    print(f"Wrote checklist-support validation to {output_path}")
+    print(f"Wrote unsupported checklist details to {unsupported_output_path}")
+
+
+def run_catalog_landfire(args: argparse.Namespace) -> None:
+    plan = load_plan(Path(args.plan))
+    landfire_sources = [
+        source for source in plan["sources"] if source["id"] == "landfire"
+    ]
+    if len(landfire_sources) != 1:
+        raise ValueError("The build plan must contain exactly one landfire source.")
+    overrides = landfire_sources[0].get("config_overrides", {})
+    years = list(range(plan["temporal"]["start_year"], plan["temporal"]["end_year"] + 1))
+    releases = args.vegetation_releases or overrides.get("releases")
+    products = args.products or overrides.get("products")
+    release_by_year = overrides.get("release_by_year")
+    if args.vegetation_releases:
+        release_by_year = None
+    disturbance_years = overrides.get("disturbance_years", years)
+
+    catalog = resolve_landfire_catalog(
+        observation_years=years,
+        vegetation_releases=releases,
+        release_by_year=release_by_year,
+        disturbance_years=disturbance_years,
+        products=products,
+        timeout=args.timeout,
+        max_workers=args.max_workers,
+    )
+    output_path = Path(args.output)
+    write_landfire_catalog(catalog, output_path)
+    vegetation_count = sum(
+        layer["role"] == "vegetation_release" for layer in catalog["layers"]
+    )
+    disturbance_count = sum(
+        layer["role"] == "annual_disturbance" for layer in catalog["layers"]
+    )
+    mapping = ", ".join(
+        f"{year}->{release}"
+        for year, release in catalog["vegetation_release_by_year"].items()
+    )
+    print(
+        f"Resolved LANDFIRE: {catalog['layer_count']} official layers "
+        f"({vegetation_count} vegetation, {disturbance_count} disturbance)"
+    )
+    print(f"Vegetation release mapping: {mapping}")
+    print(
+        f"Validated public ImageServers: EPSG:{catalog['layers'][0]['wkid']} at "
+        f"{catalog['layers'][0]['pixel_size_m'][0]:g} m; "
+        f"all passed={catalog['all_services_validated']}"
+    )
+    print(f"Acquisition status: {catalog['acquisition_status']}")
+    print(f"Wrote catalog to {output_path}")
+
+
+def run_catalog_landfire_attributes(args: argparse.Namespace) -> None:
+    catalog = load_json_file(Path(args.catalog))
+    output_dir = Path(args.output_dir)
+    summary = extract_landfire_attribute_tables(
+        catalog=catalog,
+        output_dir=output_dir,
+        layer_names=args.layers,
+        timeout=args.timeout,
+        overwrite=args.overwrite,
+    )
+    summary_path = (
+        Path(args.summary_output)
+        if args.summary_output
+        else output_dir / "landfire_attribute_tables.json"
+    )
+    write_landfire_attribute_summary(summary, summary_path)
+    for record in summary["tables"]:
+        print(
+            f"  {record['layer_name']}: {record['row_count']:,} rows, "
+            f"{record['field_count']} fields, "
+            f"{record['raw_json_bytes']:,} response bytes"
+        )
+    print(
+        f"Cataloged {summary['table_count']} LANDFIRE attribute tables "
+        f"({summary['total_rows']:,} rows total)"
+    )
+    print(f"Wrote attribute-table summary to {summary_path}")
 
 
 def main() -> None:
@@ -480,6 +813,18 @@ def main() -> None:
         return
     if args.command == "derive-nlcd":
         run_derive_nlcd(args)
+        return
+    if args.command == "validate-nlcd-derived":
+        run_validate_nlcd_derived(args)
+        return
+    if args.command == "validate-nlcd-checklist-support":
+        run_validate_nlcd_checklist_support(args)
+        return
+    if args.command == "catalog-landfire":
+        run_catalog_landfire(args)
+        return
+    if args.command == "catalog-landfire-attributes":
+        run_catalog_landfire_attributes(args)
         return
     raise ValueError(f"Unsupported command: {args.command}")
 

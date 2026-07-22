@@ -39,6 +39,8 @@ VRT_DTYPES = {
     "float64": "Float64",
 }
 
+AOI_MASK_RULES = {"center", "all_touched"}
+
 
 def safe_band_slug(value: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("_.")
@@ -69,7 +71,19 @@ def load_plan(path: Path) -> dict[str, Any]:
     missing = sorted(required - set(grid))
     if missing:
         raise ValueError(f"Build plan grid is missing: {', '.join(missing)}")
+    aoi_mask_rule = grid.get("aoi_mask_rule", "center")
+    if aoi_mask_rule not in AOI_MASK_RULES:
+        raise ValueError(
+            "Build plan grid aoi_mask_rule must be 'center' or 'all_touched'."
+        )
     return plan
+
+
+def aoi_mask_all_touched(plan: dict[str, Any]) -> bool:
+    rule = plan.get("grid", {}).get("aoi_mask_rule", "center")
+    if rule not in AOI_MASK_RULES:
+        raise ValueError("AOI mask rule must be 'center' or 'all_touched'.")
+    return rule == "all_touched"
 
 
 def load_plan_aoi(plan: dict[str, Any]) -> Any:
@@ -154,6 +168,9 @@ def normalize_raster_to_tiles(
     nodata = -9999.0
     slug = safe_band_slug(band_id)
     aoi_geometry = load_plan_aoi(plan) if mask_outside_aoi else None
+    aoi_mask_rule = (
+        "all_touched" if aoi_mask_all_touched(plan) else "center"
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
 
     tile_outputs: list[dict[str, Any]] = []
@@ -169,6 +186,16 @@ def normalize_raster_to_tiles(
             output_path = output_dir / f"{slug}__{tile['tile_id']}.tif"
             if output_path.exists() and not overwrite:
                 with rasterio.open(output_path) as existing:
+                    if mask_outside_aoi:
+                        existing_mask_rule = existing.tags().get(
+                            "aoi_mask_rule", "center"
+                        )
+                        if existing_mask_rule != aoi_mask_rule:
+                            raise ValueError(
+                                f"Existing tile {output_path} uses AOI mask rule "
+                                f"{existing_mask_rule!r}, but the build plan requires "
+                                f"{aoi_mask_rule!r}. Rerun with --overwrite."
+                            )
                     valid = existing.read_masks(1) > 0
                     valid_cells = int(valid.sum())
                 tile_outputs.append(
@@ -204,7 +231,7 @@ def normalize_raster_to_tiles(
                     out_shape=values.shape,
                     transform=transform,
                     invert=True,
-                    all_touched=False,
+                    all_touched=aoi_mask_all_touched(plan),
                 )
                 values[~inside] = nodata
             valid = np.isfinite(values) & (values != nodata)
@@ -226,6 +253,7 @@ def normalize_raster_to_tiles(
                     "resampling": resampling,
                     "tile_id": tile["tile_id"],
                     "grid_build_id": plan["build_id"],
+                    "aoi_mask_rule": aoi_mask_rule if mask_outside_aoi else "none",
                 },
                 overview_resampling="nearest" if resampling in {"nearest", "mode"} else "average",
             )
@@ -250,6 +278,7 @@ def normalize_raster_to_tiles(
         "source_path": str(source_path.resolve()),
         "source_band": source_band,
         "resampling": resampling,
+        "aoi_mask_rule": aoi_mask_rule if mask_outside_aoi else "none",
         "tile_count": len(tile_outputs),
         "valid_cells": sum(tile["valid_cells"] for tile in tile_outputs),
         "tiles": tile_outputs,

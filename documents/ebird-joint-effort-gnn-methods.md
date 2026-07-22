@@ -1486,18 +1486,36 @@ evidence, with access variables kept out of availability unless an explicit
 ablation justifies them. The generic COG/VRT engine has passed a synthetic
 four-tile seam-equivalence test.
 
-The Annual NLCD portion of Phase 3 is now implemented and synthetic-tested.
-The release-pinned NC catalog resolves 2019-2023 land cover and 2020-2023
-fractional imperviousness (nine archives, 10.2 GiB before subsetting); 2019 is
-used only as the non-future predecessor for 2020 change. Local ZIP/TIFF and
-requester-pays AWS registrations, header/grid validation, buffered area-
-fraction derivation, COG inventories, exact 244-band completeness checks, and
-an Annual NLCD VRT are executable. The 11-test covariate suite passes. The
-requester-pays registration now contains all nine expected references, but
-official-source header access and NC geographic QA remain pending, so this source
-block is not yet promoted. The repeated-visit likelihood, split, support rules,
-and optimizer remain frozen while this ecological predictor intervention is
-built. Full definitions and the backend-specific commands are maintained in
+The Annual NLCD portion of Phase 3 is implemented against validated official
+requester-pays rasters. The release-pinned NC catalog resolves 2019-2023 land
+cover and 2020-2023 fractional imperviousness (nine archives, 10.2 GiB before
+subsetting); 2019 is used only as the non-future predecessor for 2020 change.
+The first full NC build produced 244 bands across 27 tiles (6,588 COGs,
+2,108.33 MiB) in 1,993.3 seconds. Inventory, grid, range, class-fraction-sum,
+and mapped coastal/interior QA passed.
+
+Statewide checklist QA then exposed a raster-boundary contract issue that the
+aggregate 99.97% support rate obscured. All 164 checklists lacking 250 m, 1 km,
+and 5 km support are inside the vector NC AOI but within 98.11 m of its
+boundary; their 250 m cell centers were outside and therefore masked. Six
+additional 5 km-only failures are marine/pelagic and expected. The regional
+grid contract is now `all_touched`, with vector point membership kept separate
+and derived artifacts protected against reuse across mask rules. Annual NLCD
+passes the revised 14-test regression suite. Replanning retains the same 27
+tiles while adding only 5,295 boundary cells (`+0.2374%`; 2,235,542 total).
+The full overwrite is now complete: 244 bands, 6,588 COGs, 2,112.22 MiB, and
+2,227.7 seconds, with `all_touched` recorded in the summary. Corrected
+numerical/mapped QA also passes: maximum class-fraction sum error is
+`9.54e-07`, all automated checks pass, and seven representative previews show
+coherent interior, state-edge, barrier-island, estuarine, and open-water
+structure without visible seams. Post-rebuild checklist QA supports 661,978 of
+661,979 events at 250 m and 1 km and 661,972 at 5 km. All-radius failures fell
+from 164 to one; the remaining seven events are marine or marine-likely
+traveling checklists plotted 3.49-6.66 km seaward. Annual NLCD is therefore
+promoted with explicit terrestrial missingness for those events. The
+repeated-visit likelihood, split,
+support rules, and optimizer remain frozen while this ecological predictor
+intervention is built. Full definitions and exact commands are maintained in
 the dedicated covariate ledger.
 
 ```text
@@ -1509,7 +1527,7 @@ python scripts/data/ebird-covariates.py register-nlcd-aws --catalog data/ebird/c
 
 python scripts/data/ebird-covariates.py validate-nlcd-sources --sources data/ebird/covariates/raw/annual_nlcd/C1V2/sources.aws.json
 
-python scripts/data/ebird-covariates.py derive-nlcd --plan data/ebird/covariates/builds/nc_2020_2023_covariates_v1/build_plan.json --sources data/ebird/covariates/raw/annual_nlcd/C1V2/sources.aws.json --output-dir data/ebird/covariates/builds/nc_2020_2023_covariates_v1/sources/annual_nlcd
+python scripts/data/ebird-covariates.py derive-nlcd --plan data/ebird/covariates/builds/nc_2020_2023_covariates_v1/build_plan.json --sources data/ebird/covariates/raw/annual_nlcd/C1V2/sources.aws.json --output-dir data/ebird/covariates/builds/nc_2020_2023_covariates_v1/sources/annual_nlcd --overwrite
 ```
 
 ## Data Preparation
@@ -9787,12 +9805,12 @@ python exp/diagnose_ebird_latent_availability.py --latent-dir data/ebird/localit
    Annual NLCD/LANDFIRE, NWI/3DHP, 3DEP/Daymet, then C-CAP/CUSP coastal features.
    Keep roads, population, PAD-US/access, and observer geography in the
    observation-process channel by default. Do not overwrite the current
-   processed or locality-season datasets. As of 2026-07-20, planning, generic
-   tiled COG/VRT processing, Annual NLCD metadata/registration/validation, and
-   the 244-band Annual NLCD derivation are implemented; 11 synthetic/unit tests
-   pass. The production catalog resolved nine official archives totaling
-   10.2 GiB. Official raster header access and the real NC derivation/QA are the
-   next gate; no model rerun should begin before that gate passes.
+   processed or locality-season datasets. Planning, generic tiled COG/VRT
+   processing, Annual NLCD metadata/registration/validation, and the 244-band
+   Annual NLCD derivation are implemented. The production catalog resolves nine
+   official archives totaling 10.2 GiB. Official raster header access and the
+   real NC derivation/QA subsequently completed; see checkpoint 55 for the AOI
+   mask correction still required before model reruns.
 49. Rebuild a parallel enriched locality-season dataset and rerun the fixed
    portable and shared-history coastal tests without retuning the likelihood.
    Then run the already-supported high-elevation and low-observer-support
@@ -9816,3 +9834,35 @@ python exp/diagnose_ebird_latent_availability.py --latent-dir data/ebird/localit
 54. Revisit House Sparrow and Red-breasted Nuthatch. House Sparrow improved in
    the checklist-level two-component bridge, but Red-breasted Nuthatch remains a
    small negative-delta species.
+55. Completed the first official full-NC Annual NLCD build and numerical/mapped
+   QA, then rejected immediate promotion based on checklist-location QA. The
+   build produced 244 bands, 6,588 COGs, and 2,108.33 MiB in 1,993.3 seconds.
+   Although all 661,979 checklists were eligible and support exceeded 99.97% at
+   every radius, 164 all-radius failures clustered at valid AOI boundary points:
+   every point was inside NC but only 4.39-98.11 m from its boundary. Adopt an
+   explicit `all_touched` regional raster mask while retaining exact vector AOI
+   membership. The resulting planner/raster/NLCD regression suite passes all 14
+   tests in 2.744 seconds. The revised plan keeps 27 tiles and adds only 5,295
+   boundary cells (`+0.2374%`, 2,235,542 total). The corrected overwrite then
+   completed with 244 bands, 6,588 COGs, 2,112.22 MiB, and 2,227.7 seconds;
+   its summary records `all_touched`. Corrected numerical/mapped QA passes
+   with maximum class-fraction sum error `9.54e-07`, all automated checks
+   true, and seven coherent representative previews. Post-rebuild checklist QA
+   supports 661,978/661,979 events at 250 m and 1 km and 661,972/661,979 at
+   5 km. All-radius failures fall from 164 to one; all seven remaining events
+   are marine or marine-likely traveling checklists plotted 3.49-6.66 km
+   seaward. Promote Annual NLCD while retaining those values as declared
+   terrestrial missingness. Proceed to LANDFIRE without changing the frozen
+   locality-season model.
+56. Implemented and validated the release-aware LANDFIRE catalog adapter.
+   The current official LFPS inventory resolves 13 required CONUS layers: EVT,
+   EVC, and EVH for LF2016/LF2022/LF2023 plus exact annual Dist20-Dist23.
+   Every selected public ImageServer validates as a one-band 30 m thematic
+   raster in `EPSG:5070`. The non-future vegetation mapping is LF2016 for
+   2020-2021, LF2022 for 2022, and LF2023 for 2023; corresponding source ages
+   are 4, 5, 0, and 0 years. LF2020 vegetation remains an explicit archived
+   source gap rather than being backfilled with future LF2022 conditions. The
+   revised plan estimates 2,020 logical bands, including 153 LANDFIRE bands.
+   This is a metadata/provenance gate only: resolve official release-specific
+   class tables and a portable physiognomy/lifeform crosswalk before the
+   bounded raster pilot. Keep the latent model frozen during this work.

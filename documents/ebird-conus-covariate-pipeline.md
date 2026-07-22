@@ -3,8 +3,10 @@
 ## Status
 
 - Started: 2026-07-17
-- Current phase: Phase 3 in progress; Annual NLCD requester-pays source access
-  is validated and derivation is synthetic-tested; the bounded NC pilot is next
+- Current phase: Phase 3 in progress; Annual NLCD is promoted after its
+  corrected `all_touched` full build passed code, numerical, mapped, and
+  statewide checklist-support gates. The release-aware LANDFIRE catalog is
+  implemented and validated; its class crosswalk and bounded raster pilot are next
 - Initial study area: North Carolina
 - Intended extent: conterminous United States (CONUS)
 - Primary consumer: locality-season availability/detection models
@@ -452,7 +454,7 @@ core.
 | 0 | Architecture, output contract, source inventory, and ledger | Complete |
 | 1 | Source registry, build configuration, fixed-grid planner, and manifest schema | Complete |
 | 2 | Windowed/tiled reprojection and VRT/COG assembly | Complete |
-| 3 | Annual NLCD and LANDFIRE adapters/derivations | In progress: NLCD implementation complete and synthetic-tested; official-source NC build and LANDFIRE pending |
+| 3 | Annual NLCD and LANDFIRE adapters/derivations | In progress: Annual NLCD promoted for NC; LANDFIRE catalog validated, derivation remains |
 | 4 | 3DEP terrain and 3DHP/NHDPlus hydrography | Pending |
 | 5 | NWI, C-CAP, CUSP, and coastal topology | Pending |
 | 6 | Daymet monthly/seasonal/normals/anomalies | Pending |
@@ -545,7 +547,7 @@ python scripts/data/ebird-covariates.py plan \
   --config config/ebird_covariates/nc_2020_2023_v1.json
 ```
 
-Output:
+Original output under the cell-center AOI rule:
 
 ```text
 build_id: nc_2020_2023_covariates_v1
@@ -558,6 +560,17 @@ fixed 100 km tiles intersecting NC: 27
 registered source blocks: 17
 estimated logical bands: 1,917
 ```
+
+Statewide checklist QA later showed that the cell-center rule can mask a 250 m
+pixel even when a valid checklist point lies inside a thin boundary sliver of
+the AOI. The checked-in regional config now declares
+`grid.aoi_mask_rule = "all_touched"`. A new plan records center-rule,
+all-touched-rule, and selected-rule cell counts separately. Replanning retained
+the same 27 tiles and selected 2,235,542 all-touched AOI cells, 5,295 more than
+the original 2,230,247 center-rule cells (`+0.2374%`). This is a narrow
+perimeter correction, not a material study-area expansion. Exact point/AOI
+membership remains a vector polygon operation and is not inferred from the
+raster mask.
 
 The 1,917-band estimate is intentionally conservative and provisional. Daymet
 accounts for 1,173 bands because the current registry includes monthly values,
@@ -580,6 +593,8 @@ The planner currently verifies:
 - projected meter-based CRS and exact pixel/tile divisibility
 - fixed-origin snapped bounds
 - multipart AOI geometry and intersecting tile cells, including coastal islands
+- an explicit `center` or `all_touched` AOI raster-mask contract, with both
+  active-cell counts retained for auditability
 - temporal years, months, seasons, and no-future-data selection rule
 - unique registered sources and channel assignments
 - provisional band expansion across time and neighborhood scales
@@ -594,9 +609,9 @@ remain `planned`.
 Phase 2 added `scripts/data/ebird_covariates/raster_engine.py` and two CLI
 operations:
 
-- `normalize-raster` warps a source band directly onto each fixed tile, masks
-  it to the multipart AOI, writes a DEFLATE-compressed COG, and records a band
-  inventory.
+- `normalize-raster` warps a source band directly onto each fixed tile, applies
+  the plan's explicit AOI mask rule, writes a DEFLATE-compressed COG, and
+  records a band inventory.
 - `assemble-vrt` mosaics any ordered collection of band inventories into one
   multi-band VRT using exact source/destination windows at edge tiles.
 
@@ -706,8 +721,15 @@ Implemented source operations:
   metadata, and checks that all annual land-cover grids align. This is the
   required lightweight gate before derivation.
 - `derive-nlcd` performs buffered source-window reads, area-preserving average
-  reprojection, fractional cell-overlap circular-neighborhood aggregation, AOI masking, tiled COG
-  inventory writes, completeness validation, and `annual_nlcd.vrt` assembly.
+  reprojection, fractional cell-overlap circular-neighborhood aggregation,
+  plan-controlled AOI masking, tiled COG inventory writes, completeness
+  validation, and `annual_nlcd.vrt` assembly.
+  New runs also persist COG count/payload and elapsed time in the derivation
+  summary and print them to the console.
+- `validate-nlcd-derived` verifies the derived COG grid/data contract, value
+  ranges, inventory completeness, and per-year/radius class-fraction sums. It
+  writes a machine-readable validation artifact and optional four-panel mapped
+  previews for selected plan tiles.
 
 The derivation definitions are now explicit:
 
@@ -801,11 +823,107 @@ env\Scripts\python.exe scripts/data/ebird-covariates.py derive-nlcd ^
   --output-dir data/ebird/covariates/builds/nc_2020_2023_covariates_v1/sources/annual_nlcd
 ```
 
-Do not add `--overwrite`. If the pilot passes range, completeness, and visual
-QA, use the same output directory and omit `--tile-ids` for the full build.
-Existing pilot COGs will not be overwritten, although the current derivation
-still rereads and recomputes that one source window while rebuilding complete
-inventories:
+The official-source interior pilot completed successfully. It produced the
+expected 244 bands and 244 derived COGs for `xp0014_yp0015`. The COG payload is
+151.28 MiB, excluding the small inventories, VRT, and diagnostics. Reusable QA
+reported:
+
+```text
+Validated derived Annual NLCD: 244 bands, 244 COGs;
+maximum class-fraction sum error=7.15e-07
+All checks passed: True
+```
+
+All derived values were within `[0, 1]` under the declared `1e-5` floating-
+point tolerance, the fully active interior tile had source coverage 1.0, and
+all files matched the EPSG:5070 400 x 400 tiled-float32 contract. The 2023
+preview showed coherent land-cover mosaics, concentrated urban imperviousness,
+mostly low annual change, and nonblank aligned panels. Runtime was not captured
+for this first command and must be measured on a later bounded or full run.
+
+The exact reusable QA command is:
+
+```text
+env\Scripts\python.exe scripts/data/ebird-covariates.py validate-nlcd-derived ^
+  --plan data/ebird/covariates/builds/nc_2020_2023_covariates_v1/build_plan.json ^
+  --summary data/ebird/covariates/builds/nc_2020_2023_covariates_v1/sources/annual_nlcd/annual_nlcd_summary.json ^
+  --preview-tile-ids xp0014_yp0015
+```
+
+This passes the interior numerical gate but does not test North Carolina's
+barrier-island geometry. Before the full state, rebuild a coherent two-tile
+pilot containing the completed interior tile and `xp0017_yp0014`, the 100 km
+tile selected for Emerald Isle/Fort Macon and adjacent sound/ocean context. It
+contains 48,083 active 250 m AOI cells. The derivation summary and inventories
+describe the selected tile set, so include both IDs rather than running the
+coastal tile alone:
+
+```text
+set AWS_PROFILE=ebird-nlcd
+set AWS_DEFAULT_REGION=us-west-2
+env\Scripts\python.exe scripts/data/ebird-covariates.py derive-nlcd ^
+  --plan data/ebird/covariates/builds/nc_2020_2023_covariates_v1/build_plan.json ^
+  --sources data/ebird/covariates/raw/annual_nlcd/C1V2/sources.aws.json ^
+  --tile-ids xp0014_yp0015 xp0017_yp0014 ^
+  --output-dir data/ebird/covariates/builds/nc_2020_2023_covariates_v1/sources/annual_nlcd
+
+env\Scripts\python.exe scripts/data/ebird-covariates.py validate-nlcd-derived ^
+  --plan data/ebird/covariates/builds/nc_2020_2023_covariates_v1/build_plan.json ^
+  --summary data/ebird/covariates/builds/nc_2020_2023_covariates_v1/sources/annual_nlcd/annual_nlcd_summary.json ^
+  --preview-tile-ids xp0014_yp0015 xp0017_yp0014
+```
+
+The two-tile coastal gate passed:
+
+```text
+Derived Annual NLCD C1V2: 244 bands across 2 plan tiles
+Validated derived Annual NLCD: 244 bands, 488 COGs;
+maximum class-fraction sum error=7.15e-07
+All checks passed: True
+Minimum AOI support xp0017_yp0014:
+  r250=99.39%, r1000=98.01%, r5000=90.42%
+Minimum AOI support xp0014_yp0015:
+  r250=100.00%, r1000=100.00%, r5000=100.00%
+```
+
+The combined COG payload is 196.36 MiB, so the coastal tile added only about
+45.08 MiB. Its preview preserves visible barrier-island, sound, shoreline,
+developed-area, and open-water structure without misalignment or leakage
+outside the NC AOI. Larger-radius support decreases over state-water/ocean
+cells as expected, rather than because of a raster seam or reprojection error.
+
+Checklist-location QA provides the more relevant modeling gate. The coastal
+tile contains 15,228 processed checklists at 4,159 localities. Annual NLCD
+class-fraction support is available for 15,227/15,228 checklists at 250 m and
+1 km and 15,225/15,228 at 5 km. All 2,837 checklists whose locality labels
+match Emerald Isle or Fort Macon have complete 250 m source coverage. The
+three unsupported records are private traveling checklists with reported
+routes of 1.239-5.633 km and plotted locations 3.49-6.66 km seaward of the
+processed coastline metric. Two locality names explicitly identify the
+Atlantic Ocean; the third is a one-use Morehead personal location. Treat the
+first two as likely marine checklist events and the third as marine-likely but
+less certain. This is a checklist-level classification, not evidence that
+every detected bird occupied the single plotted coordinate. eBird instructs
+users to plot a traveling checklist near the route midpoint when a mobile GPS
+track is unavailable, while the track is the more precise representation of
+where the observer traveled ([eBird best practices](https://support.ebird.org/en/support/solutions/articles/48000795623-ebird-rules-and-best-practices),
+[mobile tracks](https://support.ebird.org/en/support/solutions/articles/48000960508-ebird-mobile-tips-tricks)). Preserve Annual NLCD values there as missing
+*terrestrial* ecological support rather than converting them to land-cover
+zeroes. This result does not justify a statewide 100 m sensitivity build;
+retain that option for a later failure at Ocracoke or another narrow-island
+transfer test.
+
+The July 20 Cost Explorer export also showed two new US West Tier-2 request
+lines totaling about `$0.0000776`, with no billed data transfer. Assuming no
+other US West S3 reads that day, this is the likely combined source-validation
+and one-tile pilot request cost. The estimated full-NC request cost is about
+`$0.00182-$0.00210`, with `$0.00233` as a conservative 30x budget. This is not
+a material cost gate, but the full run should still record its posted charge.
+
+Do not add `--overwrite`. Existing pilot COGs will not be overwritten, although
+the derivation currently rereads/recomputes source windows while rebuilding
+complete inventories. The coastal gate authorizes the same output directory
+with `--tile-ids` omitted for the full build:
 
 ```text
 env\Scripts\python.exe scripts/data/ebird-covariates.py derive-nlcd ^
@@ -814,12 +932,271 @@ env\Scripts\python.exe scripts/data/ebird-covariates.py derive-nlcd ^
   --output-dir data/ebird/covariates/builds/nc_2020_2023_covariates_v1/sources/annual_nlcd
 ```
 
+The full command completed successfully:
+
+```text
+Derived Annual NLCD C1V2: 244 bands across 27 plan tiles
+COG payload: 6,588 files, 2108.33 MiB
+Elapsed time: 1993.3 seconds
+Validated derived Annual NLCD: 244 bands, 6588 COGs;
+maximum class-fraction sum error=9.54e-07
+All checks passed: True
+```
+
+This is a 2.06 GiB derived COG payload and a 33 minute 13 second full-state
+run. Every inventory, COG grid contract, value-range check, and class-fraction
+sum passed. Interior tiles generally have 100% support at all three radii. The
+lowest state-edge support occurs on ocean-heavy `xp0018_yp0016`: 98.86% at
+250 m, 96.50% at 1 km, and 83.50% at 5 km. That radius-dependent decline is
+consistent with terrestrial-source support ending offshore, not a processing
+failure.
+
+Five generated previews were inspected: `xp0014_yp0015`, `xp0017_yp0014`,
+`xp0017_yp0015`, `xp0017_yp0016`, and `xp0018_yp0015`. They show coherent
+interior land-cover and impervious patterns, visible estuarine and tidal-wetland
+structure, retained barrier-island geometry, and AOI masking that follows the
+state boundary without an apparent tile seam. The 250 m grid therefore passes
+the current full-state visual gate; a 100 m product remains a targeted later
+sensitivity rather than a prerequisite.
+
+The statewide support gate was run at all processed checklist coordinates:
+
+```text
+env\Scripts\python.exe scripts/data/ebird-covariates.py validate-nlcd-checklist-support ^
+  --summary data/ebird/covariates/builds/nc_2020_2023_covariates_v1/sources/annual_nlcd/annual_nlcd_summary.json ^
+  --checklists data/ebird/processed_nc_2020_2023/checklists.geoparquet
+```
+
+It writes `annual_nlcd_checklist_support.json` and
+`annual_nlcd_unsupported_checklists.csv` below the Annual NLCD diagnostics
+directory. The JSON reports support by year and radius; the CSV preserves the
+event, locality, protocol, effort distance, and coastline-distance context for
+every unsupported event. This lets marine-likely records remain declared
+terrestrial missingness while exposing any unexpected unsupported terrestrial
+or barrier-island checklist.
+
+The first full-state result was:
+
+```text
+Annual NLCD checklist support: 661,979/661,979 checklists eligible
+  r250: 661,815/661,979 supported (99.9752%); 164 unsupported
+  r1000: 661,815/661,979 supported (99.9752%); 164 unsupported
+  r5000: 661,809/661,979 supported (99.9743%); 170 unsupported
+```
+
+The percentage alone is not a sufficient promotion criterion because the
+failures are geographically structured. Inspection separated two mechanisms:
+
+- 164 checklists at 65 localities lacked all three radii. Every coordinate is
+  covered by the exact NC AOI polygon, but each lies only 4.39-98.11 m inside
+  its boundary (median 13.76 m). These include mountain and state-border
+  localities; 70 records are from Great Smoky Mountains NP--Charlies Bunion
+  Trail. They are not missing Annual NLCD source data. Their containing 250 m
+  raster-cell centers fall outside the AOI and were masked by the center rule.
+- Six checklists at four explicitly marine/pelagic localities retain 250 m and
+  1 km support but lack 5 km support. These include Hatteras Pelagic and
+  Atlantic/North Atlantic Ocean locations. That is expected terrestrial-source
+  support behavior and should remain missing rather than be imputed as zero.
+
+Therefore the current center-masked raster is a **provisional numerical pass,
+not a promoted model input**. The correction is a grid-contract change, not
+nearest-cell imputation: retain every target pixel touched by the regional AOI,
+while continuing to use the exact vector polygon for point membership and
+reporting. This is appropriate for a reusable regional 250 m covariate stack
+because boundary pixels represent partial AOI support and may also be needed
+for neighborhood summaries. It does not assert that the entire pixel belongs
+to NC.
+
+The planner, generic raster engine, Annual NLCD derivation, and Annual NLCD QA
+now share the declared `all_touched` rule. Plans retain both center and
+all-touched active-cell counts. New COGs and summaries record the rule, and
+reuse of a COG generated under a different rule fails with an explicit
+`--overwrite` instruction. Run the focused regression suite before rebuilding:
+
+```text
+env\Scripts\python.exe -m unittest ^
+  tests.test_ebird_covariate_planner ^
+  tests.test_ebird_covariate_raster_engine ^
+  tests.test_ebird_covariate_nlcd ^
+  tests.test_ebird_covariate_nlcd_derive -v
+```
+
+Result: all 14 tests passed in 2.744 seconds. This covers all-touched planning
+and masking, stale mask-contract rejection in both raster paths, tiled COG/VRT
+assembly, Annual NLCD catalog/registration behavior, fractional neighborhood
+aggregation, and checklist-support eligibility/masking behavior. The code gate
+passes; the generated NC plan and COGs still use the old contract until the
+commands below are run.
+
+Then regenerate the plan so it contains the new mask contract and counts:
+
+```text
+env\Scripts\python.exe scripts/data/ebird-covariates.py plan ^
+  --config config/ebird_covariates/nc_2020_2023_v1.json ^
+  --output data/ebird/covariates/builds/nc_2020_2023_covariates_v1/build_plan.json
+```
+
+The revised plan passed with unchanged snapped bounds, bounding dimensions,
+source/band contract, and 27-tile layout:
+
+```text
+AOI cells (all_touched): 2,235,542; tiles: 27
+Sources: 17; estimated logical bands: 1,917
+Uncompressed float stack estimate: 16.0 GiB over AOI cells;
+31.3 GiB over bounding grid
+```
+
+Compared with the historical center-rule plan, only 5,295 cells (`0.2374%`)
+were added. This bounded change is consistent with the diagnosed boundary
+localities and does not trigger a resolution or tiling redesign.
+
+This contract change is the explicit exception to the normal no-overwrite
+rule. Rebuild every Annual NLCD COG so old center-masked and new all-touched
+tiles cannot be mixed:
+
+```text
+set AWS_PROFILE=ebird-nlcd
+set AWS_DEFAULT_REGION=us-west-2
+env\Scripts\python.exe scripts/data/ebird-covariates.py derive-nlcd ^
+  --plan data/ebird/covariates/builds/nc_2020_2023_covariates_v1/build_plan.json ^
+  --sources data/ebird/covariates/raw/annual_nlcd/C1V2/sources.aws.json ^
+  --output-dir data/ebird/covariates/builds/nc_2020_2023_covariates_v1/sources/annual_nlcd ^
+  --overwrite
+```
+
+The corrected all-touched overwrite completed successfully:
+
+```text
+Derived Annual NLCD C1V2: 244 bands across 27 plan tiles
+COG payload: 6,588 files, 2112.22 MiB
+Elapsed time: 2227.7 seconds
+```
+
+The persisted summary confirms `aoi_mask_rule = "all_touched"`, all 244
+expected bands, all 27 plan tiles, and all 6,588 COGs. Relative to the original
+center-mask build, payload increased by only 3.89 MiB (`0.1845%`). Runtime was
+37 minutes 7.7 seconds, 234.4 seconds (`11.8%`) longer than the original
+33-minute build. Neither change is large enough to alter the grid or processing
+strategy. Derivation completion alone was not promotion: numerical, mapped,
+and checklist-support QA still had to pass on the rewritten files.
+
+Finally rerun raster and checklist QA:
+
+```text
+env\Scripts\python.exe scripts/data/ebird-covariates.py validate-nlcd-derived ^
+  --plan data/ebird/covariates/builds/nc_2020_2023_covariates_v1/build_plan.json ^
+  --summary data/ebird/covariates/builds/nc_2020_2023_covariates_v1/sources/annual_nlcd/annual_nlcd_summary.json ^
+  --preview-tile-ids xp0010_yp0013 xp0010_yp0014 xp0014_yp0015 xp0017_yp0014 xp0017_yp0015 xp0017_yp0016 xp0018_yp0015
+
+env\Scripts\python.exe scripts/data/ebird-covariates.py validate-nlcd-checklist-support ^
+  --summary data/ebird/covariates/builds/nc_2020_2023_covariates_v1/sources/annual_nlcd/annual_nlcd_summary.json ^
+  --checklists data/ebird/processed_nc_2020_2023/checklists.geoparquet
+```
+
+The corrected numerical and mapped gate passed:
+
+```text
+Validated derived Annual NLCD: 244 bands, 6588 COGs;
+maximum class-fraction sum error=9.54e-07
+All checks passed: True
+```
+
+Minimum AOI support remains 100% across most western and interior tiles. As
+expected, support declines with neighborhood radius in ocean-heavy eastern
+tiles. The lowest reported tile is `xp0018_yp0016`, with 97.73% support at
+250 m, 95.40% at 1 km, and 82.54% at 5 km. This is not evidence of a failed
+derivation: the seven representative previews show coherent western AOI
+slivers, continuous interior land cover, retained barrier islands and
+estuarine/open-water structure, and no visible tile seams or fill artifacts.
+The radius-dependent eastern decline is therefore retained as explicit
+terrestrial-source support truncation over ocean rather than filled with
+land-cover zeroes. The corrected raster is now accepted; checklist-location
+support remains the final Annual NLCD promotion gate.
+
+The post-rebuild checklist-location gate then passed:
+
+```text
+Annual NLCD checklist support: 661,979/661,979 checklists eligible
+  r250: 661,978/661,979 supported (99.9998%); 1 unsupported
+  r1000: 661,978/661,979 supported (99.9998%); 1 unsupported
+  r5000: 661,972/661,979 supported (99.9989%); 7 unsupported
+```
+
+This removes the diagnosed mask artifact: all-radius failures fell from 164 to
+one. The remaining seven events are all marine or marine-likely traveling
+checklists. Six retain 250 m and 1 km support but lose 5 km support at named
+Hatteras Pelagic, Atlantic Ocean, or North Atlantic Ocean locations plotted
+3.49-5.96 km seaward. The sole all-radius failure is a private Morehead
+traveling checklist plotted 6.66 km seaward, outside terrestrial NLCD source
+support. By year, 2021-2023 have complete 250 m and 1 km support; the one
+all-radius marine-likely record is in 2020. These are declared terrestrial
+missingness, not ecological zeroes. The correction therefore resolves every
+identified terrestrial/boundary failure, and Annual NLCD is promoted for the
+NC enriched-covariate build.
+
 Replace `sources.aws.json` with `sources.local.json` for local inputs. Do not
-add `--overwrite` on the initial run; existing valid tiles can then be reused
-after interruption. The next checkpoint must record pilot runtime/disk use,
-coverage and range QA, class-fraction sums, and a visual check before the full
-build. The full build must then add tile-seam and coastal/island spot checks
-before Annual NLCD is promoted.
+normally add `--overwrite`; valid tiles can then be reused after interruption.
+The one required overwrite above is scoped to the AOI mask-contract migration.
+The posted requester-pays charge remains to be recorded when Cost Explorer
+finishes allocating it.
+
+## Phase 3 LANDFIRE Catalog Checkpoint: 2026-07-22
+
+The release-aware LANDFIRE catalog adapter is implemented in
+`scripts/data/ebird_covariates/landfire.py` and exposed as
+`catalog-landfire`. It resolves the current official LFPS product inventory,
+selects exact CONUS layers, validates every ArcGIS ImageServer, and writes an
+immutable metadata snapshot. It does not submit an LFPS job, require an email
+address, use AWS, or download raster pixels.
+
+The NC retrospective selection policy is explicit:
+
+- vegetation products: EVT, EVC, and EVH
+- vegetation releases: `LF2016`, `LF2022`, and `LF2023`
+- observation-year mapping: 2020 -> `LF2016`, 2021 -> `LF2016`, 2022 ->
+  `LF2022`, and 2023 -> `LF2023`
+- vegetation source ages: 4, 5, 0, and 0 years respectively
+- annual disturbance products: `LF2020_Dist20`, `LF2022_Dist21`,
+  `LF2022_Dist22`, and `LF2023_Dist23`
+
+LF2020 vegetation is archived and absent from the current LFPS product
+inventory. The pilot therefore uses the latest publicly available non-future
+vegetation release, LF2016, for 2020-2021 and retains source age rather than
+silently relabeling the source as annual. An archived LF2020 acquisition can
+replace this fallback later without changing the temporal contract.
+
+The planner now expands release-axis products by the configured release list
+and treats annual disturbance as a year-axis product. The NC plan consequently
+increases from 1,917 to 2,020 estimated logical bands; LANDFIRE accounts for
+153 bands. This estimate is intentionally conservative and precedes named
+materialization profiles.
+
+Exact commands and accepted output:
+
+```bat
+env\Scripts\python.exe scripts/data/ebird-covariates.py plan ^
+  --config config/ebird_covariates/nc_2020_2023_v1.json ^
+  --output data/ebird/covariates/builds/nc_2020_2023_covariates_v1/build_plan.json
+
+env\Scripts\python.exe scripts/data/ebird-covariates.py catalog-landfire ^
+  --plan data/ebird/covariates/builds/nc_2020_2023_covariates_v1/build_plan.json
+```
+
+```text
+Resolved LANDFIRE: 13 official layers (9 vegetation, 4 disturbance)
+Vegetation release mapping: 2020->LF2016, 2021->LF2016, 2022->LF2022, 2023->LF2023
+Validated public ImageServers: EPSG:5070 at 30 m; all passed=True
+Acquisition status: official_public_imageservers_resolved
+Wrote catalog to data\ebird\covariates\raw\landfire\catalog.json
+```
+
+The live LFPS inventory contained 136 records. All 13 selected services are
+one-band, 30 m thematic rasters in `EPSG:5070` with nearest-neighbor default
+resampling. Annual disturbance services live under the separate official
+`Landfire_Disturbance` folder; the adapter resolves that distinction
+explicitly. The next gate is a release-specific attribute-table/crosswalk
+contract, followed by one bounded interior/coastal raster pilot. Do not derive
+fractions from display colors or bilinearly resample categorical source codes.
 
 ## Decision Log
 
@@ -866,14 +1243,94 @@ before Annual NLCD is promoted.
   insufficient support into ecological zeroes.
 - Do not claim the Annual NLCD adapter is promoted from synthetic tests alone;
   real NC coverage, seams, ranges, and coastal/island geography remain required.
+- Treat the official-source interior pilot as passed: 244/244 bands and COGs,
+  151.28 MiB, complete source coverage, valid ranges, and maximum class-fraction
+  sum error `7.15e-07`.
+- Require a second bounded pilot on `xp0017_yp0014` before the full-state run so
+  barrier islands, sounds, ocean-adjacent support, and AOI edge masking are
+  tested rather than inferred from an interior tile.
+- Keep derived-raster validation reproducible through
+  `validate-nlcd-derived`; do not rely on ad hoc array inspection alone.
+
+### 2026-07-21
+
+- Promote the two-tile interior/coastal Annual NLCD gate: 244 bands, 488 COGs,
+  196.36 MiB, exact inventory completeness, and no numerical QA issues.
+- Treat reduced support at marine-likely checklist locations as declared
+  terrestrial-covariate missingness. A plotted traveling-checklist point
+  represents the route approximately unless its GPS track is available, so do
+  not infer an exact point location for every species detection. Do not impute
+  terrestrial land-cover zeroes into open water.
+- Accept the 250 m grid for the current NC build because nearly every coastal
+  checklist and every inspected Emerald Isle/Fort Macon checklist is supported;
+  retain 100 m as a targeted sensitivity, not a new default.
+- Proceed to the full 27-tile NC Annual NLCD derivation, then require Ocracoke,
+  tidal-wetland, tile-seam, and checklist-location QA before promotion.
+- Record elapsed time and COG payload in future derivation summaries so cost
+  and runtime comparisons do not depend on console timing or ad hoc inspection.
+- Accept the full-state Annual NLCD raster gate: 244 bands, 6,588 COGs,
+  2108.33 MiB, 1993.3 seconds, maximum class-fraction sum error `9.54e-07`,
+  and no numerical or mapped QA failure across the five inspected tiles.
+- Keep Annual NLCD at "provisional pass" until the reusable statewide
+  checklist-support diagnostic confirms that unsupported events are expected
+  marine/source-edge cases rather than terrestrial extraction gaps.
+- Do not accept the first statewide checklist-support percentage at face value:
+  164 all-radius failures were valid points inside the AOI but within 98.11 m
+  of its boundary, exposing a center-cell raster-mask artifact. The additional
+  six 5 km-only failures were marine/pelagic and are expected.
+- Use `all_touched` as the regional raster AOI mask contract. Keep exact vector
+  AOI membership separate, retain both mask-rule cell counts in plans, record
+  the selected rule in derived artifacts, and reject reuse across mask rules.
+- Require one full Annual NLCD overwrite after this contract migration, then
+  rerun numerical, mapped, and statewide checklist-support QA before promotion.
+- Accept the shared AOI mask regression gate: all 14 focused planner, raster,
+  catalog, derivation, stale-output, and checklist-support tests passed in
+  2.744 seconds.
+- Accept the revised all-touched build plan: 2,235,542 selected AOI cells,
+  5,295 (`0.2374%`) above the center-rule count, with the same 27 tiles,
+  bounding grid, 17 source blocks, and 1,917 estimated logical bands.
+- Accept completion of the corrected full overwrite: 244 bands, 27 tiles,
+  6,588 COGs, 2,112.22 MiB, and 2,227.7 seconds. The summary records
+  `all_touched`; promotion still requires rerunning raster and checklist QA.
+- Accept the corrected numerical and mapped raster gate: 244 bands, 6,588
+  COGs, maximum class-fraction sum error `9.54e-07`, and all automated checks
+  passed. Seven representative previews preserve coherent interior, boundary,
+  barrier-island, estuarine, and open-water structure without visible seams.
+  Treat lower large-radius support in ocean-heavy eastern tiles as declared
+  terrestrial-source truncation, not a derivation failure or a value to impute.
+- Promote Annual NLCD after corrected statewide checklist QA. The all-touched
+  rebuild reduced all-radius failures from 164 to one and 5 km failures from
+  170 to seven. Every remaining event is marine or marine-likely; preserve its
+  missing terrestrial support rather than imputing land-cover zeroes.
+
+### 2026-07-22
+
+- Treat LANDFIRE vegetation as periodic rather than annual. Expand the plan by
+  explicit source releases and record the release selected for each
+  observation year.
+- Use LF2016 as the transparent non-future fallback for 2020-2021 while LF2020
+  vegetation remains archived and unavailable through the current LFPS
+  inventory. Preserve 4- and 5-year source ages as model/provenance fields.
+- Use exact annual disturbance content for 2020-2023 even though Dist21 and
+  Dist22 are distributed under LF2022.
+- Use official public ArcGIS ImageServers for the bounded raster pilot. The
+  catalog path has no AWS request charge and does not submit asynchronous LFPS
+  jobs.
+- Require release-specific class semantics before derivation. Use nearest
+  neighbor for categorical source reads, then derive model-grid fractions;
+  never bilinearly interpolate EVT/EVC/EVH codes.
 
 ## Open Questions
 
-1. Whether the 250 m grid needs a 100 m coastal sensitivity.
-2. Whether requester-pays window reads remain reliable and economical during
-   the NC pilot and full-state derivation.
-3. Whether LANDFIRE EVT should be retained at detailed class level or collapsed
-   to a portable ecological hierarchy.
+1. Whether Ocracoke or a later narrow-island transfer test exposes a specific
+   need for a targeted 100 m coastal sensitivity; the current coastal pilot
+   does not.
+2. What requester-pays charge is posted for the completed 27-tile NC run; the
+   source reads and runtime are already operationally acceptable.
+3. Which release-specific LANDFIRE EVT attribute fields should define the
+   portable hierarchy. Prefer an official physiognomy/lifeform crosswalk for
+   model inputs while preserving raw EVT codes and names for provenance and
+   optional sensitivity work.
 4. How to crosswalk 3DHP and legacy NHDPlus HR attributes into one schema.
 5. Which NWI Cowardin hierarchy best balances ecological meaning and sparsity.
 6. Whether the NC materialized output should include all monthly climate bands
@@ -885,12 +1342,7 @@ before Annual NLCD is promoted.
 
 The next update should record:
 
-- the selected Annual NLCD acquisition backend and immutable local archive
-  checksums, or validated requester-pays window access
-- the first real NC NLCD source and derived tiles
+- the posted AWS charge for the completed 27-tile run
+- the release-specific LANDFIRE attribute-table hashes and crosswalk
+- the exact bounded LANDFIRE raster-pilot command and validation result
 - named materialization profiles and exact inclusion rules
-- coverage, value-range, class-fraction-sum, and geographic spot-check results
-- source-window/subset behavior and measured disk/runtime costs
-- whether the 250 m grid preserves Emerald Isle, Fort Macon, Ocracoke, tidal-
-  wetland, and narrow land/water context well enough to avoid a 100 m
-  sensitivity build

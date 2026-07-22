@@ -15,6 +15,7 @@
       "x": 0,
       "y": 0
     },
+    "aoi_mask_rule": "all_touched",
     "dtype": "float32",
     "nodata": -9999.0
   },
@@ -40,7 +41,19 @@
       "products": ["LndCov", "FctImp"],
       "predecessor_land_cover_years": [2019]
     },
-    "landfire",
+    {
+      "id": "landfire",
+      "products": ["EVT", "EVC", "EVH", "Dist"],
+      "releases": ["LF2016", "LF2022", "LF2023"],
+      "release_by_year": {
+        "2020": "LF2016",
+        "2021": "LF2016",
+        "2022": "LF2022",
+        "2023": "LF2023"
+      },
+      "disturbance_years": [2020, 2021, 2022, 2023],
+      "archived_release_note": "LF2020 vegetation is archived and absent from the current LFPS product catalog; use LF2016 as the non-future fallback for 2020-2021 and retain source age."
+    },
     "usgs_3dep",
     "usgs_3dhp",
     {"id": "nhdplus_hr", "fallback_for": "usgs_3dhp"},

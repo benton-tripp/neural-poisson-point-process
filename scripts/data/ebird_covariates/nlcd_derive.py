@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +20,7 @@ from scipy.signal import fftconvolve
 
 from .nlcd import AWS_REGION, LAND_COVER_CLASSES
 from .raster_engine import (
+    aoi_mask_all_touched,
     load_plan_aoi,
     safe_band_slug,
     write_band_inventory,
@@ -206,6 +208,7 @@ def mask_tile_to_aoi(
     tile: dict[str, Any],
     resolution: float,
     aoi_geometry: Any,
+    all_touched: bool = False,
 ) -> np.ndarray:
     min_x, _, _, max_y = (float(value) for value in tile["bounds_m"])
     transform = from_origin(min_x, max_y, resolution, resolution)
@@ -214,7 +217,7 @@ def mask_tile_to_aoi(
         out_shape=values.shape,
         transform=transform,
         invert=True,
-        all_touched=False,
+        all_touched=all_touched,
     )
     values[~inside] = NODATA
     return values
@@ -244,6 +247,14 @@ def output_band_tile(
     output_path = output_dir / "tiles" / tile["tile_id"] / f"{slug}.tif"
     if output_path.exists() and not overwrite:
         with rasterio.open(output_path) as existing:
+            existing_mask_rule = existing.tags().get("aoi_mask_rule", "center")
+            expected_mask_rule = tags.get("aoi_mask_rule", "center")
+            if existing_mask_rule != expected_mask_rule:
+                raise ValueError(
+                    f"Existing tile {output_path} uses AOI mask rule "
+                    f"{existing_mask_rule!r}, but the build plan requires "
+                    f"{expected_mask_rule!r}. Rerun with --overwrite."
+                )
             valid_cells = int((existing.read_masks(1) > 0).sum())
         reused = True
     else:
@@ -318,12 +329,23 @@ def write_derived_tile(
     target_crs: str,
     resolution: float,
     aoi_geometry: Any,
+    aoi_all_touched: bool,
     buffer_cells: int,
     tile_cells: int,
     overwrite: bool,
 ) -> None:
+    output_tags = {
+        **tags,
+        "aoi_mask_rule": "all_touched" if aoi_all_touched else "center",
+    }
     cropped = crop_tile(values, buffer_cells, tile_cells)
-    cropped = mask_tile_to_aoi(cropped, tile, resolution, aoi_geometry)
+    cropped = mask_tile_to_aoi(
+        cropped,
+        tile,
+        resolution,
+        aoi_geometry,
+        all_touched=aoi_all_touched,
+    )
     output_band_tile(
         inventories,
         band_order,
@@ -334,7 +356,7 @@ def write_derived_tile(
         tile_transform,
         target_crs,
         identifier,
-        tags,
+        output_tags,
         overwrite,
     )
 
@@ -593,6 +615,7 @@ def derive_nlcd(
     before circular-neighborhood summaries are calculated. Annual change is
     calculated from aligned adjacent-year land-cover rasters.
     """
+    started_at = time.perf_counter()
     if not 0.0 < minimum_coverage <= 1.0:
         raise ValueError("minimum_coverage must be in (0, 1].")
     if registration.get("source_id") != "annual_nlcd":
@@ -670,6 +693,7 @@ def derive_nlcd(
         for radius in radii
     }
     aoi_geometry = load_plan_aoi(plan)
+    aoi_all_touched = aoi_mask_all_touched(plan)
     output_dir.mkdir(parents=True, exist_ok=True)
     inventories: dict[str, dict[str, Any]] = {}
     band_order: list[str] = []
@@ -717,6 +741,7 @@ def derive_nlcd(
                 "target_crs": target_crs,
                 "resolution": resolution,
                 "aoi_geometry": aoi_geometry,
+                "aoi_all_touched": aoi_all_touched,
                 "buffer_cells": buffer_cells,
                 "tile_cells": tile_cells,
                 "overwrite": overwrite,
@@ -771,6 +796,12 @@ def derive_nlcd(
         + len(radii)
         + len(radii)
     )
+    cog_paths = [
+        Path(tile["path"])
+        for inventory in ordered_inventories
+        for tile in inventory["tiles"]
+    ]
+    cog_bytes = sum(path.stat().st_size for path in cog_paths)
     summary = {
         "schema_version": 1,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -781,6 +812,7 @@ def derive_nlcd(
         "years": target_years,
         "neighborhoods_m": radii,
         "minimum_coverage": minimum_coverage,
+        "aoi_mask_rule": grid.get("aoi_mask_rule", "center"),
         "land_cover_classes": [
             {"value": value, "name": name}
             for value, name in class_map.items()
@@ -790,6 +822,10 @@ def derive_nlcd(
         "tile_ids": [tile["tile_id"] for tile in selected_tiles],
         "band_count": len(ordered_inventories),
         "expected_band_count": expected_band_count,
+        "derived_cog_count": len(cog_paths),
+        "derived_cog_bytes": cog_bytes,
+        "derived_cog_mib": cog_bytes / (1024**2),
+        "elapsed_seconds": time.perf_counter() - started_at,
         "inventory_paths": inventory_paths,
         "logical_vrt": str(vrt_path.resolve()) if write_vrt else None,
         "definitions": {

@@ -88,7 +88,31 @@ def validate_nlcd_derivation(
     inventories = load_inventories(summary)
     selected_tiles = list(summary.get("tile_ids", []))
     expected_tiles = set(selected_tiles)
+    aoi_mask_rule = str(plan["grid"].get("aoi_mask_rule", "center"))
+    active_cell_key = (
+        "active_cells_all_touched_rule"
+        if aoi_mask_rule == "all_touched"
+        else "active_cells_center_rule"
+    )
+    active_aoi_cells = {
+        tile["tile_id"]: int(
+            tile.get(
+                active_cell_key,
+                int(tile.get("width", 0)) * int(tile.get("height", 0)),
+            )
+        )
+        for tile in plan["grid"]["tiles"]
+    }
+    tile_contracts = {
+        tile["tile_id"]: tile for tile in plan["grid"]["tiles"]
+    }
     issues: list[str] = []
+    summary_mask_rule = str(summary.get("aoi_mask_rule", "center"))
+    if summary_mask_rule != aoi_mask_rule:
+        issues.append(
+            f"Summary AOI mask rule {summary_mask_rule!r} does not match "
+            f"build-plan rule {aoi_mask_rule!r}."
+        )
     target_crs = CRS.from_user_input(plan["grid"]["crs"])
     tile_size = int(plan["grid"]["tile_width_cells"])
     expected_bands = int(summary["expected_band_count"])
@@ -129,12 +153,34 @@ def validate_nlcd_derivation(
             total_bytes += path.stat().st_size
             with rasterio.open(path) as dataset:
                 cog_count += 1
-                if dataset.driver != "GTiff" or not dataset.is_tiled:
+                if dataset.driver != "GTiff" or not dataset.profile.get("tiled", False):
                     issues.append(f"Derived file is not a tiled GeoTIFF: {path}")
                 if dataset.crs != target_crs:
                     issues.append(f"Derived file has the wrong CRS: {path}")
                 if (dataset.width, dataset.height) != (tile_size, tile_size):
                     issues.append(f"Derived file has the wrong dimensions: {path}")
+                expected_bounds = tile_contracts[tile_id]["bounds_m"]
+                actual_bounds = [
+                    dataset.bounds.left,
+                    dataset.bounds.bottom,
+                    dataset.bounds.right,
+                    dataset.bounds.top,
+                ]
+                if not np.allclose(
+                    actual_bounds,
+                    expected_bounds,
+                    rtol=0.0,
+                    atol=1e-6,
+                ):
+                    issues.append(f"Derived file has the wrong tile bounds: {path}")
+                expected_resolution = float(plan["grid"]["resolution_m"])
+                if not np.allclose(
+                    dataset.res,
+                    (expected_resolution, expected_resolution),
+                    rtol=0.0,
+                    atol=1e-9,
+                ):
+                    issues.append(f"Derived file has the wrong resolution: {path}")
                 if dataset.count != 1 or dataset.dtypes[0] != "float32":
                     issues.append(f"Derived file has the wrong band contract: {path}")
                 if dataset.descriptions[0] != identifier:
@@ -213,7 +259,11 @@ def validate_nlcd_derivation(
                     "tile_id": tile_id,
                     "year": int(year),
                     "radius_m": int(radius),
+                    "active_aoi_cells": active_aoi_cells[tile_id],
                     "valid_cells": int(errors.size),
+                    "supported_aoi_fraction": (
+                        float(errors.size) / active_aoi_cells[tile_id]
+                    ),
                     "mean_absolute_error": float(errors.mean()),
                     "maximum_absolute_error": float(errors.max()),
                     "minimum_sum": float(total[common].min()),
@@ -243,6 +293,8 @@ def validate_nlcd_derivation(
         "build_id": summary["build_id"],
         "source_id": "annual_nlcd",
         "release": summary["release"],
+        "aoi_mask_rule": aoi_mask_rule,
+        "summary_aoi_mask_rule": summary_mask_rule,
         "tile_ids": selected_tiles,
         "tile_count": len(selected_tiles),
         "band_count": len(inventories),
@@ -255,6 +307,10 @@ def validate_nlcd_derivation(
         "class_fraction_sum_checks": fraction_checks,
         "maximum_class_fraction_sum_error": max(
             (check["maximum_absolute_error"] for check in fraction_checks),
+            default=None,
+        ),
+        "minimum_supported_aoi_fraction": min(
+            (check["supported_aoi_fraction"] for check in fraction_checks),
             default=None,
         ),
         "issues": issues,
@@ -393,3 +449,221 @@ def write_nlcd_derivation_validation(
         encoding="utf-8",
     )
     temporary.replace(output_path)
+
+
+def validate_nlcd_checklist_support(
+    summary: dict[str, Any],
+    checklist_path: Path,
+) -> tuple[dict[str, Any], Any]:
+    """Measure derived NLCD support at processed checklist coordinates."""
+    import pandas as pd
+    import pyarrow.parquet as pq
+    from pyproj import Transformer
+
+    required_columns = {
+        "sampling_event_identifier",
+        "latitude",
+        "longitude",
+        "observation_date",
+    }
+    optional_columns = [
+        "locality_id",
+        "locality",
+        "locality_type",
+        "protocol_name",
+        "effort_distance_km",
+        "distance_to_coastline_m",
+    ]
+    available_columns = set(pq.ParquetFile(checklist_path).schema.names)
+    missing_columns = sorted(required_columns - available_columns)
+    if missing_columns:
+        raise ValueError(
+            "Checklist Parquet is missing required columns: "
+            + ", ".join(missing_columns)
+        )
+    columns = sorted(required_columns) + [
+        column for column in optional_columns if column in available_columns
+    ]
+    checklists = pd.read_parquet(checklist_path, columns=columns)
+    observation_year = pd.to_datetime(
+        checklists["observation_date"], errors="coerce"
+    ).dt.year.astype("Int64")
+    latitude = pd.to_numeric(checklists["latitude"], errors="coerce").to_numpy(
+        dtype=np.float64
+    )
+    longitude = pd.to_numeric(
+        checklists["longitude"], errors="coerce"
+    ).to_numpy(dtype=np.float64)
+    coordinate_valid = np.isfinite(latitude) & np.isfinite(longitude)
+
+    years = [int(value) for value in summary["years"]]
+    radii = [int(value) for value in summary["neighborhoods_m"]]
+    class_name = str(summary["land_cover_classes"][0]["name"])
+    logical_vrt = Path(summary["logical_vrt"])
+    if not logical_vrt.exists():
+        raise FileNotFoundError(f"Annual NLCD logical VRT does not exist: {logical_vrt}")
+
+    checklist_count = len(checklists)
+    rows = np.full(checklist_count, -1, dtype=np.int64)
+    columns_index = np.full(checklist_count, -1, dtype=np.int64)
+    support_by_radius = {
+        radius: np.zeros(checklist_count, dtype=bool) for radius in radii
+    }
+
+    with rasterio.open(logical_vrt) as dataset:
+        if dataset.crs is None:
+            raise ValueError(f"Annual NLCD logical VRT has no CRS: {logical_vrt}")
+        descriptions = list(dataset.descriptions)
+        description_to_index = {
+            description: index + 1
+            for index, description in enumerate(descriptions)
+            if description is not None
+        }
+        required_bands: dict[tuple[int, int], int] = {}
+        for year in years:
+            for radius in radii:
+                identifier = (
+                    f"availability__annual_nlcd__{class_name}_fraction__"
+                    f"mean__r{radius}__y{year}"
+                )
+                if identifier not in description_to_index:
+                    raise ValueError(
+                        f"Annual NLCD logical VRT is missing support band {identifier}."
+                    )
+                required_bands[(year, radius)] = description_to_index[identifier]
+
+        valid_positions = np.flatnonzero(coordinate_valid)
+        transformer = Transformer.from_crs(
+            "EPSG:4326", dataset.crs, always_xy=True
+        )
+        x, y = transformer.transform(
+            longitude[valid_positions], latitude[valid_positions], errcheck=False
+        )
+        transformed_valid = np.isfinite(x) & np.isfinite(y)
+        transformed_positions = valid_positions[transformed_valid]
+        transformed_rows, transformed_columns = rasterio.transform.rowcol(
+            dataset.transform,
+            np.asarray(x)[transformed_valid],
+            np.asarray(y)[transformed_valid],
+        )
+        rows[transformed_positions] = np.asarray(transformed_rows, dtype=np.int64)
+        columns_index[transformed_positions] = np.asarray(
+            transformed_columns, dtype=np.int64
+        )
+        in_raster_extent = (
+            (rows >= 0)
+            & (rows < dataset.height)
+            & (columns_index >= 0)
+            & (columns_index < dataset.width)
+        )
+        year_values = observation_year.to_numpy(dtype=np.float64, na_value=np.nan)
+        for year in years:
+            year_positions = np.flatnonzero(
+                in_raster_extent & (year_values == float(year))
+            )
+            if year_positions.size == 0:
+                continue
+            for radius in radii:
+                values = dataset.read(required_bands[(year, radius)], masked=True)
+                value_mask = np.ma.getmaskarray(values)
+                support_by_radius[radius][year_positions] = ~value_mask[
+                    rows[year_positions], columns_index[year_positions]
+                ]
+
+    year_in_source = observation_year.isin(years).to_numpy(dtype=bool)
+    eligible = coordinate_valid & in_raster_extent & year_in_source
+    support_records: list[dict[str, Any]] = []
+    for radius in radii:
+        supported = support_by_radius[radius]
+        supported_count = int(np.count_nonzero(eligible & supported))
+        eligible_count = int(np.count_nonzero(eligible))
+        support_records.append(
+            {
+                "radius_m": radius,
+                "eligible_checklists": eligible_count,
+                "supported_checklists": supported_count,
+                "unsupported_checklists": eligible_count - supported_count,
+                "supported_fraction": (
+                    supported_count / eligible_count if eligible_count else None
+                ),
+            }
+        )
+
+    year_radius_records: list[dict[str, Any]] = []
+    year_values = observation_year.to_numpy(dtype=np.float64, na_value=np.nan)
+    for year in years:
+        year_eligible = eligible & (year_values == float(year))
+        eligible_count = int(np.count_nonzero(year_eligible))
+        for radius in radii:
+            supported_count = int(
+                np.count_nonzero(year_eligible & support_by_radius[radius])
+            )
+            year_radius_records.append(
+                {
+                    "year": year,
+                    "radius_m": radius,
+                    "eligible_checklists": eligible_count,
+                    "supported_checklists": supported_count,
+                    "unsupported_checklists": eligible_count - supported_count,
+                    "supported_fraction": (
+                        supported_count / eligible_count if eligible_count else None
+                    ),
+                }
+            )
+
+    all_radius_support = np.logical_and.reduce(
+        [support_by_radius[radius] for radius in radii]
+    )
+    unsupported_any = ~eligible | ~all_radius_support
+    diagnostics = checklists.copy()
+    diagnostics["observation_year"] = observation_year
+    diagnostics["coordinate_valid"] = coordinate_valid
+    diagnostics["coordinate_in_raster_extent"] = in_raster_extent
+    diagnostics["year_in_nlcd_source"] = year_in_source
+    for radius in radii:
+        diagnostics[f"nlcd_supported_r{radius}"] = support_by_radius[radius]
+    unsupported = diagnostics.loc[unsupported_any].copy()
+
+    validation = {
+        "schema_version": 1,
+        "validated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "build_id": summary["build_id"],
+        "source_id": "annual_nlcd",
+        "release": summary["release"],
+        "aoi_mask_rule": summary.get("aoi_mask_rule", "center"),
+        "logical_vrt": str(logical_vrt),
+        "checklist_path": str(checklist_path),
+        "checklist_count": checklist_count,
+        "coordinate_valid_count": int(np.count_nonzero(coordinate_valid)),
+        "coordinate_in_raster_extent_count": int(
+            np.count_nonzero(coordinate_valid & in_raster_extent)
+        ),
+        "year_in_source_count": int(np.count_nonzero(year_in_source)),
+        "eligible_checklist_count": int(np.count_nonzero(eligible)),
+        "unsupported_at_any_radius_count": int(np.count_nonzero(unsupported_any)),
+        "support_by_radius": support_records,
+        "support_by_year_radius": year_radius_records,
+    }
+    return validation, unsupported
+
+
+def write_nlcd_checklist_support(
+    validation: dict[str, Any],
+    unsupported: Any,
+    output_path: Path,
+    unsupported_output_path: Path,
+) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_json = output_path.with_suffix(output_path.suffix + ".tmp")
+    temporary_json.write_text(
+        json.dumps(validation, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    temporary_json.replace(output_path)
+
+    unsupported_output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_csv = unsupported_output_path.with_suffix(
+        unsupported_output_path.suffix + ".tmp"
+    )
+    unsupported.to_csv(temporary_csv, index=False)
+    temporary_csv.replace(unsupported_output_path)

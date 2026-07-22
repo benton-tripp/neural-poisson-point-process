@@ -26,13 +26,13 @@
       "channel": "availability",
       "scope": "conus_core",
       "cadence": "periodic",
-      "adapter_status": "planned",
+      "adapter_status": "catalog_ready",
       "official_url": "https://landfire.gov/vegetation",
       "planned_products": [
         {"id": "physiognomy_class_fractions", "bands": 9, "time_axis": "release", "spatial_scales": "neighborhoods"},
         {"id": "tree_shrub_herb_cover", "bands": 3, "time_axis": "release", "spatial_scales": "neighborhoods"},
         {"id": "vegetation_height", "bands": 3, "time_axis": "release", "spatial_scales": "neighborhoods"},
-        {"id": "disturbance_fraction", "bands": 1, "time_axis": "release", "spatial_scales": "neighborhoods"},
+        {"id": "disturbance_fraction", "bands": 1, "time_axis": "year", "spatial_scales": "neighborhoods"},
         {"id": "source_age_and_coverage", "bands": 2, "time_axis": "release", "spatial_scales": "single"}
       ]
     },

@@ -172,6 +172,11 @@ def validate_config(
     if not math.isclose(tile_size / resolution, round(tile_size / resolution)):
         raise ValueError("config.grid.tile_size_m must be divisible by resolution_m.")
     require_mapping(grid.get("origin_m"), "config.grid.origin_m")
+    aoi_mask_rule = grid.get("aoi_mask_rule", "center")
+    if aoi_mask_rule not in {"center", "all_touched"}:
+        raise ValueError(
+            "config.grid.aoi_mask_rule must be 'center' or 'all_touched'."
+        )
 
     temporal = require_mapping(config.get("temporal"), "config.temporal")
     start_year = temporal.get("start_year")
@@ -266,7 +271,10 @@ def plan_tiles(
     tile_size: float,
     origin_x: float,
     origin_y: float,
+    aoi_mask_rule: str = "center",
 ) -> list[dict[str, Any]]:
+    if aoi_mask_rule not in {"center", "all_touched"}:
+        raise ValueError("aoi_mask_rule must be 'center' or 'all_touched'.")
     tile_cells = int(round(tile_size / resolution))
     min_x, min_y, max_x, max_y = geometry.bounds
     min_ix = math.floor((min_x - origin_x) / tile_size)
@@ -287,7 +295,7 @@ def plan_tiles(
             clipped = geometry.intersection(tile_geometry)
             if clipped.is_empty:
                 continue
-            active = rasterize(
+            active_center = rasterize(
                 [(mapping(clipped), 1)],
                 out_shape=(tile_cells, tile_cells),
                 transform=from_origin(
@@ -300,8 +308,27 @@ def plan_tiles(
                 dtype=np.uint8,
                 all_touched=False,
             )
-            active_cells = int(active.sum())
-            if active_cells == 0:
+            active_all_touched = rasterize(
+                [(mapping(clipped), 1)],
+                out_shape=(tile_cells, tile_cells),
+                transform=from_origin(
+                    tile_min_x,
+                    tile_max_y,
+                    resolution,
+                    resolution,
+                ),
+                fill=0,
+                dtype=np.uint8,
+                all_touched=True,
+            )
+            center_cells = int(active_center.sum())
+            all_touched_cells = int(active_all_touched.sum())
+            selected_cells = (
+                center_cells
+                if aoi_mask_rule == "center"
+                else all_touched_cells
+            )
+            if selected_cells == 0:
                 continue
             tiles.append(
                 {
@@ -314,13 +341,19 @@ def plan_tiles(
                     "bounds_m": [tile_min_x, tile_min_y, tile_max_x, tile_max_y],
                     "width": tile_cells,
                     "height": tile_cells,
-                    "active_cells_center_rule": active_cells,
+                    "active_cells_center_rule": center_cells,
+                    "active_cells_all_touched_rule": all_touched_cells,
+                    "active_cells_selected_mask_rule": selected_cells,
                 }
             )
     return sorted(tiles, key=lambda value: (value["y_index"], value["x_index"]))
 
 
-def time_period_count(time_axis: str, temporal: dict[str, Any]) -> int:
+def time_period_count(
+    time_axis: str,
+    temporal: dict[str, Any],
+    releases: list[Any] | None = None,
+) -> int:
     years = temporal["end_year"] - temporal["start_year"] + 1
     if time_axis == "year":
         return years
@@ -330,7 +363,9 @@ def time_period_count(time_axis: str, temporal: dict[str, Any]) -> int:
         return years * len(temporal["seasons"])
     if time_axis == "month_normal":
         return len(temporal["months"])
-    if time_axis in {"static", "release"}:
+    if time_axis == "release":
+        return len(releases) if releases else 1
+    if time_axis == "static":
         return 1
     raise ValueError(f"Unsupported time axis: {time_axis}")
 
@@ -339,14 +374,19 @@ def expected_product_bands(
     product: dict[str, Any],
     temporal: dict[str, Any],
     neighborhoods: list[float],
+    releases: list[Any] | None = None,
 ) -> int:
     scale_count = len(neighborhoods) if product["spatial_scales"] == "neighborhoods" else 1
     return product["bands"] * scale_count * time_period_count(
-        product["time_axis"], temporal
+        product["time_axis"], temporal, releases
     )
 
 
-def requested_periods(cadence: str, temporal: dict[str, Any]) -> dict[str, Any]:
+def requested_periods(
+    cadence: str,
+    temporal: dict[str, Any],
+    releases: list[Any] | None = None,
+) -> dict[str, Any]:
     years = list(range(temporal["start_year"], temporal["end_year"] + 1))
     if cadence == "annual":
         return {"years": years}
@@ -360,7 +400,9 @@ def requested_periods(cadence: str, temporal: dict[str, Any]) -> dict[str, Any]:
         return {"releases": ["static"]}
     if cadence == "derived":
         return {"releases": ["derived_from_dependency_releases"]}
-    return {"releases": ["resolve_from_official_source_catalog"]}
+    return {
+        "releases": releases or ["resolve_from_official_source_catalog"]
+    }
 
 
 def load_aoi(config: dict[str, Any], target_crs: str) -> tuple[Any, Path, str | None]:
@@ -399,6 +441,7 @@ def build_plan(
     tile_size = float(grid["tile_size_m"])
     origin_x = float(grid["origin_m"].get("x", 0.0))
     origin_y = float(grid["origin_m"].get("y", 0.0))
+    aoi_mask_rule = str(grid.get("aoi_mask_rule", "center"))
 
     geometry, aoi_path, aoi_layer = load_aoi(config, grid["crs"])
     snapped = snap_bounds(
@@ -415,6 +458,7 @@ def build_plan(
         tile_size,
         origin_x,
         origin_y,
+        aoi_mask_rule,
     )
 
     source_plans: list[dict[str, Any]] = []
@@ -422,10 +466,16 @@ def build_plan(
     enabled_requests = [request for request in config["sources"] if request["enabled"]]
     for request in enabled_requests:
         source = registry_sources[request["id"]]
+        releases = request.get("releases")
         products = []
         source_band_count = 0
         for product in source.get("planned_products", []):
-            count = expected_product_bands(product, temporal, neighborhoods)
+            count = expected_product_bands(
+                product,
+                temporal,
+                neighborhoods,
+                releases=releases,
+            )
             source_band_count += count
             products.append(
                 {
@@ -446,7 +496,9 @@ def build_plan(
                 "cadence": source["cadence"],
                 "adapter_status": source["adapter_status"],
                 "official_url": source["official_url"],
-                "requested_periods": requested_periods(source["cadence"], temporal),
+                "requested_periods": requested_periods(
+                    source["cadence"], temporal, releases=releases
+                ),
                 "estimated_logical_bands": source_band_count,
                 "products": products,
                 "config_overrides": {
@@ -458,7 +510,11 @@ def build_plan(
         )
 
     build_dir = Path(config["output"]["root"]) / config["build_id"]
-    active_cells = sum(tile["active_cells_center_rule"] for tile in tiles)
+    active_center_cells = sum(tile["active_cells_center_rule"] for tile in tiles)
+    active_all_touched_cells = sum(
+        tile["active_cells_all_touched_rule"] for tile in tiles
+    )
+    active_cells = sum(tile["active_cells_selected_mask_rule"] for tile in tiles)
     bytes_per_value = np.dtype(grid.get("dtype", "float32")).itemsize
     active_uncompressed_bytes = active_cells * logical_band_count * bytes_per_value
     bounding_uncompressed_bytes = width * height * logical_band_count * bytes_per_value
@@ -491,7 +547,10 @@ def build_plan(
             "bounding_width_cells": width,
             "bounding_height_cells": height,
             "bounding_cells": width * height,
-            "active_cells_center_rule": active_cells,
+            "aoi_mask_rule": aoi_mask_rule,
+            "active_cells_center_rule": active_center_cells,
+            "active_cells_all_touched_rule": active_all_touched_cells,
+            "active_cells_selected_mask_rule": active_cells,
             "active_cell_area_sq_km": active_cells * resolution * resolution / 1_000_000.0,
             "tile_count": len(tiles),
             "tiles": tiles,
@@ -551,7 +610,8 @@ def print_plan_summary(plan: dict[str, Any], output_path: Path | None) -> None:
         f"{grid['bounding_width_cells']:,} x {grid['bounding_height_cells']:,} bounding cells"
     )
     print(
-        f"AOI cells: {grid['active_cells_center_rule']:,}; "
+        f"AOI cells ({grid.get('aoi_mask_rule', 'center')}): "
+        f"{grid.get('active_cells_selected_mask_rule', grid['active_cells_center_rule']):,}; "
         f"tiles: {grid['tile_count']:,}"
     )
     print(

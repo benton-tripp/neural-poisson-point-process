@@ -4,12 +4,15 @@ import sys
 import unittest
 from pathlib import Path
 
+from shapely.geometry import box
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "scripts" / "data"))
 
 from ebird_covariates.planner import (  # noqa: E402
     expected_product_bands,
+    plan_tiles,
     snap_bounds,
     time_period_count,
     validate_config,
@@ -44,6 +47,36 @@ class PlannerUnitTests(unittest.TestCase):
         self.assertEqual(time_period_count("year_season", self.temporal), 16)
         self.assertEqual(time_period_count("month_normal", self.temporal), 12)
         self.assertEqual(time_period_count("release", self.temporal), 1)
+        self.assertEqual(
+            time_period_count(
+                "release", self.temporal, ["LF2016", "LF2022", "LF2023"]
+            ),
+            3,
+        )
+
+    def test_all_touched_mask_retains_boundary_intersection_cells(self) -> None:
+        geometry = box(1.0, 1.0, 10.0, 10.0)
+        center_tiles = plan_tiles(
+            geometry,
+            resolution=250.0,
+            tile_size=500.0,
+            origin_x=0.0,
+            origin_y=0.0,
+            aoi_mask_rule="center",
+        )
+        touched_tiles = plan_tiles(
+            geometry,
+            resolution=250.0,
+            tile_size=500.0,
+            origin_x=0.0,
+            origin_y=0.0,
+            aoi_mask_rule="all_touched",
+        )
+        self.assertEqual(center_tiles, [])
+        self.assertEqual(len(touched_tiles), 1)
+        self.assertEqual(touched_tiles[0]["active_cells_center_rule"], 0)
+        self.assertEqual(touched_tiles[0]["active_cells_all_touched_rule"], 1)
+        self.assertEqual(touched_tiles[0]["active_cells_selected_mask_rule"], 1)
 
     def test_expected_bands_expands_time_and_neighborhoods(self) -> None:
         product = {
@@ -69,6 +102,7 @@ class PlannerUnitTests(unittest.TestCase):
         validated = validate_config(config, sources)
         self.assertEqual(len(sources), 17)
         self.assertEqual(len(validated["sources"]), 17)
+        self.assertEqual(validated["grid"]["aoi_mask_rule"], "all_touched")
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import geopandas as gpd
 import numpy as np
+import pandas as pd
 import rasterio
 from rasterio.transform import from_origin
 from shapely.geometry import box
@@ -15,7 +16,16 @@ from shapely.geometry import box
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "scripts" / "data"))
 
-from ebird_covariates.nlcd_derive import circular_kernel, derive_nlcd  # noqa: E402
+from ebird_covariates.nlcd_derive import (  # noqa: E402
+    circular_kernel,
+    derive_nlcd,
+    mask_tile_to_aoi,
+)
+from ebird_covariates.nlcd_qa import (  # noqa: E402
+    plot_nlcd_tile_preview,
+    validate_nlcd_checklist_support,
+    validate_nlcd_derivation,
+)
 
 
 class AnnualNlcdDerivationTests(unittest.TestCase):
@@ -23,6 +33,96 @@ class AnnualNlcdDerivationTests(unittest.TestCase):
         kernel = circular_kernel(250.0, 250.0)
         self.assertAlmostEqual(float(kernel.sum()), float(np.pi), delta=0.03)
         self.assertTrue(np.any((kernel > 0.0) & (kernel < 1.0)))
+
+    def test_all_touched_aoi_mask_retains_boundary_cell(self) -> None:
+        tile = {"bounds_m": [0.0, 0.0, 500.0, 500.0]}
+        values = np.ones((2, 2), dtype=np.float32)
+        geometry = box(1.0, 1.0, 10.0, 10.0)
+        center = mask_tile_to_aoi(
+            values.copy(),
+            tile,
+            250.0,
+            geometry,
+            all_touched=False,
+        )
+        touched = mask_tile_to_aoi(
+            values.copy(),
+            tile,
+            250.0,
+            geometry,
+            all_touched=True,
+        )
+        self.assertTrue(np.all(center == -9999.0))
+        self.assertEqual(int(np.count_nonzero(touched != -9999.0)), 1)
+
+    def test_checklist_support_distinguishes_masks_extent_and_years(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            vrt_path = root / "annual_nlcd.tif"
+            nodata = -9999.0
+            values = np.ones((3, 2, 2), dtype=np.float32)
+            values[1, 0, 1] = nodata
+            descriptions = [
+                "availability__annual_nlcd__open_water_fraction__mean__r250__y2020",
+                "availability__annual_nlcd__open_water_fraction__mean__r1000__y2020",
+                "availability__annual_nlcd__open_water_fraction__mean__r5000__y2020",
+            ]
+            with rasterio.open(
+                vrt_path,
+                "w",
+                driver="GTiff",
+                width=2,
+                height=2,
+                count=3,
+                dtype="float32",
+                crs="EPSG:4326",
+                transform=from_origin(-80.0, 36.0, 1.0, 1.0),
+                nodata=nodata,
+            ) as dataset:
+                dataset.write(values)
+                for index, description in enumerate(descriptions, start=1):
+                    dataset.set_band_description(index, description)
+
+            checklist_path = root / "checklists.parquet"
+            pd.DataFrame(
+                {
+                    "sampling_event_identifier": ["inside", "masked", "outside", "old"],
+                    "latitude": [35.5, 35.5, 20.0, 34.5],
+                    "longitude": [-79.5, -78.5, -90.0, -79.5],
+                    "observation_date": [
+                        "2020-05-01",
+                        "2020-05-01",
+                        "2020-05-01",
+                        "2019-05-01",
+                    ],
+                }
+            ).to_parquet(checklist_path, index=False)
+            summary = {
+                "build_id": "support_test",
+                "release": "C1V2",
+                "logical_vrt": str(vrt_path),
+                "years": [2020],
+                "neighborhoods_m": [250, 1000, 5000],
+                "land_cover_classes": [{"value": 11, "name": "open_water"}],
+            }
+
+            validation, unsupported = validate_nlcd_checklist_support(
+                summary,
+                checklist_path,
+            )
+            self.assertEqual(validation["checklist_count"], 4)
+            self.assertEqual(validation["eligible_checklist_count"], 2)
+            support = {
+                record["radius_m"]: record
+                for record in validation["support_by_radius"]
+            }
+            self.assertEqual(support[250]["supported_checklists"], 2)
+            self.assertEqual(support[1000]["supported_checklists"], 1)
+            self.assertEqual(support[5000]["supported_checklists"], 2)
+            self.assertEqual(
+                set(unsupported["sampling_event_identifier"]),
+                {"masked", "outside", "old"},
+            )
 
     def write_source(
         self,
@@ -132,6 +232,11 @@ class AnnualNlcdDerivationTests(unittest.TestCase):
             self.assertEqual(summary["expected_band_count"], 7)
             self.assertEqual(summary["tile_count"], 4)
             self.assertEqual(summary["plan_tile_count"], 4)
+            self.assertEqual(summary["aoi_mask_rule"], "center")
+            self.assertEqual(summary["derived_cog_count"], 28)
+            self.assertGreater(summary["derived_cog_bytes"], 0)
+            self.assertGreater(summary["derived_cog_mib"], 0.0)
+            self.assertGreater(summary["elapsed_seconds"], 0.0)
             vrt_path = Path(summary["logical_vrt"])
             with rasterio.open(vrt_path) as dataset:
                 self.assertEqual(dataset.count, 7)
@@ -189,6 +294,49 @@ class AnnualNlcdDerivationTests(unittest.TestCase):
             self.assertEqual(pilot["tile_ids"], ["xp0000_yp0000"])
             with rasterio.open(pilot["logical_vrt"]) as dataset:
                 self.assertEqual((dataset.width, dataset.height), (4, 4))
+
+            validation = validate_nlcd_derivation(plan, pilot)
+            self.assertTrue(validation["all_checks_passed"], validation["issues"])
+            self.assertEqual(validation["band_count"], 7)
+            self.assertEqual(validation["derived_cog_count"], 7)
+            self.assertLessEqual(
+                validation["maximum_class_fraction_sum_error"],
+                1e-5,
+            )
+            self.assertEqual(validation["minimum_supported_aoi_fraction"], 1.0)
+            self.assertTrue(
+                all(
+                    check["supported_aoi_fraction"] == 1.0
+                    for check in validation["class_fraction_sum_checks"]
+                )
+            )
+            preview_path = plot_nlcd_tile_preview(
+                plan,
+                pilot,
+                "xp0000_yp0000",
+                root / "pilot_preview.png",
+            )
+            self.assertTrue(preview_path.exists())
+            self.assertGreater(preview_path.stat().st_size, 0)
+
+            plan["grid"]["aoi_mask_rule"] = "all_touched"
+            mismatched_validation = validate_nlcd_derivation(plan, pilot)
+            self.assertFalse(mismatched_validation["all_checks_passed"])
+            self.assertTrue(
+                any(
+                    "AOI mask rule" in issue
+                    for issue in mismatched_validation["issues"]
+                )
+            )
+            with self.assertRaisesRegex(ValueError, "Rerun with --overwrite"):
+                derive_nlcd(
+                    plan=plan,
+                    registration=registration,
+                    output_dir=pilot_output_dir,
+                    classes={41: "deciduous_forest", 42: "evergreen_forest"},
+                    tile_ids=["xp0000_yp0000"],
+                )
+            plan["grid"]["aoi_mask_rule"] = "center"
 
             with self.assertRaisesRegex(ValueError, "unknown_tile"):
                 derive_nlcd(

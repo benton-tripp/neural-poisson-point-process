@@ -93,6 +93,18 @@ class RasterEngineTests(unittest.TestCase):
                     tile_source.tags(ns="IMAGE_STRUCTURE").get("LAYOUT"),
                     "COG",
                 )
+                self.assertEqual(tile_source.tags().get("aoi_mask_rule"), "center")
+
+            plan["grid"]["aoi_mask_rule"] = "all_touched"
+            with self.assertRaisesRegex(ValueError, "Rerun with --overwrite"):
+                normalize_raster_to_tiles(
+                    plan=plan,
+                    source_path=source_path,
+                    output_dir=tile_dir,
+                    band_id="availability__synthetic__gradient__mean__r250__static",
+                    resampling="average",
+                )
+            plan["grid"]["aoi_mask_rule"] = "center"
 
             write_logical_vrt(plan, [inventory], vrt_path)
             expected = np.full((4, 4), -9999.0, dtype=np.float32)
