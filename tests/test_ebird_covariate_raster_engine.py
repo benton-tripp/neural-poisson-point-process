@@ -20,12 +20,33 @@ sys.path.insert(0, str(PROJECT_ROOT / "scripts" / "data"))
 from ebird_covariates.planner import plan_tiles  # noqa: E402
 from ebird_covariates.raster_engine import (  # noqa: E402
     normalize_raster_to_tiles,
+    safe_artifact_path,
     write_cog,
     write_logical_vrt,
 )
 
 
 class RasterEngineTests(unittest.TestCase):
+    def test_long_artifact_path_uses_stable_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / ("nested_" * 4)
+            value = "availability__" + "very_long_variable_name__" * 8
+            first = safe_artifact_path(
+                directory,
+                value,
+                ".tif",
+                maximum_absolute_length=180,
+            )
+            second = safe_artifact_path(
+                directory,
+                value,
+                ".tif",
+                maximum_absolute_length=180,
+            )
+        self.assertEqual(first, second)
+        self.assertLess(len(str(first.resolve())), 180)
+        self.assertRegex(first.stem, r"__[0-9a-f]{12}$")
+
     def test_cog_writer_removes_gdal_temporary_overview(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             output_path = Path(temporary_directory) / "large.tif"

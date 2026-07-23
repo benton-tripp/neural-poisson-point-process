@@ -69,7 +69,7 @@ def write_lookup(path: Path, release: str, values: list[int]) -> None:
         )
 
 
-def fixtures(root: Path):
+def fixtures(root: Path, *, disturbance: bool = False):
     artifacts = []
     for product, artifact_id in (
         ("EVT", "evt_model_crosswalk"),
@@ -79,7 +79,16 @@ def fixtures(root: Path):
         path = root / f"{product}.csv"
         write_lookup(path, "LF2023", [1, 2])
         artifacts.append({"id": artifact_id, "path": str(path)})
-    crosswalk = {"artifacts": artifacts}
+    if disturbance:
+        path = root / "Dist.csv"
+        write_lookup(path, "LF2023", [-9999, 0, 11, 16])
+        crosswalk = {
+            "artifacts": [
+                {"id": "disturbance_model_lookup", "path": str(path)}
+            ]
+        }
+    else:
+        crosswalk = {"artifacts": artifacts}
     plan = {
         "build_id": "fixture",
         "grid": {
@@ -95,10 +104,16 @@ def fixtures(root: Path):
     catalog = {
         "layers": [
             {
-                "role": "vegetation_release",
-                "layerName": "LF2023_EVT",
+                "role": (
+                    "annual_disturbance" if disturbance else "vegetation_release"
+                ),
+                "layerName": (
+                    "LF2023_Dist23" if disturbance else "LF2023_EVT"
+                ),
                 "version": "LF2023",
-                "acronym": "EVT",
+                "acronym": "Dist" if disturbance else "EVT",
+                "observation_year": 2023 if disturbance else None,
+                "content_year": 2023,
                 "image_server_url": (
                     "https://example.test/LF2023_EVT_CONUS/ImageServer"
                 ),
@@ -163,6 +178,26 @@ class LandfireExportTests(unittest.TestCase):
                     buffer_m=0,
                     session=session,
                 )
+
+    def test_exports_explicit_disturbance_layer(self) -> None:
+        values = np.array([[0, 11], [16, 0]], dtype=np.int16)
+        session = FakeSession(tiff_bytes(values))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            plan, catalog, lookup = fixtures(root, disturbance=True)
+            summary = export_landfire_tiles(
+                plan=plan,
+                catalog=catalog,
+                crosswalk_summary=lookup,
+                output_dir=root / "exports",
+                tile_ids=["xp0000_yp0000"],
+                layer_names=["LF2023_Dist23"],
+                buffer_m=0,
+                session=session,
+            )
+        record = summary["exports"][0]
+        self.assertEqual(record["product"], "Dist")
+        self.assertEqual(record["observation_year"], 2023)
 
 
 if __name__ == "__main__":

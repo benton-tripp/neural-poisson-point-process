@@ -528,3 +528,614 @@ def write_landfire_derivation_validation(
     temporary = output_path.with_suffix(output_path.suffix + ".tmp")
     temporary.write_text(json.dumps(validation, indent=2) + "\n", encoding="utf-8")
     temporary.replace(output_path)
+
+
+def validate_landfire_checklist_support(
+    plan: dict[str, Any],
+    manifest: dict[str, Any],
+    checklist_path: Path,
+    release: str,
+) -> tuple[dict[str, Any], Any]:
+    """Measure one completed LANDFIRE release at processed checklist locations."""
+    import pandas as pd
+    import pyarrow.parquet as pq
+    from pyproj import Transformer
+
+    release = release.upper()
+    grid = plan["grid"]
+    plan_tiles = list(grid["tiles"])
+    plan_tile_ids = [str(tile["tile_id"]) for tile in plan_tiles]
+    release_units = [
+        unit
+        for unit in manifest.get("units", [])
+        if unit.get("component") == "vegetation"
+        and str(unit.get("release", "")).upper() == release
+    ]
+    units_by_tile = {str(unit["tile_id"]): unit for unit in release_units}
+    missing_tiles = [tile_id for tile_id in plan_tile_ids if tile_id not in units_by_tile]
+    unexpected_tiles = sorted(set(units_by_tile) - set(plan_tile_ids))
+    incomplete_tiles = sorted(
+        tile_id
+        for tile_id, unit in units_by_tile.items()
+        if unit.get("status") != "completed"
+    )
+    if missing_tiles or unexpected_tiles or incomplete_tiles:
+        problems = []
+        if missing_tiles:
+            problems.append("missing tiles: " + ", ".join(missing_tiles))
+        if unexpected_tiles:
+            problems.append("unexpected tiles: " + ", ".join(unexpected_tiles))
+        if incomplete_tiles:
+            problems.append("incomplete tiles: " + ", ".join(incomplete_tiles))
+        raise ValueError(
+            f"LANDFIRE {release} is not a complete plan-tile release: "
+            + "; ".join(problems)
+        )
+
+    summaries: dict[str, dict[str, Any]] = {}
+    validations: dict[str, dict[str, Any]] = {}
+    for tile_id in plan_tile_ids:
+        unit = units_by_tile[tile_id]
+        summary_path = Path(unit["summary_path"])
+        validation_path = Path(unit["validation_path"])
+        if not summary_path.exists():
+            raise FileNotFoundError(f"LANDFIRE summary does not exist: {summary_path}")
+        if not validation_path.exists():
+            raise FileNotFoundError(
+                f"LANDFIRE validation does not exist: {validation_path}"
+            )
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        validation = json.loads(validation_path.read_text(encoding="utf-8"))
+        if str(summary.get("release", "")).upper() != release:
+            raise ValueError(f"LANDFIRE summary release differs for {tile_id}.")
+        if not validation.get("all_checks_passed", False):
+            raise ValueError(f"LANDFIRE validation does not pass for {tile_id}.")
+        summaries[tile_id] = summary
+        validations[tile_id] = validation
+
+    radii = [int(value) for value in summaries[plan_tile_ids[0]]["neighborhoods_m"]]
+    for tile_id, summary in summaries.items():
+        summary_radii = [int(value) for value in summary["neighborhoods_m"]]
+        if summary_radii != radii:
+            raise ValueError(f"LANDFIRE neighborhood schema differs for {tile_id}.")
+
+    required_columns = {
+        "sampling_event_identifier",
+        "latitude",
+        "longitude",
+        "observation_date",
+    }
+    optional_columns = [
+        "locality_id",
+        "locality",
+        "locality_type",
+        "protocol_name",
+        "effort_distance_km",
+        "distance_to_coastline_m",
+    ]
+    available_columns = set(pq.ParquetFile(checklist_path).schema.names)
+    missing_columns = sorted(required_columns - available_columns)
+    if missing_columns:
+        raise ValueError(
+            "Checklist Parquet is missing required columns: "
+            + ", ".join(missing_columns)
+        )
+    columns = sorted(required_columns) + [
+        column for column in optional_columns if column in available_columns
+    ]
+    checklists = pd.read_parquet(checklist_path, columns=columns)
+
+    checklist_count = len(checklists)
+    latitude = pd.to_numeric(checklists["latitude"], errors="coerce").to_numpy(
+        dtype=np.float64
+    )
+    longitude = pd.to_numeric(
+        checklists["longitude"], errors="coerce"
+    ).to_numpy(dtype=np.float64)
+    coordinate_valid = np.isfinite(latitude) & np.isfinite(longitude)
+    projected_x = np.full(checklist_count, np.nan, dtype=np.float64)
+    projected_y = np.full(checklist_count, np.nan, dtype=np.float64)
+    valid_positions = np.flatnonzero(coordinate_valid)
+    transformer = Transformer.from_crs(
+        "EPSG:4326", grid["crs"], always_xy=True
+    )
+    transformed_x, transformed_y = transformer.transform(
+        longitude[valid_positions], latitude[valid_positions], errcheck=False
+    )
+    transformed_valid = np.isfinite(transformed_x) & np.isfinite(transformed_y)
+    transformed_positions = valid_positions[transformed_valid]
+    projected_x[transformed_positions] = np.asarray(transformed_x)[transformed_valid]
+    projected_y[transformed_positions] = np.asarray(transformed_y)[transformed_valid]
+    projected_coordinate_valid = np.isfinite(projected_x) & np.isfinite(projected_y)
+
+    tile_assignment = np.full(checklist_count, "", dtype=object)
+    maximum_right = max(float(tile["bounds_m"][2]) for tile in plan_tiles)
+    maximum_top = max(float(tile["bounds_m"][3]) for tile in plan_tiles)
+    for tile in plan_tiles:
+        left, bottom, right, top = [float(value) for value in tile["bounds_m"]]
+        right_test = (
+            projected_x <= right if right == maximum_right else projected_x < right
+        )
+        top_test = projected_y <= top if top == maximum_top else projected_y < top
+        selected = (
+            projected_coordinate_valid
+            & (tile_assignment == "")
+            & (projected_x >= left)
+            & right_test
+            & (projected_y >= bottom)
+            & top_test
+        )
+        tile_assignment[selected] = str(tile["tile_id"])
+
+    in_plan_tile = tile_assignment != ""
+    in_tile_raster_extent = np.zeros(checklist_count, dtype=bool)
+    support_by_radius = {
+        radius: np.zeros(checklist_count, dtype=bool) for radius in radii
+    }
+    release_slug = release.lower()
+    support_variable = "evt_forest_tree_fraction"
+    for tile_id in plan_tile_ids:
+        positions = np.flatnonzero(tile_assignment == tile_id)
+        if positions.size == 0:
+            continue
+        logical_vrt = Path(summaries[tile_id]["logical_vrt"])
+        if not logical_vrt.exists():
+            raise FileNotFoundError(f"LANDFIRE logical VRT does not exist: {logical_vrt}")
+        with rasterio.open(logical_vrt) as dataset:
+            if dataset.crs is None:
+                raise ValueError(f"LANDFIRE logical VRT has no CRS: {logical_vrt}")
+            if dataset.crs != CRS.from_user_input(grid["crs"]):
+                raise ValueError(f"LANDFIRE logical VRT has the wrong CRS: {logical_vrt}")
+            description_to_index = {
+                description: index + 1
+                for index, description in enumerate(dataset.descriptions)
+                if description is not None
+            }
+            required_bands = {}
+            for radius in radii:
+                identifier = (
+                    f"availability__landfire__{support_variable}__mean__"
+                    f"r{radius}__{release_slug}"
+                )
+                if identifier not in description_to_index:
+                    raise ValueError(
+                        f"LANDFIRE logical VRT is missing support band {identifier}."
+                    )
+                required_bands[radius] = description_to_index[identifier]
+            rows, columns_index = rasterio.transform.rowcol(
+                dataset.transform,
+                projected_x[positions],
+                projected_y[positions],
+            )
+            rows = np.asarray(rows, dtype=np.int64)
+            columns_index = np.asarray(columns_index, dtype=np.int64)
+            local_extent = (
+                (rows >= 0)
+                & (rows < dataset.height)
+                & (columns_index >= 0)
+                & (columns_index < dataset.width)
+            )
+            local_positions = positions[local_extent]
+            in_tile_raster_extent[local_positions] = True
+            for radius in radii:
+                values = dataset.read(required_bands[radius], masked=True)
+                value_mask = np.ma.getmaskarray(values)
+                support_by_radius[radius][local_positions] = ~value_mask[
+                    rows[local_extent], columns_index[local_extent]
+                ]
+
+    eligible = coordinate_valid & in_plan_tile & in_tile_raster_extent
+    eligible_count = int(np.count_nonzero(eligible))
+    support_records = []
+    for radius in radii:
+        supported_count = int(np.count_nonzero(eligible & support_by_radius[radius]))
+        support_records.append(
+            {
+                "radius_m": radius,
+                "eligible_checklists": eligible_count,
+                "supported_checklists": supported_count,
+                "unsupported_checklists": eligible_count - supported_count,
+                "supported_fraction": (
+                    supported_count / eligible_count if eligible_count else None
+                ),
+            }
+        )
+
+    tile_support_records = []
+    for tile_id in plan_tile_ids:
+        tile_eligible = eligible & (tile_assignment == tile_id)
+        tile_eligible_count = int(np.count_nonzero(tile_eligible))
+        for radius in radii:
+            supported_count = int(
+                np.count_nonzero(tile_eligible & support_by_radius[radius])
+            )
+            tile_support_records.append(
+                {
+                    "tile_id": tile_id,
+                    "radius_m": radius,
+                    "eligible_checklists": tile_eligible_count,
+                    "supported_checklists": supported_count,
+                    "unsupported_checklists": tile_eligible_count - supported_count,
+                    "supported_fraction": (
+                        supported_count / tile_eligible_count
+                        if tile_eligible_count
+                        else None
+                    ),
+                }
+            )
+
+    all_radius_support = np.logical_and.reduce(
+        [support_by_radius[radius] for radius in radii]
+    )
+    unsupported_any = ~eligible | ~all_radius_support
+    diagnostics = checklists.copy()
+    diagnostics["landfire_release"] = release
+    diagnostics["landfire_tile_id"] = tile_assignment
+    diagnostics["coordinate_valid"] = coordinate_valid
+    diagnostics["coordinate_in_plan_tile"] = in_plan_tile
+    diagnostics["coordinate_in_tile_raster_extent"] = in_tile_raster_extent
+    for radius in radii:
+        diagnostics[f"landfire_supported_r{radius}"] = support_by_radius[radius]
+    unsupported = diagnostics.loc[unsupported_any].copy()
+
+    validation = {
+        "schema_version": 1,
+        "validated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "build_id": manifest.get("build_id", plan.get("build_id")),
+        "source_id": "landfire",
+        "release": release,
+        "checklist_path": str(checklist_path),
+        "support_variable": support_variable,
+        "release_tile_count": len(plan_tile_ids),
+        "checklist_count": checklist_count,
+        "coordinate_valid_count": int(np.count_nonzero(coordinate_valid)),
+        "coordinate_in_plan_tile_count": int(
+            np.count_nonzero(coordinate_valid & in_plan_tile)
+        ),
+        "coordinate_in_tile_raster_extent_count": int(
+            np.count_nonzero(coordinate_valid & in_tile_raster_extent)
+        ),
+        "eligible_checklist_count": eligible_count,
+        "unsupported_at_any_radius_count": int(np.count_nonzero(unsupported_any)),
+        "support_by_radius": support_records,
+        "support_by_tile_radius": tile_support_records,
+    }
+    return validation, unsupported
+
+
+def write_landfire_checklist_support(
+    validation: dict[str, Any],
+    unsupported: Any,
+    output_path: Path,
+    unsupported_output_path: Path,
+) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_json = output_path.with_suffix(output_path.suffix + ".tmp")
+    temporary_json.write_text(
+        json.dumps(validation, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    temporary_json.replace(output_path)
+
+    unsupported_output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_csv = unsupported_output_path.with_suffix(
+        unsupported_output_path.suffix + ".tmp"
+    )
+    unsupported.to_csv(temporary_csv, index=False)
+    temporary_csv.replace(unsupported_output_path)
+
+
+def compare_landfire_releases(
+    plan: dict[str, Any],
+    manifest: dict[str, Any],
+    baseline_release: str,
+    comparison_release: str,
+    tile_ids: list[str] | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Compare two complete vegetation releases on the same plan grid."""
+    baseline_release = baseline_release.upper()
+    comparison_release = comparison_release.upper()
+    if baseline_release == comparison_release:
+        raise ValueError("Baseline and comparison LANDFIRE releases must differ.")
+
+    plan_tile_ids = [str(tile["tile_id"]) for tile in plan["grid"]["tiles"]]
+    release_content: dict[str, dict[str, dict[str, Any]]] = {}
+    for release in (baseline_release, comparison_release):
+        units = {
+            str(unit["tile_id"]): unit
+            for unit in manifest.get("units", [])
+            if unit.get("component") == "vegetation"
+            and str(unit.get("release", "")).upper() == release
+        }
+        missing = [tile_id for tile_id in plan_tile_ids if tile_id not in units]
+        unexpected = sorted(set(units) - set(plan_tile_ids))
+        incomplete = sorted(
+            tile_id
+            for tile_id, unit in units.items()
+            if unit.get("status") != "completed"
+        )
+        if missing or unexpected or incomplete:
+            problems = []
+            if missing:
+                problems.append("missing tiles: " + ", ".join(missing))
+            if unexpected:
+                problems.append("unexpected tiles: " + ", ".join(unexpected))
+            if incomplete:
+                problems.append("incomplete tiles: " + ", ".join(incomplete))
+            raise ValueError(
+                f"LANDFIRE {release} is not a complete plan-tile release: "
+                + "; ".join(problems)
+            )
+
+        summaries: dict[str, dict[str, Any]] = {}
+        validations: dict[str, dict[str, Any]] = {}
+        for tile_id in plan_tile_ids:
+            summary_path = Path(units[tile_id]["summary_path"])
+            validation_path = Path(units[tile_id]["validation_path"])
+            if not summary_path.exists() or not validation_path.exists():
+                raise FileNotFoundError(
+                    f"LANDFIRE {release} artifacts are missing for {tile_id}."
+                )
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            validation = json.loads(validation_path.read_text(encoding="utf-8"))
+            if str(summary.get("release", "")).upper() != release:
+                raise ValueError(f"LANDFIRE summary release differs for {tile_id}.")
+            if not validation.get("all_checks_passed", False):
+                raise ValueError(f"LANDFIRE validation does not pass for {tile_id}.")
+            summaries[tile_id] = summary
+            validations[tile_id] = validation
+        release_content[release] = {
+            "summaries": summaries,
+            "validations": validations,
+        }
+
+    selected_tile_ids = list(tile_ids) if tile_ids else list(plan_tile_ids)
+    invalid_tiles = sorted(set(selected_tile_ids) - set(plan_tile_ids))
+    if invalid_tiles:
+        raise ValueError(
+            "Comparison tile IDs are outside the plan: " + ", ".join(invalid_tiles)
+        )
+    if not selected_tile_ids:
+        raise ValueError("At least one LANDFIRE comparison tile is required.")
+
+    support_differences = []
+    for tile_id in plan_tile_ids:
+        checks_by_release = {}
+        for release in (baseline_release, comparison_release):
+            checks = release_content[release]["validations"][tile_id][
+                "evt_fraction_sum_checks"
+            ]
+            checks_by_release[release] = {
+                int(check["radius_m"]): check for check in checks
+            }
+        if set(checks_by_release[baseline_release]) != set(
+            checks_by_release[comparison_release]
+        ):
+            raise ValueError(f"LANDFIRE support radii differ for {tile_id}.")
+        for radius in sorted(checks_by_release[baseline_release]):
+            baseline_support = checks_by_release[baseline_release][radius][
+                "supported_aoi_fraction"
+            ]
+            comparison_support = checks_by_release[comparison_release][radius][
+                "supported_aoi_fraction"
+            ]
+            difference = (
+                float(comparison_support) - float(baseline_support)
+                if baseline_support is not None and comparison_support is not None
+                else None
+            )
+            support_differences.append(
+                {
+                    "tile_id": tile_id,
+                    "radius_m": radius,
+                    "baseline_supported_aoi_fraction": baseline_support,
+                    "comparison_supported_aoi_fraction": comparison_support,
+                    "difference": difference,
+                }
+            )
+
+    accumulators: dict[str, dict[str, Any]] = {}
+    matched_band_count: int | None = None
+    for tile_id in selected_tile_ids:
+        paths = {
+            release: Path(
+                release_content[release]["summaries"][tile_id]["logical_vrt"]
+            )
+            for release in (baseline_release, comparison_release)
+        }
+        for path in paths.values():
+            if not path.exists():
+                raise FileNotFoundError(f"LANDFIRE logical VRT does not exist: {path}")
+        with rasterio.open(paths[baseline_release]) as baseline_dataset, rasterio.open(
+            paths[comparison_release]
+        ) as comparison_dataset:
+            if (
+                baseline_dataset.crs != comparison_dataset.crs
+                or baseline_dataset.transform != comparison_dataset.transform
+                or baseline_dataset.shape != comparison_dataset.shape
+                or baseline_dataset.count != comparison_dataset.count
+            ):
+                raise ValueError(f"LANDFIRE release grids differ for {tile_id}.")
+            baseline_descriptions = list(baseline_dataset.descriptions)
+            comparison_descriptions = list(comparison_dataset.descriptions)
+            if any(value is None for value in baseline_descriptions) or any(
+                value is None for value in comparison_descriptions
+            ):
+                raise ValueError(f"LANDFIRE band descriptions are missing for {tile_id}.")
+            normalized_baseline = [
+                re.sub(r"__lf\d{4}$", "", str(value).lower())
+                for value in baseline_descriptions
+            ]
+            normalized_comparison = [
+                re.sub(r"__lf\d{4}$", "", str(value).lower())
+                for value in comparison_descriptions
+            ]
+            if normalized_baseline != normalized_comparison:
+                raise ValueError(f"LANDFIRE release schemas differ for {tile_id}.")
+            if matched_band_count is None:
+                matched_band_count = baseline_dataset.count
+            elif matched_band_count != baseline_dataset.count:
+                raise ValueError("LANDFIRE tile band counts differ within the release.")
+
+            for band_index, normalized_id in enumerate(normalized_baseline, start=1):
+                parsed = parse_band_id(str(baseline_descriptions[band_index - 1]))
+                record = accumulators.setdefault(
+                    normalized_id,
+                    {
+                        "band_id_without_release": normalized_id,
+                        "variable": parsed["variable"],
+                        "statistic": parsed["statistic"],
+                        "radius_m": parsed["radius_m"],
+                        "overlap_valid_cells": 0,
+                        "mask_union_cells": 0,
+                        "mask_mismatch_cells": 0,
+                        "sum_baseline": 0.0,
+                        "sum_comparison": 0.0,
+                        "sum_baseline_squared": 0.0,
+                        "sum_comparison_squared": 0.0,
+                        "sum_cross_product": 0.0,
+                        "sum_absolute_delta": 0.0,
+                        "sum_squared_delta": 0.0,
+                    },
+                )
+                baseline_values = baseline_dataset.read(band_index, masked=True)
+                comparison_values = comparison_dataset.read(band_index, masked=True)
+                baseline_mask = np.ma.getmaskarray(baseline_values)
+                comparison_mask = np.ma.getmaskarray(comparison_values)
+                valid = ~(baseline_mask | comparison_mask)
+                record["mask_union_cells"] += int(
+                    np.count_nonzero(~(baseline_mask & comparison_mask))
+                )
+                record["mask_mismatch_cells"] += int(
+                    np.count_nonzero(baseline_mask ^ comparison_mask)
+                )
+                if not np.any(valid):
+                    continue
+                baseline_valid = np.asarray(
+                    baseline_values.data[valid], dtype=np.float64
+                )
+                comparison_valid = np.asarray(
+                    comparison_values.data[valid], dtype=np.float64
+                )
+                difference = comparison_valid - baseline_valid
+                record["overlap_valid_cells"] += int(baseline_valid.size)
+                record["sum_baseline"] += float(np.sum(baseline_valid))
+                record["sum_comparison"] += float(np.sum(comparison_valid))
+                record["sum_baseline_squared"] += float(
+                    np.sum(np.square(baseline_valid))
+                )
+                record["sum_comparison_squared"] += float(
+                    np.sum(np.square(comparison_valid))
+                )
+                record["sum_cross_product"] += float(
+                    np.sum(baseline_valid * comparison_valid)
+                )
+                record["sum_absolute_delta"] += float(np.sum(np.abs(difference)))
+                record["sum_squared_delta"] += float(np.sum(np.square(difference)))
+
+    metrics = []
+    for record in accumulators.values():
+        count = int(record["overlap_valid_cells"])
+        mask_union = int(record["mask_union_cells"])
+        if count:
+            baseline_mean = record["sum_baseline"] / count
+            comparison_mean = record["sum_comparison"] / count
+            mean_delta = comparison_mean - baseline_mean
+            mean_absolute_delta = record["sum_absolute_delta"] / count
+            root_mean_squared_delta = np.sqrt(record["sum_squared_delta"] / count)
+            baseline_variation = (
+                record["sum_baseline_squared"]
+                - record["sum_baseline"] ** 2 / count
+            )
+            comparison_variation = (
+                record["sum_comparison_squared"]
+                - record["sum_comparison"] ** 2 / count
+            )
+            covariance = (
+                record["sum_cross_product"]
+                - record["sum_baseline"] * record["sum_comparison"] / count
+            )
+            pearson = (
+                covariance / np.sqrt(baseline_variation * comparison_variation)
+                if baseline_variation > 0 and comparison_variation > 0
+                else None
+            )
+        else:
+            baseline_mean = None
+            comparison_mean = None
+            mean_delta = None
+            mean_absolute_delta = None
+            root_mean_squared_delta = None
+            pearson = None
+        metrics.append(
+            {
+                "band_id_without_release": record["band_id_without_release"],
+                "variable": record["variable"],
+                "statistic": record["statistic"],
+                "radius_m": record["radius_m"],
+                "overlap_valid_cells": count,
+                "baseline_mean": baseline_mean,
+                "comparison_mean": comparison_mean,
+                "mean_delta": mean_delta,
+                "mean_absolute_delta": mean_absolute_delta,
+                "root_mean_squared_delta": root_mean_squared_delta,
+                "pearson": pearson,
+                "mask_union_cells": mask_union,
+                "mask_mismatch_cells": int(record["mask_mismatch_cells"]),
+                "mask_mismatch_fraction": (
+                    record["mask_mismatch_cells"] / mask_union
+                    if mask_union
+                    else None
+                ),
+            }
+        )
+    metrics.sort(key=lambda value: value["band_id_without_release"])
+    support_values = [
+        abs(record["difference"])
+        for record in support_differences
+        if record["difference"] is not None
+    ]
+    summary = {
+        "schema_version": 1,
+        "validated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "build_id": manifest.get("build_id", plan.get("build_id")),
+        "source_id": "landfire",
+        "baseline_release": baseline_release,
+        "comparison_release": comparison_release,
+        "release_tile_count": len(plan_tile_ids),
+        "comparison_tile_ids": selected_tile_ids,
+        "comparison_tile_count": len(selected_tile_ids),
+        "matched_band_count": matched_band_count,
+        "support_comparison_count": len(support_differences),
+        "maximum_absolute_support_difference": max(support_values, default=None),
+        "nonzero_support_difference_count": sum(
+            value > 0 for value in support_values
+        ),
+        "support_differences": support_differences,
+        "structural_checks_passed": True,
+    }
+    return summary, metrics
+
+
+def write_landfire_release_comparison(
+    summary: dict[str, Any],
+    metrics: list[dict[str, Any]],
+    output_path: Path,
+    metrics_output_path: Path,
+) -> None:
+    import csv
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_json = output_path.with_suffix(output_path.suffix + ".tmp")
+    temporary_json.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    temporary_json.replace(output_path)
+
+    metrics_output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_csv = metrics_output_path.with_suffix(metrics_output_path.suffix + ".tmp")
+    fieldnames = list(metrics[0]) if metrics else []
+    with temporary_csv.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        if fieldnames:
+            writer.writeheader()
+            writer.writerows(metrics)
+    temporary_csv.replace(metrics_output_path)

@@ -1518,16 +1518,26 @@ while this ecological predictor
 intervention is built. Full definitions and exact commands are maintained in
 the dedicated covariate ledger.
 
-The LANDFIRE LF2023 bounded model-scale gate also now passes. Each release has
-a stable 46-band vegetation schema: nine portable EVT class fractions and
-dominant-lifeform-conditional tree/shrub/herb cover and height at 250 m, 1 km,
-and 5 km, plus modeled-source coverage. Interior and coastal pilots pass COG,
-grid, value-range, VRT-order, sparse-band, and EVT class-closure checks with a
-maximum fraction-sum error of `7.15e-07`. Coastal modeled support is 99.04%,
-97.81%, and 90.43% by increasing radius because neighborhoods reach official
-LANDFIRE `Fill-NoData` ocean cells. This is retained as support information,
-not imputed habitat. Annual disturbance and LF2016/LF2022 bounded checks are
-next; the frozen locality-season model is not yet refit.
+The bounded LANDFIRE semantic and multi-release gate now passes. LF2016,
+LF2022, and LF2023 each use a stable 46-band vegetation schema: nine portable
+EVT class fractions and dominant-lifeform-conditional tree/shrub/herb cover
+and height at 250 m, 1 km, and 5 km, plus modeled-source coverage. Interior and
+coastal pilots pass COG, grid, value-range, VRT-order, sparse-band, mapped, and
+EVT class-closure checks. LF2016/LF2022 maximum closure errors are at most
+`8.34e-07`; LF2023 is `7.15e-07`. Coastal modeled support is consistently
+99.04%, 97.81%, and 90.43% by increasing radius because neighborhoods reach
+official LANDFIRE `Fill-NoData` ocean cells. This is retained as support
+information, not imputed habitat.
+
+Annual Dist20-Dist23 is also implemented as 12 year-and-radius-specific
+disturbance-fraction bands. Official Background codes provide valid
+undisturbed terrestrial support, while Fill and positive Water mask codes are
+excluded from the denominator. Interior and coastal numerical and mapped QA
+pass. The complete covariate regression suite now passes 42 tests. Vegetation
+source age remains an observation-year/release provenance scalar for the
+date-aware extractor rather than a spatially duplicated COG. Full-NC
+LANDFIRE orchestration and named materialization profiles are next; the frozen
+locality-season model is not yet refit.
 
 ```text
 python scripts/data/ebird-covariates.py plan --config config/ebird_covariates/nc_2020_2023_v1.json
@@ -9912,3 +9922,107 @@ python exp/diagnose_ebird_latent_availability.py --latent-dir data/ebird/localit
    The full covariate regression gate now passes all 35 tests. Proceed to
    Dist20-Dist23 and bounded LF2016/LF2022 checks before statewide LANDFIRE
    materialization; keep the accepted latent model frozen.
+59. Completed annual LANDFIRE disturbance semantics/derivation and bounded
+   LF2016/LF2022 replication. Dist20-Dist23 now produces 12 exact annual
+   disturbance-fraction bands across 250 m, 1 km, and 5 km neighborhoods.
+   Official Background is valid undisturbed support; Fill and Water masks are
+   excluded from both event numerator and terrestrial denominator. Both
+   interior and coastal pilots pass automated and mapped QA. Coastal support
+   remains 99.04%, 97.81%, and 90.43% across the three radii, showing the same
+   declared terrestrial truncation as vegetation rather than ocean-zero
+   imputation. LF2016 and LF2022 each retain 46 nonempty vegetation bands on
+   both pilots, with maximum EVT closure error no larger than `8.34e-07`;
+   release-to-release maps are coherent and seam-free. A Windows path-length
+   failure found during LF2016 was fixed in the shared raster engine by
+   shortening only physical artifact names while retaining complete logical
+   feature IDs and metadata. The full covariate suite now passes 42 tests.
+   Treat vegetation source age as a date-aware extraction/provenance scalar,
+   not a spatial raster. The next data step is resumable full-NC LANDFIRE
+   orchestration and explicit core/sensitivity materialization profiles.
+   Continue to hold the latent likelihood and model parameters fixed.
+60. Implemented and validated resumable full-NC LANDFIRE orchestration without
+   starting statewide raster execution. The fixed 27-tile plan resolves to 108
+   atomic units: 81 tile-by-release vegetation units and 27 tile-level
+   Dist20-Dist23 units. A unit is reusable only when its summary, passing QA,
+   VRT, inventories, and every referenced COG are present. The manifest hashes
+   the grid, source semantics, derivation settings, unit schedule, and profile
+   contract; incompatible reuse fails closed. Three shared-COG VRT profiles
+   are now explicit: `core` (150 raster bands), `no-structure` (96),
+   and `no-disturbance` (138). Release identity and vegetation source age
+   remain date-aware row provenance rather than redundant raster bands. The
+   real NC dry run reported `0/108` units on its first invocation and
+   resumed the same manifest on its second; no source rasters were requested.
+   Unit ordering, schema counts, artifact completeness, contract locking, and
+   failed-attempt batch limits are covered, and the full covariate suite passes
+   50 tests. Begin with a six-unit batch and no `--overwrite`, then inspect
+   runtime, storage, and validation before scaling. This remains covariate
+   infrastructure work: do not change or refit the accepted locality-season
+   likelihood until LANDFIRE and the remaining enriched sources are assembled,
+   sampled, and evaluated under the frozen comparison design.
+61. Completed the first bounded statewide LANDFIRE production batch. Six
+   LF2016 tile/release units advanced the resumable manifest to 6/108 with zero
+   failures, one attempt per unit, and no accidental reuse. End-to-end time was
+   336 seconds. The batch retained 473.16 MiB of raw official ImageServer
+   exports and wrote 34.87 MiB across 268 derived COGs; the complete state-build
+   directory is 508.67 MiB. Every unit passes grid, range, COG, VRT-order,
+   support, and EVT closure checks, with maximum closure error `8.34e-07`.
+   The eight empty logical bands are conditional shrub cover/height features
+   in low-support tile/radius combinations and remain represented by empty
+   inventories as designed. Support is complete on four units,
+   99.9922%/99.9792%/99.8257% on `xp0015_yp0013`, and
+   98.2917%/96.9308%/89.5450% on the eastern-edge
+   `xp0016_yp0013` at 250 m/1 km/5 km. Keep the next batch at six units:
+   it ends on the established coastal gate tile `xp0017_yp0014` and
+   provides the next support/resume check before increasing throughput. This
+   successful infrastructure batch does not change the frozen
+   locality-season model or its promotion criteria.
+62. Completed the second bounded statewide LANDFIRE production batch and
+   verified real resume behavior. The prior six units were reused without new
+   attempts, six new LF2016 units completed on their first attempt, and the
+   manifest advanced to 12/108 with zero failures. The new work took 273
+   seconds, retained 473.22 MiB of raw exports, and produced 99.23 MiB of
+   derived COGs. Cumulative state is 1,081.64 MiB across 1,179 files, including
+   542 COGs. Every new unit passes grid, range, COG, VRT-order, support, and
+   EVT closure checks; maximum closure error is `8.94e-07`. The coastal gate
+   `xp0017_yp0014` retained 99.0350%/97.8138%/90.4327% AOI support at
+   250 m/1 km/5 km, consistent with the accepted shoreline/source-edge
+   interpretation. Increase the next batch to 15 units to finish all 27
+   LF2016 tiles, then stop for release-wide QA before LF2022. Continue without
+   `--overwrite`, and keep the accepted locality-season model frozen.
+63. Completed and promoted the full 27-tile LF2016 North Carolina release.
+   The third production invocation reused the prior 12 units, completed the
+   remaining 15 on their first attempts, and advanced the manifest to 27/108
+   with zero failures. The new work took 733 seconds, retained 1,183.02 MiB of
+   raw exports, and wrote 189.61 MiB across 684 COGs. Cumulative LF2016 state
+   is 2,455.58 MiB across 2,658 files, including 2,129.44 MiB raw and 323.70
+   MiB across 1,226 COGs. All 27 validations pass; maximum EVT closure error is
+   `9.54e-07`. Representative western-edge, interior, coastal, and outer-coast
+   previews are coherent and seam-free. A new release-level
+   `validate-landfire-checklist-support` gate confirms support for all 661,979
+   checklists at 250 m, all but one at 1 km, and all but six at 5 km. The six
+   unsupported-at-any-radius records are explicitly pelagic/nearshore
+   observations, so terrestrial NoData is correct rather than a coverage
+   failure. The full covariate suite passes 52 tests. LF2016 is promoted, but
+   the whole LANDFIRE block is not: proceed with one 27-unit LF2022 batch to
+   stop at 54/108, repeat release-wide mapped/checklist QA, continue without
+   `--overwrite`, and keep the accepted locality-season model frozen.
+64. Completed and promoted the full 27-tile LF2022 North Carolina release.
+   The production invocation reused all 27 LF2016 units, completed all 27
+   LF2022 units on their first attempts, and advanced the manifest to 54/108
+   with zero failures. LF2022 took 1,176 seconds, retained 2,129.44 MiB of raw
+   exports, and wrote 334.08 MiB across 1,224 COGs. All 27 validations pass;
+   maximum EVT closure error is `1.07e-06`. Cumulative LF2016 plus LF2022 state
+   is 4,920.26 MiB across 5,319 files and 2,450 COGs. Representative western,
+   interior, coastal, and outer-coast maps are coherent and seam-free.
+   Checklist support is identical to LF2016: 100.0000%, 99.9998%, and 99.9991%
+   at 250 m, 1 km, and 5 km, with the same six explicitly pelagic/nearshore
+   unsupported records. Added a reusable `compare-landfire-releases` gate.
+   It confirms matching 46-band schemas, zero differences across all 81
+   tile/radius support comparisons, exact source-coverage agreement, and
+   spatially aligned changes on four representative tiles. Release differences
+   must not be interpreted as pure ecological change: they combine landscape
+   change with source/classification updates, so release identity and source
+   age remain required provenance and `no-structure` remains a sensitivity.
+   The complete covariate suite passes 53 tests. Proceed with all 27 LF2023
+   units to stop at 81/108, repeat the same release gates, continue without
+   `--overwrite`, and keep the accepted locality-season model frozen.

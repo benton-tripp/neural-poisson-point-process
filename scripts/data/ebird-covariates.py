@@ -25,15 +25,32 @@ from ebird_covariates.landfire_attributes import (
     extract_attribute_tables as extract_landfire_attribute_tables,
     write_attribute_summary as write_landfire_attribute_summary,
 )
+from ebird_covariates.landfire_build import (
+    PROFILE_DEFINITIONS as LANDFIRE_PROFILE_DEFINITIONS,
+    build_landfire_state,
+)
 from ebird_covariates.landfire_crosswalk import (
     build_crosswalks as build_landfire_crosswalks,
+)
+from ebird_covariates.landfire_disturbance import build_disturbance_lookup
+from ebird_covariates.landfire_disturbance_derive import (
+    derive_landfire_disturbance,
+)
+from ebird_covariates.landfire_disturbance_qa import (
+    plot_landfire_disturbance_preview,
+    validate_landfire_disturbance_derivation,
+    write_landfire_disturbance_validation,
 )
 from ebird_covariates.landfire_derive import derive_landfire
 from ebird_covariates.landfire_export import export_landfire_tiles
 from ebird_covariates.landfire_qa import (
+    compare_landfire_releases,
     plot_landfire_tile_preview,
+    validate_landfire_checklist_support,
     validate_landfire_derivation,
+    write_landfire_checklist_support,
     write_landfire_derivation_validation,
+    write_landfire_release_comparison,
 )
 from ebird_covariates.planner import (
     build_plan,
@@ -445,6 +462,26 @@ def parse_args() -> argparse.Namespace:
         help="Replace previously generated crosswalk files.",
     )
 
+    disturbance_lookup_parser = subparsers.add_parser(
+        "build-landfire-disturbance-lookup",
+        help="Build annual event/support lookups from official Dist tables.",
+    )
+    disturbance_lookup_parser.add_argument(
+        "--attributes-summary",
+        required=True,
+        help="Disturbance landfire_attribute_tables.json path.",
+    )
+    disturbance_lookup_parser.add_argument(
+        "--output-dir",
+        default="data/ebird/covariates/raw/landfire/disturbance_lookup",
+        help="Output directory for the disturbance lookup and summary.",
+    )
+    disturbance_lookup_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace previously generated disturbance lookup files.",
+    )
+
     landfire_export_parser = subparsers.add_parser(
         "export-landfire",
         help="Export and validate bounded raw LANDFIRE ImageServer tiles.",
@@ -577,6 +614,252 @@ def parse_args() -> argparse.Namespace:
     landfire_validate_parser.add_argument(
         "--preview-output",
         help="Preview PNG path. Defaults below the summary diagnostics dir.",
+    )
+
+    landfire_checklist_parser = subparsers.add_parser(
+        "validate-landfire-checklist-support",
+        help="Measure one completed LANDFIRE release at checklist locations.",
+    )
+    landfire_checklist_parser.add_argument(
+        "--plan",
+        required=True,
+        help="build_plan.json path.",
+    )
+    landfire_checklist_parser.add_argument(
+        "--manifest",
+        required=True,
+        help="landfire_state_build_manifest.json path.",
+    )
+    landfire_checklist_parser.add_argument(
+        "--checklists",
+        required=True,
+        help="Processed checklist GeoParquet path.",
+    )
+    landfire_checklist_parser.add_argument(
+        "--release",
+        required=True,
+        help="Completed vegetation release to inspect, for example LF2016.",
+    )
+    landfire_checklist_parser.add_argument(
+        "--output",
+        help="Validation JSON path. Defaults below the state manifest diagnostics dir.",
+    )
+    landfire_checklist_parser.add_argument(
+        "--unsupported-output",
+        help="Unsupported-checklist CSV path. Defaults beside the validation JSON.",
+    )
+
+    landfire_release_compare_parser = subparsers.add_parser(
+        "compare-landfire-releases",
+        help="Compare two completed LANDFIRE vegetation releases.",
+    )
+    landfire_release_compare_parser.add_argument(
+        "--plan",
+        required=True,
+        help="build_plan.json path.",
+    )
+    landfire_release_compare_parser.add_argument(
+        "--manifest",
+        required=True,
+        help="landfire_state_build_manifest.json path.",
+    )
+    landfire_release_compare_parser.add_argument(
+        "--baseline-release",
+        required=True,
+        help="Earlier completed vegetation release, for example LF2016.",
+    )
+    landfire_release_compare_parser.add_argument(
+        "--comparison-release",
+        required=True,
+        help="Later completed vegetation release, for example LF2022.",
+    )
+    landfire_release_compare_parser.add_argument(
+        "--tile-ids",
+        nargs="+",
+        help="Tiles for pixel comparisons. Defaults to all plan tiles.",
+    )
+    landfire_release_compare_parser.add_argument(
+        "--output",
+        help="Comparison JSON path. Defaults below the state manifest diagnostics dir.",
+    )
+    landfire_release_compare_parser.add_argument(
+        "--metrics-output",
+        help="Per-band comparison CSV path. Defaults beside the comparison JSON.",
+    )
+
+    disturbance_derive_parser = subparsers.add_parser(
+        "derive-landfire-disturbance",
+        help="Derive annual LANDFIRE disturbance fractions for one plan tile.",
+    )
+    disturbance_derive_parser.add_argument(
+        "--plan",
+        required=True,
+        help="build_plan.json path.",
+    )
+    disturbance_derive_parser.add_argument(
+        "--export-summary",
+        required=True,
+        help="Dist20-Dist23 landfire_export_summary.json for one tile.",
+    )
+    disturbance_derive_parser.add_argument(
+        "--lookup-summary",
+        required=True,
+        help="landfire_disturbance_lookup_summary.json path.",
+    )
+    disturbance_derive_parser.add_argument(
+        "--output-dir",
+        required=True,
+        help="Output directory for disturbance COGs, inventories, VRT, and summary.",
+    )
+    disturbance_derive_parser.add_argument(
+        "--neighborhoods-m",
+        type=int,
+        nargs="+",
+        help="Neighborhood radii in meters. Defaults to the build plan.",
+    )
+    disturbance_derive_parser.add_argument(
+        "--minimum-coverage",
+        type=float,
+        default=0.8,
+        help="Minimum mappable terrestrial support fraction. Defaults to 0.8.",
+    )
+    disturbance_derive_parser.add_argument(
+        "--no-vrt",
+        action="store_true",
+        help="Do not assemble the disturbance logical VRT.",
+    )
+    disturbance_derive_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace previously derived disturbance COGs.",
+    )
+
+    disturbance_validate_parser = subparsers.add_parser(
+        "validate-landfire-disturbance-derived",
+        help="Validate annual disturbance COGs, VRT, ranges, and support.",
+    )
+    disturbance_validate_parser.add_argument(
+        "--plan",
+        required=True,
+        help="build_plan.json path.",
+    )
+    disturbance_validate_parser.add_argument(
+        "--summary",
+        required=True,
+        help="landfire_disturbance_derived_summary.json path.",
+    )
+    disturbance_validate_parser.add_argument(
+        "--output",
+        help="Validation JSON path. Defaults below the summary diagnostics dir.",
+    )
+    disturbance_validate_parser.add_argument(
+        "--preview",
+        action="store_true",
+        help="Render a four-year mapped disturbance preview.",
+    )
+    disturbance_validate_parser.add_argument(
+        "--preview-output",
+        help="Preview PNG path. Defaults below the summary diagnostics dir.",
+    )
+
+    state_build_parser = subparsers.add_parser(
+        "build-landfire-state",
+        help=(
+            "Resume validated LANDFIRE tile/release units and assemble "
+            "shared statewide profiles."
+        ),
+    )
+    state_build_parser.add_argument(
+        "--plan",
+        required=True,
+        help="build_plan.json path.",
+    )
+    state_build_parser.add_argument(
+        "--catalog",
+        required=True,
+        help="LANDFIRE catalog JSON from catalog-landfire.",
+    )
+    state_build_parser.add_argument(
+        "--vegetation-crosswalk-summary",
+        required=True,
+        help="landfire_crosswalk_summary.json path.",
+    )
+    state_build_parser.add_argument(
+        "--disturbance-lookup-summary",
+        required=True,
+        help="landfire_disturbance_lookup_summary.json path.",
+    )
+    state_build_parser.add_argument(
+        "--output-dir",
+        required=True,
+        help="State-build work, manifest, shared inventories, and profile VRTs.",
+    )
+    state_build_parser.add_argument(
+        "--profiles",
+        nargs="+",
+        choices=list(LANDFIRE_PROFILE_DEFINITIONS),
+        default=list(LANDFIRE_PROFILE_DEFINITIONS),
+        help="Logical materialization profiles. Defaults to all profiles.",
+    )
+    state_build_parser.add_argument(
+        "--tile-ids",
+        nargs="+",
+        help="Optional bounded plan-tile subset; defaults to every AOI tile.",
+    )
+    state_build_parser.add_argument(
+        "--releases",
+        nargs="+",
+        help="Optional LFYYYY subset; defaults to every catalog release.",
+    )
+    state_build_parser.add_argument(
+        "--components",
+        nargs="+",
+        choices=["vegetation", "disturbance"],
+        help="Optional diagnostic component subset; defaults to both.",
+    )
+    state_build_parser.add_argument(
+        "--buffer-m",
+        type=float,
+        default=5000.0,
+        help="Raw source buffer around each plan tile. Defaults to 5000.",
+    )
+    state_build_parser.add_argument(
+        "--minimum-coverage",
+        type=float,
+        default=0.8,
+        help="Minimum valid/mappable source-area fraction. Defaults to 0.8.",
+    )
+    state_build_parser.add_argument(
+        "--minimum-lifeform-fraction",
+        type=float,
+        default=0.01,
+        help="Minimum lifeform support for conditional structure. Defaults to 0.01.",
+    )
+    state_build_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=300.0,
+        help="Per-export HTTP timeout in seconds. Defaults to 300.",
+    )
+    state_build_parser.add_argument(
+        "--max-units",
+        type=int,
+        help="Process at most this many incomplete work units this invocation.",
+    )
+    state_build_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Write/validate the deterministic manifest without raster work.",
+    )
+    state_build_parser.add_argument(
+        "--continue-on-error",
+        action="store_true",
+        help="Record failed units and continue processing independent units.",
+    )
+    state_build_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Intentionally replace otherwise reusable raw and derived units.",
     )
     return parser.parse_args()
 
@@ -977,6 +1260,26 @@ def run_build_landfire_crosswalks(args: argparse.Namespace) -> None:
     print(f"Wrote crosswalk summary to {summary['summary_path']}")
 
 
+def run_build_landfire_disturbance_lookup(args: argparse.Namespace) -> None:
+    summary = build_disturbance_lookup(
+        load_json_file(Path(args.attributes_summary)),
+        Path(args.output_dir),
+        overwrite=args.overwrite,
+    )
+    for record in summary["year_records"]:
+        print(
+            f"  {record['year']} {record['layer_name']}: "
+            f"{record['event_code_count']} event codes, "
+            f"{record['water_mask_code_count']} Water mask codes, "
+            f"{record['fill_code_count']} fill codes"
+        )
+    print(
+        f"Built LANDFIRE disturbance lookup for "
+        f"{len(summary['disturbance_years'])} years"
+    )
+    print(f"Wrote disturbance lookup summary to {summary['summary_path']}")
+
+
 def run_export_landfire(args: argparse.Namespace) -> None:
     summary = export_landfire_tiles(
         plan=load_plan(Path(args.plan)),
@@ -1073,6 +1376,238 @@ def run_validate_landfire_derived(args: argparse.Namespace) -> None:
         )
 
 
+def run_validate_landfire_checklist_support(args: argparse.Namespace) -> None:
+    plan = load_plan(Path(args.plan))
+    manifest_path = Path(args.manifest)
+    manifest = load_json_file(manifest_path)
+    release = str(args.release).upper()
+    diagnostics_dir = manifest_path.parent / "diagnostics"
+    output_path = (
+        Path(args.output)
+        if args.output
+        else diagnostics_dir / f"landfire_{release.lower()}_checklist_support.json"
+    )
+    unsupported_output_path = (
+        Path(args.unsupported_output)
+        if args.unsupported_output
+        else diagnostics_dir
+        / f"landfire_{release.lower()}_unsupported_checklists.csv"
+    )
+    validation, unsupported = validate_landfire_checklist_support(
+        plan,
+        manifest,
+        Path(args.checklists),
+        release,
+    )
+    validation["manifest_path"] = str(manifest_path)
+    write_landfire_checklist_support(
+        validation,
+        unsupported,
+        output_path,
+        unsupported_output_path,
+    )
+    print(
+        f"LANDFIRE {release} checklist support: "
+        f"{validation['eligible_checklist_count']:,}/"
+        f"{validation['checklist_count']:,} checklists eligible"
+    )
+    for record in validation["support_by_radius"]:
+        fraction = record["supported_fraction"]
+        fraction_text = f"{fraction:.4%}" if fraction is not None else "n/a"
+        print(
+            f"  r{record['radius_m']}: "
+            f"{record['supported_checklists']:,}/"
+            f"{record['eligible_checklists']:,} supported "
+            f"({fraction_text}); "
+            f"{record['unsupported_checklists']:,} unsupported"
+        )
+    print(f"Wrote checklist-support validation to {output_path}")
+    print(f"Wrote unsupported checklist details to {unsupported_output_path}")
+
+
+def run_compare_landfire_releases(args: argparse.Namespace) -> None:
+    plan = load_plan(Path(args.plan))
+    manifest_path = Path(args.manifest)
+    manifest = load_json_file(manifest_path)
+    baseline_release = str(args.baseline_release).upper()
+    comparison_release = str(args.comparison_release).upper()
+    comparison_slug = (
+        f"landfire_{baseline_release.lower()}_vs_"
+        f"{comparison_release.lower()}_release_comparison"
+    )
+    diagnostics_dir = manifest_path.parent / "diagnostics"
+    output_path = (
+        Path(args.output)
+        if args.output
+        else diagnostics_dir / f"{comparison_slug}.json"
+    )
+    metrics_output_path = (
+        Path(args.metrics_output)
+        if args.metrics_output
+        else diagnostics_dir / f"{comparison_slug}_metrics.csv"
+    )
+    summary, metrics = compare_landfire_releases(
+        plan,
+        manifest,
+        baseline_release,
+        comparison_release,
+        tile_ids=args.tile_ids,
+    )
+    summary["manifest_path"] = str(manifest_path)
+    write_landfire_release_comparison(
+        summary,
+        metrics,
+        output_path,
+        metrics_output_path,
+    )
+    print(
+        f"Compared LANDFIRE {baseline_release} -> {comparison_release}: "
+        f"{summary['release_tile_count']} release tiles structurally checked; "
+        f"{summary['comparison_tile_count']} tiles pixel-compared; "
+        f"{summary['matched_band_count']} matched bands"
+    )
+    print(
+        "Maximum AOI-support difference: "
+        f"{summary['maximum_absolute_support_difference']:.3g}; "
+        f"nonzero tile/radius differences="
+        f"{summary['nonzero_support_difference_count']}"
+    )
+    ranked = sorted(
+        (
+            metric
+            for metric in metrics
+            if metric["mean_absolute_delta"] is not None
+        ),
+        key=lambda value: value["mean_absolute_delta"],
+        reverse=True,
+    )
+    print("Largest per-band mean absolute changes on compared tiles:")
+    for metric in ranked[:8]:
+        pearson = metric["pearson"]
+        pearson_text = f"{pearson:.4f}" if pearson is not None else "n/a"
+        print(
+            f"  {metric['variable']} r{metric['radius_m']}: "
+            f"MAE={metric['mean_absolute_delta']:.5f}, "
+            f"mean delta={metric['mean_delta']:.5f}, "
+            f"Pearson={pearson_text}, "
+            f"mask mismatch={metric['mask_mismatch_cells']:,}"
+        )
+    print(f"Wrote release comparison to {output_path}")
+    print(f"Wrote release metrics to {metrics_output_path}")
+
+
+def run_derive_landfire_disturbance(args: argparse.Namespace) -> None:
+    summary = derive_landfire_disturbance(
+        plan=load_plan(Path(args.plan)),
+        export_summary=load_json_file(Path(args.export_summary)),
+        lookup_summary=load_json_file(Path(args.lookup_summary)),
+        output_dir=Path(args.output_dir),
+        neighborhoods_m=args.neighborhoods_m,
+        minimum_coverage=args.minimum_coverage,
+        overwrite=args.overwrite,
+        write_vrt=not args.no_vrt,
+        progress=True,
+    )
+    print(
+        f"Derived LANDFIRE disturbance {summary['tile_id']}: "
+        f"{summary['band_count']} bands, "
+        f"{summary['derived_cog_count']} COGs, "
+        f"{summary['derived_cog_bytes'] / (1024**2):.2f} MiB"
+    )
+    print(f"Wrote disturbance derivation summary to {summary['summary_path']}")
+
+
+def run_validate_landfire_disturbance_derived(
+    args: argparse.Namespace,
+) -> None:
+    plan = load_plan(Path(args.plan))
+    summary_path = Path(args.summary)
+    summary = load_json_file(summary_path)
+    validation = validate_landfire_disturbance_derivation(plan, summary)
+    diagnostics_dir = summary_path.parent / "diagnostics"
+    output_path = (
+        Path(args.output)
+        if args.output
+        else diagnostics_dir / "landfire_disturbance_validation.json"
+    )
+    write_landfire_disturbance_validation(validation, output_path)
+    print(
+        f"Validated LANDFIRE disturbance {validation['tile_id']}: "
+        f"{validation['band_count']} bands, "
+        f"{validation['derived_cog_count']} COGs, "
+        f"{validation['empty_band_count']} empty logical bands"
+    )
+    for record in validation["band_statistics"]:
+        support = record["supported_aoi_fraction"]
+        support_text = f"{support:.2%}" if support is not None else "n/a"
+        print(
+            f"  {record['year']} r{record['radius_m']}: "
+            f"support={support_text}, mean={record['mean']:.5f}, "
+            f"max={record['maximum']:.5f}"
+        )
+    print(f"All checks passed: {validation['all_checks_passed']}")
+    print(f"Wrote disturbance validation to {output_path}")
+    if args.preview:
+        preview_path = (
+            Path(args.preview_output)
+            if args.preview_output
+            else diagnostics_dir
+            / f"{validation['tile_id']}_landfire_disturbance_preview.png"
+        )
+        plot_landfire_disturbance_preview(plan, summary, preview_path)
+        print(f"Wrote LANDFIRE disturbance preview to {preview_path}")
+    if not validation["all_checks_passed"]:
+        issue_summary = "; ".join(validation["issues"][:5])
+        raise RuntimeError(
+            f"Derived LANDFIRE disturbance validation failed with "
+            f"{len(validation['issues'])} issue(s): {issue_summary}"
+        )
+
+
+def run_build_landfire_state(args: argparse.Namespace) -> None:
+    result = build_landfire_state(
+        plan=load_plan(Path(args.plan)),
+        catalog=load_json_file(Path(args.catalog)),
+        vegetation_crosswalk=load_json_file(
+            Path(args.vegetation_crosswalk_summary)
+        ),
+        disturbance_lookup=load_json_file(
+            Path(args.disturbance_lookup_summary)
+        ),
+        output_dir=Path(args.output_dir),
+        profiles=args.profiles,
+        tile_ids=args.tile_ids,
+        releases=args.releases,
+        components=args.components,
+        buffer_m=args.buffer_m,
+        minimum_coverage=args.minimum_coverage,
+        minimum_lifeform_fraction=args.minimum_lifeform_fraction,
+        timeout=args.timeout,
+        max_units=args.max_units,
+        dry_run=args.dry_run,
+        continue_on_error=args.continue_on_error,
+        overwrite=args.overwrite,
+        progress=True,
+    )
+    manifest = result["manifest"]
+    expected = manifest["expected_state"]
+    mode = "dry run" if result["dry_run"] else "build"
+    print(
+        f"LANDFIRE state {mode}: {manifest['completed_unit_count']}/"
+        f"{manifest['unit_count']} units complete; "
+        f"resumed manifest={result['resumed_manifest']}"
+    )
+    print(
+        f"Expected shared raster bands: "
+        f"{expected['shared_raster_band_count']}"
+    )
+    for profile, count in expected["profile_raster_band_counts"].items():
+        print(f"  {profile}: {count} raster bands")
+    for profile, output in manifest.get("profile_outputs", {}).items():
+        print(f"  {profile} VRT: {output['logical_vrt']}")
+    print(f"Wrote state manifest to {result['manifest_path']}")
+
+
 def main() -> None:
     args = parse_args()
     if args.command == "plan":
@@ -1114,6 +1649,9 @@ def main() -> None:
     if args.command == "build-landfire-crosswalks":
         run_build_landfire_crosswalks(args)
         return
+    if args.command == "build-landfire-disturbance-lookup":
+        run_build_landfire_disturbance_lookup(args)
+        return
     if args.command == "export-landfire":
         run_export_landfire(args)
         return
@@ -1122,6 +1660,21 @@ def main() -> None:
         return
     if args.command == "validate-landfire-derived":
         run_validate_landfire_derived(args)
+        return
+    if args.command == "validate-landfire-checklist-support":
+        run_validate_landfire_checklist_support(args)
+        return
+    if args.command == "compare-landfire-releases":
+        run_compare_landfire_releases(args)
+        return
+    if args.command == "derive-landfire-disturbance":
+        run_derive_landfire_disturbance(args)
+        return
+    if args.command == "validate-landfire-disturbance-derived":
+        run_validate_landfire_disturbance_derived(args)
+        return
+    if args.command == "build-landfire-state":
+        run_build_landfire_state(args)
         return
     raise ValueError(f"Unsupported command: {args.command}")
 

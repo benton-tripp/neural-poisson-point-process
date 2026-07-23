@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -47,6 +48,31 @@ def safe_band_slug(value: str) -> str:
     if not slug:
         raise ValueError("Band id must contain at least one filename-safe character.")
     return slug
+
+
+def safe_artifact_path(
+    directory: Path,
+    value: str,
+    suffix: str,
+    *,
+    maximum_absolute_length: int = 259,
+) -> Path:
+    """Keep readable names unless a resolved path would cross Windows limits."""
+    slug = safe_band_slug(value)
+    candidate = directory / f"{slug}{suffix}"
+    if len(str(candidate.resolve())) < maximum_absolute_length:
+        return candidate
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+    directory_length = len(str(directory.resolve()))
+    target_length = maximum_absolute_length - 12
+    slug_budget = target_length - directory_length - 1 - len(suffix)
+    prefix_length = slug_budget - len(digest) - 2
+    if prefix_length < 8:
+        raise ValueError(
+            f"Output directory is too long for a portable artifact path: {directory}"
+        )
+    shortened = f"{slug[:prefix_length]}__{digest}"
+    return directory / f"{shortened}{suffix}"
 
 
 def load_plan(path: Path) -> dict[str, Any]:
@@ -117,7 +143,14 @@ def write_cog(
     overview_resampling: str,
 ) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = output_path.with_suffix(".tmp.tif")
+    temporary = (
+        output_path.parent
+        / (
+            "."
+            + hashlib.sha256(str(output_path).encode("utf-8")).hexdigest()[:16]
+            + ".tmp.tif"
+        )
+    )
     temporary_overview = Path(f"{temporary}.ovr.tmp")
     if temporary.exists():
         temporary.unlink()
@@ -171,7 +204,6 @@ def normalize_raster_to_tiles(
     tile_cells = int(round(tile_size / resolution))
     target_crs = grid["crs"]
     nodata = -9999.0
-    slug = safe_band_slug(band_id)
     aoi_geometry = load_plan_aoi(plan) if mask_outside_aoi else None
     aoi_mask_rule = (
         "all_touched" if aoi_mask_all_touched(plan) else "center"
@@ -188,7 +220,11 @@ def normalize_raster_to_tiles(
             )
         source_nodata = source.nodata
         for tile in grid["tiles"]:
-            output_path = output_dir / f"{slug}__{tile['tile_id']}.tif"
+            output_path = safe_artifact_path(
+                output_dir,
+                f"{band_id}__{tile['tile_id']}",
+                ".tif",
+            )
             if output_path.exists() and not overwrite:
                 with rasterio.open(output_path) as existing:
                     if mask_outside_aoi:

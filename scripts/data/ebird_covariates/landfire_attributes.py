@@ -17,6 +17,7 @@ REQUIRED_FIELDS = {
     "EVT": {"Value", "EVT_NAME", "EVT_LF", "EVT_PHYS"},
     "EVC": {"Value", "CLASSNAMES"},
     "EVH": {"Value", "CLASSNAMES"},
+    "Dist": {"Value", "DIST_YEAR", "DIST_TYPE", "SEVERITY", "DESCRIPTIO"},
 }
 
 
@@ -26,27 +27,44 @@ def safe_layer_name(value: str) -> str:
     return value
 
 
-def select_vegetation_layers(
+def select_attribute_layers(
     catalog: dict[str, Any], layer_names: list[str] | None = None
 ) -> list[dict[str, Any]]:
-    layers = [
+    eligible = [
         layer
         for layer in catalog.get("layers", [])
-        if layer.get("role") == "vegetation_release"
+        if layer.get("role") in {"vegetation_release", "annual_disturbance"}
     ]
     requested = set(layer_names or [])
     if requested:
-        known = {layer["layerName"] for layer in layers}
+        known = {layer["layerName"] for layer in eligible}
         unknown = sorted(requested - known)
         if unknown:
             raise ValueError(
                 "Requested LANDFIRE layers are absent from the catalog: "
                 + ", ".join(unknown)
             )
-        layers = [layer for layer in layers if layer["layerName"] in requested]
+        layers = [
+            layer for layer in eligible if layer["layerName"] in requested
+        ]
+    else:
+        # Preserve the original default: disturbance tables are opt-in because
+        # they feed a separate annual lookup rather than vegetation crosswalks.
+        layers = [
+            layer
+            for layer in eligible
+            if layer.get("role") == "vegetation_release"
+        ]
     if not layers:
-        raise ValueError("No LANDFIRE vegetation layers were selected.")
+        raise ValueError("No LANDFIRE attribute-table layers were selected.")
     return layers
+
+
+def select_vegetation_layers(
+    catalog: dict[str, Any], layer_names: list[str] | None = None
+) -> list[dict[str, Any]]:
+    """Compatibility alias for the original public helper."""
+    return select_attribute_layers(catalog, layer_names)
 
 
 def _attribute_table_request(
@@ -153,7 +171,7 @@ def extract_attribute_tables(
     overwrite: bool = False,
     session: requests.Session | None = None,
 ) -> dict[str, Any]:
-    layers = select_vegetation_layers(catalog, layer_names)
+    layers = select_attribute_layers(catalog, layer_names)
     output_dir.mkdir(parents=True, exist_ok=True)
     records: list[dict[str, Any]] = []
     for layer in layers:

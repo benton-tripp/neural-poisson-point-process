@@ -28,23 +28,31 @@ def _safe_id(value: str) -> str:
 def select_layers(
     catalog: dict[str, Any], layer_names: list[str] | None
 ) -> list[dict[str, Any]]:
-    layers = [
+    eligible = [
         layer
         for layer in catalog.get("layers", [])
-        if layer.get("role") == "vegetation_release"
+        if layer.get("role") in {"vegetation_release", "annual_disturbance"}
     ]
     requested = set(layer_names or [])
     if requested:
-        known = {layer["layerName"] for layer in layers}
+        known = {layer["layerName"] for layer in eligible}
         unknown = sorted(requested - known)
         if unknown:
             raise ValueError(
                 "Requested LANDFIRE layers are absent from the catalog: "
                 + ", ".join(unknown)
             )
-        layers = [layer for layer in layers if layer["layerName"] in requested]
+        layers = [
+            layer for layer in eligible if layer["layerName"] in requested
+        ]
+    else:
+        layers = [
+            layer
+            for layer in eligible
+            if layer.get("role") == "vegetation_release"
+        ]
     if not layers:
-        raise ValueError("No LANDFIRE vegetation layers were selected.")
+        raise ValueError("No LANDFIRE layers were selected.")
     return layers
 
 
@@ -94,7 +102,7 @@ def snap_bounds_to_source_grid(
 
 def _crosswalk_values(
     crosswalk_summary: dict[str, Any],
-) -> dict[tuple[str, str], set[int]]:
+) -> dict[tuple[str, str, str | None], set[int]]:
     artifact_by_id = {
         artifact["id"]: artifact
         for artifact in crosswalk_summary.get("artifacts", [])
@@ -103,18 +111,26 @@ def _crosswalk_values(
         "EVT": "evt_model_crosswalk",
         "EVC": "evc_model_lookup",
         "EVH": "evh_model_lookup",
+        "Dist": "disturbance_model_lookup",
     }
-    values: dict[tuple[str, str], set[int]] = {}
+    values: dict[tuple[str, str, str | None], set[int]] = {}
     for product, artifact_id in artifact_ids.items():
         artifact = artifact_by_id.get(artifact_id)
         if not artifact:
-            raise ValueError(f"LANDFIRE crosswalk lacks {artifact_id}.")
+            continue
         path = Path(artifact["path"])
         with path.open("r", encoding="utf-8", newline="") as stream:
             for row in csv.DictReader(stream):
-                values.setdefault((row["release"], product), set()).add(
-                    int(row["Value"])
+                key = (
+                    row["release"],
+                    product,
+                    row.get("layer_name") or None,
                 )
+                values.setdefault(key, set()).add(int(row["Value"]))
+    if not values:
+        raise ValueError(
+            "LANDFIRE lookup summary has no recognized class-code artifact."
+        )
     return values
 
 
@@ -301,10 +317,17 @@ def export_landfire_tiles(
                 raise ValueError(
                     f"LANDFIRE export {layer_name}:{tile_id} exceeds service limits."
                 )
-            key = (layer["version"], layer["acronym"])
+            exact_key = (
+                layer["version"],
+                layer["acronym"],
+                layer_name,
+            )
+            fallback_key = (layer["version"], layer["acronym"], None)
+            key = exact_key if exact_key in lookup_values else fallback_key
             if key not in lookup_values:
                 raise ValueError(
-                    f"LANDFIRE crosswalk has no values for {key[0]}:{key[1]}."
+                    "LANDFIRE lookup has no values for "
+                    f"{layer['version']}:{layer['acronym']}:{layer_name}."
                 )
             output_path = output_dir / "tiles" / tile_id / f"{layer_name}.tif"
             endpoint, params = _export_request(
@@ -335,6 +358,9 @@ def export_landfire_tiles(
                     "layer_name": layer_name,
                     "version": layer["version"],
                     "product": layer["acronym"],
+                    "role": layer.get("role"),
+                    "content_year": layer.get("content_year"),
+                    "observation_year": layer.get("observation_year"),
                     "source_url": endpoint,
                     "request_parameters": params,
                     "tile_bounds_m": tile_bounds,

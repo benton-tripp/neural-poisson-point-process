@@ -22,6 +22,7 @@ from .nlcd import AWS_REGION, LAND_COVER_CLASSES
 from .raster_engine import (
     aoi_mask_all_touched,
     load_plan_aoi,
+    safe_artifact_path,
     safe_band_slug,
     write_band_inventory,
     write_cog,
@@ -243,8 +244,11 @@ def output_band_tile(
     tags: dict[str, str],
     overwrite: bool,
 ) -> None:
-    slug = safe_band_slug(identifier)
-    output_path = output_dir / "tiles" / tile["tile_id"] / f"{slug}.tif"
+    output_path = safe_artifact_path(
+        output_dir / "tiles" / tile["tile_id"],
+        identifier,
+        ".tif",
+    )
     if output_path.exists() and not overwrite:
         with rasterio.open(output_path) as existing:
             existing_mask_rule = existing.tags().get("aoi_mask_rule", "center")
@@ -308,7 +312,11 @@ def finalize_inventories(
         inventory["valid_cells"] = sum(
             tile["valid_cells"] for tile in inventory["tiles"]
         )
-        path = output_dir / "inventories" / f"{safe_band_slug(identifier)}.json"
+        path = safe_artifact_path(
+            output_dir / "inventories",
+            identifier,
+            ".json",
+        )
         write_band_inventory(inventory, path)
         ordered.append(inventory)
         paths.append(str(path.resolve()))

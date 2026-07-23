@@ -101,6 +101,59 @@ def catalog_fixture():
     }
 
 
+def disturbance_payload():
+    field_names = [
+        "OID",
+        "Value",
+        "DIST_YEAR",
+        "DIST_TYPE",
+        "SEVERITY",
+        "DESCRIPTIO",
+    ]
+    return {
+        "fields": [{"name": name} for name in field_names],
+        "features": [
+            {
+                "attributes": {
+                    "OID": 1,
+                    "Value": 0,
+                    "DIST_YEAR": 2023,
+                    "DIST_TYPE": "NA",
+                    "SEVERITY": "NA",
+                    "DESCRIPTIO": "Background",
+                }
+            },
+            {
+                "attributes": {
+                    "OID": 2,
+                    "Value": 11,
+                    "DIST_YEAR": 2023,
+                    "DIST_TYPE": "Fire",
+                    "SEVERITY": "Low",
+                    "DESCRIPTIO": "Mapped fire",
+                }
+            },
+        ],
+    }
+
+
+def catalog_with_disturbance():
+    catalog = catalog_fixture()
+    catalog["layers"].append(
+        {
+            "role": "annual_disturbance",
+            "layerName": "LF2023_Dist23",
+            "version": "LF2023",
+            "acronym": "Dist",
+            "image_server_url": (
+                "https://example.test/Landfire_Disturbance/"
+                "LF2023_Dist23_CONUS/ImageServer"
+            ),
+        }
+    )
+    return catalog
+
+
 class LandfireAttributeTests(unittest.TestCase):
     def test_catalogs_raw_json_and_normalized_csv(self) -> None:
         session = FakeSession(evt_payload())
@@ -158,6 +211,17 @@ class LandfireAttributeTests(unittest.TestCase):
                     Path(temporary),
                     session=FakeSession(payload),
                 )
+
+    def test_explicit_disturbance_layer_is_supported(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            summary = extract_attribute_tables(
+                catalog_with_disturbance(),
+                Path(temporary),
+                layer_names=["LF2023_Dist23"],
+                session=FakeSession(disturbance_payload()),
+            )
+        self.assertEqual(summary["tables"][0]["product"], "Dist")
+        self.assertIn("DIST_TYPE", summary["tables"][0]["field_names"])
 
 
 if __name__ == "__main__":
